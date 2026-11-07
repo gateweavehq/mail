@@ -2,7 +2,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startMail } from "./mail-worker";
 
 // The Worker's `email()` handler, reached the way Email Routing reaches it: through the built
-// Worker's entry, in workerd. No address exists yet, so everything is refused, for good.
+// Worker's entry, in workerd. None of these addresses exists, so each is refused, for good.
+// `directory.test.ts` covers those that do.
 
 const origin = "https://mail.test";
 

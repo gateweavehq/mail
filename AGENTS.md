@@ -12,9 +12,11 @@ is part of [Gateweave](https://gateweave.com), next to
 [Gateweave Agents](https://github.com/gateweavehq/agents). Everything ships as one Worker.
 
 It is early. Today it has accounts (sign-up, sign-in, password reset, an account page, sign-in
-through an OpenID Connect provider), workspaces with members and invitations, and an `email()`
-handler that refuses all mail, because no address exists yet. Mailboxes, addresses an agent can
-make for itself, aliases and transactional sending are planned, not built.
+through an OpenID Connect provider), workspaces with members and invitations, a directory of
+proved domains, mailboxes and addresses, and an `email()` handler that refuses an address that
+doesn't exist and tells the sender to try again for one that does, because mail can't be stored
+yet. Storing and reading mail, addresses an agent can make for itself, aliases and transactional
+sending are planned, not built.
 
 Read [docs/architecture.md](docs/architecture.md) before changing auth or the `email()` handler.
 

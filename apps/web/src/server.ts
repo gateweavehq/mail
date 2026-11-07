@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import handler from "@tanstack/react-start/server-entry";
 import { db } from "./server/auth";
 import { pruneExpired } from "./server/db/prune";
+import { findAddress } from "./server/directory";
 import { receiveMail } from "./server/inbound";
 import { newNonce, withSecurityHeaders } from "./server/security-headers";
 
@@ -31,9 +32,10 @@ export default {
 		if (import.meta.env.DEV) return response;
 		return withSecurityHeaders(request, response, { nonce, oidcIssuer: env.OIDC_ISSUER });
 	},
-	// Mail does not touch the database or the secret, so it needs no "not set up" check.
+	// With no database this throws, and the sender tries again later: not knowing an address is our
+	// trouble, not a refusal.
 	async email(message) {
-		await receiveMail(message);
+		await receiveMail(message, (recipient) => findAddress(db, recipient, new Date()));
 	},
 	// Clears what is past its time, once a day.
 	async scheduled() {

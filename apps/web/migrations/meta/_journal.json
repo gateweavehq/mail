@@ -15,6 +15,20 @@
       "when": 1794077969046,
       "tag": "0001_owner_triggers",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1794082396908,
+      "tag": "0002_address_directory",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1794082397464,
+      "tag": "0003_address_same_workspace",
+      "breakpoints": true
     }
   ]
 }

@@ -15,6 +15,7 @@ export const OPTIONAL_SECRETS = [
 	"LEGAL_NOTICE_URL",
 	"PRIVACY_POLICY_URL",
 	"TERMS_URL",
+	"DNS_RESOLVER_URL",
 ] as const;
 
 /** What local dev loads from .dev.vars: the required secrets, and the optional ones it sets. */

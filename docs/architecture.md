@@ -38,10 +38,26 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
   without a nonce.
 - **A deployment without its database or `BETTER_AUTH_SECRET`** serves a 503 that says so and
   nothing else. A branch's Preview is one, since it gets none of the Worker's bindings.
-- **The `email()` handler** (`apps/web/src/server/inbound.ts`) refuses every message with
-  `setReject("No such address")`. No addresses exist until the directory ships, so nothing could
-  be delivered to anyone. It is a separate entry from `fetch`, so it needs neither the database
-  nor the secret. The Worker tests deliver to it through Miniflare (`test/inbound.test.ts`).
+- **The directory** (`apps/web/src/server/directory/`) says which addresses exist. D1 holds
+  domains, mailboxes and addresses, because `email()` has to answer from anywhere with one query.
+  A workspace proves a domain with a TXT record at `_gateweave-mail.<domain>`, and each domain or
+  subdomain is proved on its own: an address matches its domain exactly. Only one workspace holds
+  a proved domain, and a unique index keeps it so. A claim proves nothing, so anyone may make one,
+  and whoever runs the domain's DNS now decides: a fresh proof moves the domain from its holder,
+  since a record removed after it served is normal and someone who once had DNS access mustn't
+  keep a domain from its owner for good. While the holder's record is there too, nothing moves.
+  Triggers refuse an address whose domain and mailbox are in different workspaces, whatever a bug
+  above them does. An address that ends by itself keeps its name for 30 days, refusing mail, so
+  it doesn't pass to someone else while what it signed up for still writes to it. Removing one by
+  hand, after a confirmation, frees the name at once, since a person chose that. Pages read the
+  directory through a server function, and changes go through `/api/directory/<workspace>`; both
+  answer a non-member as a missing workspace, and only an owner or admin can change anything.
+- **The `email()` handler** (`apps/web/src/server/inbound.ts`) looks up each message's address on
+  the primary, never a replica, so a new address works at once. No such address gets
+  `setReject("No such address")`, for good. A known address gets a throw, which tells the sender
+  to try again, until mailboxes can store mail: accepting a message we can't keep would lose it.
+  So does a failure of the database. The Worker tests deliver to it through Miniflare
+  (`test/inbound.test.ts`, `test/directory.test.ts`).
 
 ### Workspaces
 

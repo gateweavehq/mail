@@ -19,9 +19,11 @@ import { Route as WorkspaceSettingsRouteImport } from './routes/$workspace/setti
 import { Route as InviteInvitationIdRouteImport } from './routes/invite.$invitationId'
 import { Route as SettingsAccountRouteImport } from './routes/settings.account'
 import { Route as WorkspaceSettingsIndexRouteImport } from './routes/$workspace/settings.index'
+import { Route as WorkspaceSettingsDomainsRouteImport } from './routes/$workspace/settings.domains'
 import { Route as WorkspaceSettingsMembersRouteImport } from './routes/$workspace/settings.members'
 import { Route as WorkspaceSettingsWorkspaceRouteImport } from './routes/$workspace/settings.workspace'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
+import { Route as ApiDirectoryWorkspaceRouteImport } from './routes/api/directory/$workspace'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -73,6 +75,12 @@ const WorkspaceSettingsIndexRoute = WorkspaceSettingsIndexRouteImport.update({
   path: '/',
   getParentRoute: () => WorkspaceSettingsRoute,
 } as any)
+const WorkspaceSettingsDomainsRoute =
+  WorkspaceSettingsDomainsRouteImport.update({
+    id: '/domains',
+    path: '/domains',
+    getParentRoute: () => WorkspaceSettingsRoute,
+  } as any)
 const WorkspaceSettingsMembersRoute =
   WorkspaceSettingsMembersRouteImport.update({
     id: '/members',
@@ -90,6 +98,11 @@ const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
   path: '/api/auth/$',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiDirectoryWorkspaceRoute = ApiDirectoryWorkspaceRouteImport.update({
+  id: '/api/directory/$workspace',
+  path: '/api/directory/$workspace',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -101,9 +114,11 @@ export interface FileRoutesByFullPath {
   '/invite/$invitationId': typeof InviteInvitationIdRoute
   '/settings/account': typeof SettingsAccountRoute
   '/$workspace/': typeof WorkspaceIndexRoute
+  '/$workspace/settings/domains': typeof WorkspaceSettingsDomainsRoute
   '/$workspace/settings/members': typeof WorkspaceSettingsMembersRoute
   '/$workspace/settings/workspace': typeof WorkspaceSettingsWorkspaceRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/directory/$workspace': typeof ApiDirectoryWorkspaceRoute
   '/$workspace/settings/': typeof WorkspaceSettingsIndexRoute
 }
 export interface FileRoutesByTo {
@@ -114,9 +129,11 @@ export interface FileRoutesByTo {
   '/invite/$invitationId': typeof InviteInvitationIdRoute
   '/settings/account': typeof SettingsAccountRoute
   '/$workspace': typeof WorkspaceIndexRoute
+  '/$workspace/settings/domains': typeof WorkspaceSettingsDomainsRoute
   '/$workspace/settings/members': typeof WorkspaceSettingsMembersRoute
   '/$workspace/settings/workspace': typeof WorkspaceSettingsWorkspaceRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/directory/$workspace': typeof ApiDirectoryWorkspaceRoute
   '/$workspace/settings': typeof WorkspaceSettingsIndexRoute
 }
 export interface FileRoutesById {
@@ -130,9 +147,11 @@ export interface FileRoutesById {
   '/invite/$invitationId': typeof InviteInvitationIdRoute
   '/settings/account': typeof SettingsAccountRoute
   '/$workspace/': typeof WorkspaceIndexRoute
+  '/$workspace/settings/domains': typeof WorkspaceSettingsDomainsRoute
   '/$workspace/settings/members': typeof WorkspaceSettingsMembersRoute
   '/$workspace/settings/workspace': typeof WorkspaceSettingsWorkspaceRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/directory/$workspace': typeof ApiDirectoryWorkspaceRoute
   '/$workspace/settings/': typeof WorkspaceSettingsIndexRoute
 }
 export interface FileRouteTypes {
@@ -147,9 +166,11 @@ export interface FileRouteTypes {
     | '/invite/$invitationId'
     | '/settings/account'
     | '/$workspace/'
+    | '/$workspace/settings/domains'
     | '/$workspace/settings/members'
     | '/$workspace/settings/workspace'
     | '/api/auth/$'
+    | '/api/directory/$workspace'
     | '/$workspace/settings/'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -160,9 +181,11 @@ export interface FileRouteTypes {
     | '/invite/$invitationId'
     | '/settings/account'
     | '/$workspace'
+    | '/$workspace/settings/domains'
     | '/$workspace/settings/members'
     | '/$workspace/settings/workspace'
     | '/api/auth/$'
+    | '/api/directory/$workspace'
     | '/$workspace/settings'
   id:
     | '__root__'
@@ -175,9 +198,11 @@ export interface FileRouteTypes {
     | '/invite/$invitationId'
     | '/settings/account'
     | '/$workspace/'
+    | '/$workspace/settings/domains'
     | '/$workspace/settings/members'
     | '/$workspace/settings/workspace'
     | '/api/auth/$'
+    | '/api/directory/$workspace'
     | '/$workspace/settings/'
   fileRoutesById: FileRoutesById
 }
@@ -190,6 +215,7 @@ export interface RootRouteChildren {
   InviteInvitationIdRoute: typeof InviteInvitationIdRoute
   SettingsAccountRoute: typeof SettingsAccountRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
+  ApiDirectoryWorkspaceRoute: typeof ApiDirectoryWorkspaceRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -264,6 +290,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof WorkspaceSettingsIndexRouteImport
       parentRoute: typeof WorkspaceSettingsRoute
     }
+    '/$workspace/settings/domains': {
+      id: '/$workspace/settings/domains'
+      path: '/domains'
+      fullPath: '/$workspace/settings/domains'
+      preLoaderRoute: typeof WorkspaceSettingsDomainsRouteImport
+      parentRoute: typeof WorkspaceSettingsRoute
+    }
     '/$workspace/settings/members': {
       id: '/$workspace/settings/members'
       path: '/members'
@@ -285,16 +318,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiAuthSplatRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/directory/$workspace': {
+      id: '/api/directory/$workspace'
+      path: '/api/directory/$workspace'
+      fullPath: '/api/directory/$workspace'
+      preLoaderRoute: typeof ApiDirectoryWorkspaceRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
 interface WorkspaceSettingsRouteChildren {
+  WorkspaceSettingsDomainsRoute: typeof WorkspaceSettingsDomainsRoute
   WorkspaceSettingsMembersRoute: typeof WorkspaceSettingsMembersRoute
   WorkspaceSettingsWorkspaceRoute: typeof WorkspaceSettingsWorkspaceRoute
   WorkspaceSettingsIndexRoute: typeof WorkspaceSettingsIndexRoute
 }
 
 const WorkspaceSettingsRouteChildren: WorkspaceSettingsRouteChildren = {
+  WorkspaceSettingsDomainsRoute: WorkspaceSettingsDomainsRoute,
   WorkspaceSettingsMembersRoute: WorkspaceSettingsMembersRoute,
   WorkspaceSettingsWorkspaceRoute: WorkspaceSettingsWorkspaceRoute,
   WorkspaceSettingsIndexRoute: WorkspaceSettingsIndexRoute,
@@ -326,6 +368,7 @@ const rootRouteChildren: RootRouteChildren = {
   InviteInvitationIdRoute: InviteInvitationIdRoute,
   SettingsAccountRoute: SettingsAccountRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
+  ApiDirectoryWorkspaceRoute: ApiDirectoryWorkspaceRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

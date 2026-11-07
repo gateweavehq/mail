@@ -39,3 +39,29 @@ describe.each([
 		expect(response.headers.get("set-cookie")).toBeNull();
 	});
 });
+
+describe("mail to a deployment with no database", () => {
+	// It can't know the address doesn't exist, and a refusal would tell the sender that for good.
+	it("tells the sender to try again", async () => {
+		const worker = await startMail(origin, { withoutDatabase: true });
+		try {
+			const answer = await worker.deliver(
+				"sender@example.org",
+				"someone@mail.test",
+				[
+					"From: Sender <sender@example.org>",
+					"To: someone@mail.test",
+					"Subject: Hello",
+					"Message-ID: <one@example.org>",
+					"",
+					"Hello",
+					"",
+				].join("\r\n"),
+			);
+			expect(answer.status).toBeGreaterThanOrEqual(500);
+			expect(answer.text).not.toContain("No such address");
+		} finally {
+			await worker.dispose();
+		}
+	});
+});

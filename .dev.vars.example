@@ -28,3 +28,7 @@ BETTER_AUTH_SECRET=
 # LEGAL_NOTICE_URL=
 # PRIVACY_POLICY_URL=
 # TERMS_URL=
+
+# Optional: the DNS-over-HTTPS resolver that checks a domain's records, answering in JSON.
+# Cloudflare's when unset, which is what a deployment wants.
+# DNS_RESOLVER_URL=
