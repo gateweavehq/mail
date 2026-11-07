@@ -8,8 +8,8 @@ catalog:
   drizzle-orm: 0.45.4
   typescript: 7.0.2
   vite: 8.3.5
-  vitest: 5.0.5
-  wrangler: 4.156.1
+  vitest: 5.1.0
+  wrangler: 4.157.0
   zod: 4.6.7
 
 allowBuilds:
