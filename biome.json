@@ -1,0 +1,48 @@
+{
+	"$schema": "https://biomejs.dev/schemas/2.6.4/schema.json",
+	"vcs": {
+		"enabled": true,
+		"clientKind": "git",
+		"useIgnoreFile": true
+	},
+	"files": {
+		"includes": [
+			"**",
+			"!pnpm-lock.yaml",
+			"!**/routeTree.gen.ts",
+			"!**/worker-configuration.d.ts",
+			"!**/migrations/meta"
+		]
+	},
+	"formatter": {
+		"enabled": true,
+		"indentStyle": "tab",
+		"lineWidth": 100
+	},
+	"css": {
+		"parser": {
+			"tailwindDirectives": true
+		}
+	},
+	"linter": {
+		"enabled": true,
+		"rules": {
+			"preset": "recommended"
+		}
+	},
+	"overrides": [
+		{
+			"includes": ["apps/web/src/**"],
+			"linter": {
+				"rules": { "correctness": { "usePlaywrightValidDescribeCallback": "off" } }
+			}
+		}
+	],
+	"assist": {
+		"actions": {
+			"source": {
+				"organizeImports": "on"
+			}
+		}
+	}
+}

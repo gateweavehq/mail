@@ -1,0 +1,38 @@
+packages:
+  - apps/*
+
+# Versions shared across workspace packages. Reference them with "catalog:".
+catalog:
+  "@types/node": 26.6.6
+  drizzle-kit: 0.31.11
+  drizzle-orm: 0.45.4
+  typescript: 7.0.2
+  vite: 8.3.5
+  vitest: 5.0.5
+  wrangler: 4.156.1
+  zod: 4.6.7
+
+allowBuilds:
+  esbuild: true
+  workerd: true
+
+minimumReleaseAgeExclude:
+  - "@better-auth/core@1.7.16"
+  - "@better-auth/drizzle-adapter@1.7.16"
+  - "@better-auth/kysely-adapter@1.7.16"
+  - "@better-auth/memory-adapter@1.7.16"
+  - "@better-auth/mongo-adapter@1.7.16"
+  - "@better-auth/prisma-adapter@1.7.16"
+  - "@better-auth/telemetry@1.7.16"
+  - better-auth@1.7.16
+  - lucide-react@1.62.0
+  - better-call@1.4.5
+
+# undici below 7.30.1 has high advisories (GHSA-xjj6-f33q-929c, GHSA-4w7w-5xrc-9h26,
+# GHSA-2m5v-pch6-74hx and others). It only comes in through miniflare, for local dev and tests.
+overrides:
+  undici@>=7.0.0 <7.30.1: 7.30.1
+  # esbuild up to 0.24.2 lets any website read a running esbuild dev server
+  # (GHSA-67mh-4wv8-2f99). drizzle-kit brings 0.18.20 through @esbuild-kit/core-utils, which only
+  # calls transform and transformSync and never starts that server.
+  esbuild@<0.25.0: 0.25.12

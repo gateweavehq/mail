@@ -1,0 +1,30 @@
+# Copied to .dev.vars by `pnpm dev:setup`, which also fills in a random secret.
+# The "Deploy to Cloudflare" button asks for every key set here, so the optional ones stay
+# commented out. Uncomment one to use it.
+
+# Signs sessions. Generate with: openssl rand -base64 32
+BETTER_AUTH_SECRET=
+
+# Optional: enables "Sign in with GitHub". Callback URL: http://localhost:4750/api/auth/callback/github
+# GITHUB_CLIENT_ID=
+# GITHUB_CLIENT_SECRET=
+
+# Optional: enables signing in through an OpenID Connect provider. Needs the first three; see
+# docs/self-hosting.md. Callback URL: http://localhost:4750/api/auth/callback/oidc
+# OIDC_ISSUER=
+# OIDC_CLIENT_ID=
+# OIDC_CLIENT_SECRET=
+# OIDC_PROVIDER_NAME=
+
+# Optional: pins the app's URL. Leave it out to accept any host, for example from your phone.
+# BETTER_AUTH_URL=
+
+# Optional: turns on email (invitations, password reset), such as "Gateweave Mail <mail@example.com>".
+# In local dev nothing is sent: each email is printed in the terminal and saved to a file.
+# EMAIL_FROM=
+
+# Optional: the addresses of your legal pages, linked from the sign-in pages and the workspace menu.
+# Nothing is linked when they are unset.
+# LEGAL_NOTICE_URL=
+# PRIVACY_POLICY_URL=
+# TERMS_URL=

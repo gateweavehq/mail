@@ -1,0 +1,64 @@
+// Mail deploys from the repository root, where the "Deploy to Cloudflare" button looks for this
+// file; the app itself lives in apps/web, which runs Wrangler and Vite against it.
+{
+	"$schema": "apps/web/node_modules/wrangler/config-schema.json",
+	"name": "gateweave-mail",
+	"main": "apps/web/src/server.ts",
+	"compatibility_date": "2026-10-01",
+	"compatibility_flags": ["nodejs_compat"],
+	// Settings made in the dashboard stay through a deploy. Wrangler otherwise removes a plain-text
+	// variable it does not find here, so the next push would quietly take away a setting.
+	"keep_vars": true,
+	// Wrangler will not build a branch's Preview without this block, which would fail every push to a
+	// branch, Dependabot's included. A Preview gets none of this file's bindings and none of the
+	// Worker's secrets, so it only says that it is not set up. docs/self-hosting.md has the rest.
+	"previews": {},
+	"observability": { "enabled": true },
+	"upload_source_maps": true,
+	// Once a day, deletes sessions and invitations past their time. Environments inherit this.
+	"triggers": { "crons": ["29 3 * * *"] },
+	// Accounts and the list of workspaces. The database is provisioned on first deploy.
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "gateweave-mail",
+			"migrations_dir": "apps/web/migrations"
+		}
+	],
+	// Rate limits on sign-in, password reset and email are counted in one Durable Object per client
+	// address or recipient.
+	"durable_objects": {
+		"bindings": [{ "name": "RATE_LIMITER", "class_name": "RateLimiter" }]
+	},
+	"exports": {
+		"RateLimiter": { "type": "durable-object", "storage": "sqlite" }
+	},
+	// Email through Cloudflare Email Service. Nothing is sent until EMAIL_FROM names a sender on a
+	// domain onboarded to Email Sending; without it, Mail runs with email off.
+	"send_email": [{ "name": "EMAIL" }],
+	// Optional: GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET, OIDC_ISSUER, OIDC_CLIENT_ID,
+	// OIDC_CLIENT_SECRET, OIDC_PROVIDER_NAME, BETTER_AUTH_URL, EMAIL_FROM and the legal page
+	// addresses (see apps/web/src/server/env.d.ts).
+	"secrets": { "required": ["BETTER_AUTH_SECRET"] },
+	// The top level is what self-hosters deploy. Gateweave deploys the staging environment below, a
+	// separate Worker with its own database. Bindings are not inherited, so it repeats them.
+	"env": {
+		"staging": {
+			"name": "gateweave-mail-staging",
+			"routes": [{ "pattern": "mail-staging.gateweave.com", "custom_domain": true }],
+			"d1_databases": [
+				{
+					"binding": "DB",
+					"database_name": "gateweave-mail-staging",
+					"database_id": "REPLACE_WITH_STAGING_D1_ID",
+					"migrations_dir": "apps/web/migrations"
+				}
+			],
+			"durable_objects": {
+				"bindings": [{ "name": "RATE_LIMITER", "class_name": "RateLimiter" }]
+			},
+			"send_email": [{ "name": "EMAIL" }],
+			"secrets": { "required": ["BETTER_AUTH_SECRET"] }
+		}
+	}
+}

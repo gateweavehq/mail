@@ -1,0 +1,9 @@
+{
+	"extends": "../../../tsconfig.base.json",
+	"compilerOptions": {
+		// The sync client's sources expect the DOM; the scripts themselves run in Node.
+		"lib": ["ES2024", "DOM", "DOM.Iterable"],
+		"types": ["node"]
+	},
+	"include": ["*.ts"]
+}
