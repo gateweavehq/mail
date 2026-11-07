@@ -1,11 +1,23 @@
-/** A DNS label: letters, digits and inner hyphens. An internationalized name comes as `xn--`. */
+/** A DNS label: letters, digits and inner hyphens. An internationalized name is kept as `xn--`. */
 const LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const LOCAL_PART = /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/;
 
+/** `bücher.example` as DNS knows it, `xn--bcher-kva.example`. A URL's rules do the conversion. */
+function toAscii(name: string): string | null {
+	// biome-ignore lint/suspicious/noControlCharactersInRegex: this is the whole ASCII range.
+	if (/^[\x00-\x7f]*$/.test(name)) return name;
+	if (/[\s/:?#@\\[\]]/.test(name)) return null;
+	try {
+		return new URL(`http://${name}`).hostname;
+	} catch {
+		return null;
+	}
+}
+
 /** A domain's name as stored, or null when it isn't one. Takes what someone would paste. */
 export function parseDomainName(input: string): string | null {
-	const name = input.trim().toLowerCase().replace(/\.$/, "");
-	if (name.length > 253) return null;
+	const name = toAscii(input.trim().toLowerCase().replace(/\.$/, ""));
+	if (name === null || name.length > 253) return null;
 	const labels = name.split(".");
 	if (labels.length < 2 || !labels.every((label) => LABEL.test(label))) return null;
 	// All digits at the end is an IP address, and no top-level domain looks like that.

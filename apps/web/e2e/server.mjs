@@ -16,7 +16,7 @@ const state = resolve(root, ".wrangler", "e2e-state");
 rmSync(state, { recursive: true, force: true });
 
 const appPort = Number(process.env.MAIL_E2E_PORT) || 4752;
-const dnsPort = appPort + 1;
+const dnsPort = appPort + 20;
 const dns = startDnsStandIn(dnsPort);
 
 // Only the secrets matter; the app runs with email off. A preview reads them from beside the built

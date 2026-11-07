@@ -10,6 +10,7 @@ import { Notice } from "#/components/workspace/notice";
 import { formatShortDate } from "#/lib/dates";
 import {
 	changeDirectory,
+	type DirectoryAddress,
 	type DirectoryDomain,
 	type DirectoryMailbox,
 	getDirectory,
@@ -68,8 +69,8 @@ function WorkspaceHome() {
 			)}
 
 			<p className="text-sm text-muted-foreground">
-				Gateweave Mail is early: it can't store mail yet. A message to an address here is told to
-				try again later, and one to any other address is refused.
+				Gateweave Mail is early: it can't store mail yet. A message that reaches this server for a
+				live address is told to try again later, and any other is refused.
 			</p>
 
 			{admin && <AddMailbox />}
@@ -143,6 +144,7 @@ function MailboxCard({
 	const { slug } = useWorkspace();
 	const router = useRouter();
 	const [removing, setRemoving] = useState(false);
+	const [removingAddress, setRemovingAddress] = useState<DirectoryAddress | null>(null);
 	const [error, setError] = useState<string | null>(null);
 
 	async function act(action: Parameters<typeof changeDirectory>[1]) {
@@ -172,13 +174,17 @@ function MailboxCard({
 						<li key={address.id} className="flex flex-wrap items-center justify-between gap-2">
 							<span className="min-w-0 break-all font-mono text-xs">{address.address}</span>
 							<span className="flex items-center gap-2 text-sm text-muted-foreground">
-								{address.expiresAt && <AddressEnd time={address.expiresAt} />}
+								{address.domainProved ? (
+									address.expiresAt && <AddressEnd time={address.expiresAt} />
+								) : (
+									<span>Its domain isn't proved</span>
+								)}
 								{admin && (
 									<Button
 										size="sm"
 										variant="ghost"
 										aria-label={`Remove ${address.address}`}
-										onClick={() => act({ action: "remove-address", id: address.id })}
+										onClick={() => setRemovingAddress(address)}
 									>
 										Remove
 									</Button>
@@ -210,6 +216,20 @@ function MailboxCard({
 					onClose={() => setRemoving(false)}
 				>
 					Its addresses go with it, and mail to them is refused from then on.
+				</ConfirmDialog>
+			)}
+
+			{removingAddress && (
+				<ConfirmDialog
+					title={`Remove ${removingAddress.address}?`}
+					confirmLabel="Remove address"
+					onConfirm={async () => {
+						await act({ action: "remove-address", id: removingAddress.id });
+						setRemovingAddress(null);
+					}}
+					onClose={() => setRemovingAddress(null)}
+				>
+					Mail to it is refused from then on, and the name can be used again straight away.
 				</ConfirmDialog>
 			)}
 		</li>

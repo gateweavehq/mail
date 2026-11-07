@@ -17,6 +17,8 @@ export interface DirectoryAddress {
 	id: string;
 	address: string;
 	expiresAt: number | null;
+	/** False when someone else has since proved its domain, so mail to it is refused. */
+	domainProved: boolean;
 }
 
 export interface DirectoryMailbox {

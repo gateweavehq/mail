@@ -39,7 +39,9 @@ function DomainsPage() {
 						Domains
 					</h2>
 					<p className="text-sm text-muted-foreground">
-						A workspace gets mail on domains it has proved it runs.
+						Mailboxes get addresses on domains this workspace has proved it runs. Each domain or
+						subdomain is proved on its own. Whoever runs a domain's DNS decides who holds it: if
+						another workspace on this server proves it later, it moves to them.
 					</p>
 				</div>
 				{admin ? (
@@ -61,8 +63,12 @@ function DomainsPage() {
 					Getting a domain's mail to this server
 				</h2>
 				<p className="text-sm text-muted-foreground">
-					In the Cloudflare account that runs this server, turn on Email Routing for the domain. A
-					subdomain works too. Then choose one of these:
+					Mail can't be stored yet, so don't do this for a domain people rely on: a message to one
+					of its addresses is told to try again later, and any other is refused.
+				</p>
+				<p className="text-sm text-muted-foreground">
+					In the Cloudflare account that runs this server, turn on Email Routing for the domain you
+					proved. Then choose one of these:
 				</p>
 				<ul className="list-disc space-y-2 pl-5 text-sm text-muted-foreground">
 					<li>
@@ -132,9 +138,11 @@ function AddDomain() {
 /** What the last check found, in words. */
 function checkedWords(proved: boolean, mail: MailRoute): string {
 	if (!proved) return "No matching TXT record yet. A new one can take a few minutes to show.";
-	if (mail === "cloudflare") return "Proved, and its mail goes to Cloudflare.";
+	if (mail === "cloudflare") {
+		return "Proved. Its MX records point to Cloudflare, which is right if this server's account runs it.";
+	}
 	if (mail === "elsewhere") {
-		return "Proved, but its MX records point elsewhere, so this server won't get its mail.";
+		return "Proved, but not all its MX records point to Cloudflare, so some or all of its mail won't reach this server.";
 	}
 	return "Proved, but it has no MX records yet. Turning on Email Routing adds them.";
 }

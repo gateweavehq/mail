@@ -25,8 +25,11 @@ function dns(request: Request): Response {
 	});
 }
 
-const setProof = (domain: string, value: string) =>
-	records.set(`_gateweave-mail.${domain}|TXT`, [`"${value}"`]);
+const setProof = (domain: string, ...values: string[]) =>
+	records.set(
+		`_gateweave-mail.${domain}|TXT`,
+		values.map((value) => `"${value}"`),
+	);
 const setMail = (domain: string, ...hosts: string[]) =>
 	records.set(
 		`${domain}|MX`,
@@ -45,7 +48,12 @@ interface Listed {
 	mailboxes: {
 		id: string;
 		name: string;
-		addresses: { id: string; address: string; expiresAt: number | null }[];
+		addresses: {
+			id: string;
+			address: string;
+			expiresAt: number | null;
+			domainProved: boolean;
+		}[];
 	}[];
 }
 
@@ -328,18 +336,145 @@ describe("proving a domain", () => {
 			proved: true,
 		});
 
-		// The other claim can't be proved now, whatever DNS says, and a new one is refused.
-		setProof(domain, theirs.proof?.value ?? "");
-		const stolen = await changed("squatter", squatter.headers, {
-			action: "check-domain",
-			id: theirs.id,
-		});
-		expect(stolen.status).toBe(409);
+		// Their claim stays what it was, and a claim can still be made: it proves nothing.
+		expect(
+			await changed("squatter", squatter.headers, { action: "check-domain", id: theirs.id }),
+		).toMatchObject({ proved: false });
 		const late = await signUp(mail, origin, "Late");
 		await newWorkspace(late, "late");
+		expect((await changed("late", late.headers, { action: "add-domain", name: domain })).ok).toBe(
+			true,
+		);
+	});
+
+	/** A workspace of its own that holds this domain, with an address on it. */
+	async function holder(name: string, domain: string, localPart: string) {
+		const person = await signUp(mail, origin, name);
+		const slug = name.toLowerCase();
+		await newWorkspace(person, slug);
+		await changed(slug, person.headers, { action: "add-domain", name: domain });
+		const [row] = (await list(slug, person.headers)).domains;
+		if (!row?.proof) throw new Error("expected a proof");
+		setProof(domain, row.proof.value);
+		const proved = await changed(slug, person.headers, { action: "check-domain", id: row.id });
+		expect(proved.proved).toBe(true);
+		await changed(slug, person.headers, { action: "add-mailbox", name: "Box" });
+		const [box] = (await list(slug, person.headers)).mailboxes;
+		const made = await changed(slug, person.headers, {
+			action: "add-address",
+			domainId: row.id,
+			mailboxId: box?.id,
+			localPart,
+			expiresInDays: null,
+		});
+		expect(made.ok).toBe(true);
+		return { slug, person, id: row.id, value: row.proof.value };
+	}
+
+	/** Another workspace's claim on a domain someone holds, not yet checked. */
+	async function claim(name: string, domain: string) {
+		const person = await signUp(mail, origin, name);
+		const slug = name.toLowerCase();
+		await newWorkspace(person, slug);
+		const added = await changed(slug, person.headers, { action: "add-domain", name: domain });
+		expect(added.ok).toBe(true);
+		const [row] = (await list(slug, person.headers)).domains;
+		if (!row?.proof) throw new Error("expected a proof");
+		return {
+			slug,
+			person,
+			id: row.id,
+			value: row.proof.value,
+			check: () => changed(slug, person.headers, { action: "check-domain", id: row.id }),
+		};
+	}
+
+	// Someone with DNS access for a while proves a company's domain and takes the record away. The
+	// company runs its DNS now, so it must be able to get the domain, and them to lose it.
+	it("moves a domain to whoever proves it next, once the holder's record has gone", async () => {
+		const domain = "moved.example.com";
+		const old = await holder("Contractor", domain, "help");
+		await toldToRetry(`help@${domain}`);
+
+		records.delete(`_gateweave-mail.${domain}|TXT`);
 		expect(
-			(await changed("late", late.headers, { action: "add-domain", name: domain })).status,
-		).toBe(409);
+			await changed(old.slug, old.person.headers, { action: "check-domain", id: old.id }),
+		).toMatchObject({ proved: true });
+		await toldToRetry(`help@${domain}`);
+
+		const company = await claim("Company", domain);
+		expect(await company.check()).toMatchObject({ proved: false });
+		setProof(domain, company.value);
+		expect(await company.check()).toMatchObject({ proved: true });
+
+		const left = await list(old.slug, old.person.headers);
+		expect(left.domains[0]?.verifiedAt).toBeNull();
+		expect(left.domains[0]?.proof?.value).toBe(old.value);
+		expect(left.mailboxes[0]?.addresses[0]?.domainProved).toBe(false);
+		await refused(`help@${domain}`);
+
+		// The company's own address is what mail finds now.
+		const now = await list(company.slug, company.person.headers);
+		expect(now.domains[0]?.verifiedAt).toEqual(expect.any(Number));
+		await changed(company.slug, company.person.headers, { action: "add-mailbox", name: "Own" });
+		const [box] = (await list(company.slug, company.person.headers)).mailboxes;
+		await changed(company.slug, company.person.headers, {
+			action: "add-address",
+			domainId: company.id,
+			mailboxId: box?.id,
+			localPart: "help",
+			expiresInDays: null,
+		});
+		const [address] =
+			(await list(company.slug, company.person.headers)).mailboxes[0]?.addresses ?? [];
+		expect(address?.domainProved).toBe(true);
+		await toldToRetry(`help@${domain}`);
+	});
+
+	it("moves nothing while the holder's record is there too, since it isn't clear who is meant", async () => {
+		const domain = "both.example.com";
+		const old = await holder("Stays", domain, "help");
+		const other = await claim("Waits", domain);
+
+		setProof(domain, old.value, other.value);
+		const tried = await other.check();
+		expect(tried.status).toBe(409);
+		expect(tried.error).toContain("record is on this domain too");
+		expect((await list(old.slug, old.person.headers)).domains[0]?.verifiedAt).toEqual(
+			expect.any(Number),
+		);
+		expect((await list(other.slug, other.person.headers)).domains[0]?.verifiedAt).toBeNull();
+		await toldToRetry(`help@${domain}`);
+
+		setProof(domain, other.value);
+		expect(await other.check()).toMatchObject({ proved: true });
+	});
+
+	it("lets the database hold one proved row per name, whatever the code above does", async () => {
+		const first = await newWorkspace(owner, "one-proved-a");
+		const second = await newWorkspace(owner, "one-proved-b");
+		const insert = (id: string, workspaceId: string) =>
+			mail.db
+				.prepare(
+					"INSERT INTO mail_domain (id, organization_id, name, verification_token, verified_at) VALUES (?, ?, 'one.example.com', ?, 1)",
+				)
+				.bind(id, workspaceId, id)
+				.run();
+		await insert("one-a", first);
+		await expect(insert("one-b", second)).rejects.toThrow(/UNIQUE/);
+	});
+
+	it("proves each domain on its own, so a subdomain needs its own record", async () => {
+		const { slug, domain, domainId, mailboxId } = await provedWorkspace();
+		await changed(slug, owner.headers, {
+			action: "add-address",
+			domainId,
+			mailboxId,
+			localPart: "help",
+			expiresInDays: null,
+		});
+		await toldToRetry(`help@${domain}`);
+		await refused(`help@sub.${domain}`);
 	});
 });
 
@@ -534,6 +669,35 @@ describe("addresses", () => {
 			(await changed(here.slug, owner.headers, { action: "remove-address", id: address?.id })).ok,
 		).toBe(true);
 		expect((await list(here.slug, owner.headers)).mailboxes[0]?.addresses).toEqual([]);
+
+		// A person chose to give the name up, so it's free at once.
+		const again = await changed(here.slug, owner.headers, {
+			action: "add-address",
+			domainId: here.domainId,
+			mailboxId: here.mailboxId,
+			localPart: "keep",
+			expiresInDays: null,
+		});
+		expect(again.ok).toBe(true);
+	});
+});
+
+describe("mail when the lookup fails", () => {
+	// A failed query's message quotes its parameters, and Workers Logs keeps what `email()` throws.
+	it("tells the sender to try again, and logs no address", async () => {
+		const broken = await startMail(origin);
+		try {
+			await broken.db.prepare("DROP TABLE mail_address").run();
+			const to = "private-name@example.com";
+			const answer = await broken.deliver("sender@example.org", to, sent(to));
+			expect(answer.status).toBeGreaterThanOrEqual(500);
+			expect(answer.text).not.toContain("No such address");
+			expect(answer.text).not.toContain("private-name");
+			expect(JSON.stringify(broken.logs)).toContain("the directory lookup failed");
+			expect(JSON.stringify(broken.logs)).not.toContain("private-name");
+		} finally {
+			await broken.dispose();
+		}
 	});
 });
 

@@ -1,3 +1,4 @@
+import { inspect } from "node:util";
 import { describe, expect, it } from "vitest";
 import { NO_SUCH_ADDRESS, receiveMail } from "./inbound";
 
@@ -38,7 +39,27 @@ describe("receiveMail", () => {
 			receiveMail(message, async () => {
 				throw new Error("D1 is unavailable");
 			}),
-		).rejects.toThrow("D1 is unavailable");
+		).rejects.toThrow();
 		expect(reasons).toEqual([]);
+	});
+
+	// A failed query's message quotes its parameters, and Workers Logs keeps what this throws.
+	it("lets no word of a failed lookup's error out, since it can hold the address", async () => {
+		const { message } = incoming("private@example.org");
+		const logged: unknown[][] = [];
+		const realError = console.error;
+		console.error = (...args: unknown[]) => logged.push(args);
+		try {
+			const thrown = await receiveMail(message, async (recipient) => {
+				throw new Error(`Failed query, params: ${recipient}`);
+			}).catch((error: Error) => error);
+			expect(thrown).toBeInstanceOf(Error);
+			// `inspect`, not JSON, since JSON leaves out an error's message and cause.
+			expect(inspect(thrown, { depth: null })).not.toContain("private");
+		} finally {
+			console.error = realError;
+		}
+		expect(logged).toHaveLength(1);
+		expect(inspect(logged, { depth: null })).not.toContain("private");
 	});
 });

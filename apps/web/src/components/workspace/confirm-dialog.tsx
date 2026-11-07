@@ -42,7 +42,8 @@ export function ConfirmDialog({
 		<Dialog open onOpenChange={(open) => !open && !pending && onClose()}>
 			<DialogContent className="max-w-sm">
 				<DialogHeader>
-					<DialogTitle>{title}</DialogTitle>
+					{/* A title can hold an address or a name with no spaces, which must wrap on a phone. */}
+					<DialogTitle className="wrap-anywhere">{title}</DialogTitle>
 					<DialogDescription>{children}</DialogDescription>
 				</DialogHeader>
 				<DialogFooter className="gap-2">

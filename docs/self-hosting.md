@@ -11,7 +11,9 @@ You need a Cloudflare account with the **Workers Paid** plan. Sign-in takes more
 plan gives a request, and Email Sending is a Paid feature.
 
 **Getting a domain's mail to the Worker.** Prove the domain under a workspace's Settings, then turn
-on Email Routing for it, or for a subdomain, in the same Cloudflare account. Then choose:
+on Email Routing for that same domain in the Cloudflare account that runs the Worker. Each domain
+or subdomain is proved on its own: proving `example.com` gives no addresses on
+`mail.example.com`. Then choose:
 
 - **Send its catch-all to the Worker.** The Worker decides which addresses exist, and a new one
   works at once. A zone has one catch-all, and it also catches every subdomain with Email Routing
@@ -20,9 +22,11 @@ on Email Routing for it, or for a subdomain, in the same Cloudflare account. The
   200 rules in all, and a new one can take over a minute to work, with mail going to the catch-all
   until it does.
 
-Nothing needs this yet. Mail can't be stored yet, so a message to an address that exists is told to
-try again later, and you can deploy without Email Routing. Proof stays after the TXT record is
-removed, and removing a domain from the workspace is what gives it up.
+Nothing needs this yet, so don't do it for a domain people rely on. Mail can't be stored yet: a
+message to an address that exists is told to try again later, any other is refused, and you can
+deploy without Email Routing. Proof stays after the TXT record is removed, but whoever runs the
+domain's DNS decides who holds it: if another workspace on the same server proves it later, it
+moves to them, unless your record is still there too.
 
 There are two ways to deploy: the button, which also sets up deploys on every push, or the
 command line.

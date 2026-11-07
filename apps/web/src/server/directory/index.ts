@@ -47,6 +47,7 @@ function isUniqueViolation(error: unknown): boolean {
 
 const newId = () => crypto.randomUUID();
 const newToken = () => crypto.randomUUID().replaceAll("-", "");
+const proofValue = (token: string) => `${VERIFICATION_PREFIX}${token}`;
 
 /**
  * The mailbox a message to this address belongs in, or null when there is none: no such address,
@@ -94,6 +95,7 @@ export async function listDirectory(
 				id: mailAddress.id,
 				localPart: mailAddress.localPart,
 				domain: mailDomain.name,
+				domainVerifiedAt: mailDomain.verifiedAt,
 				mailboxId: mailAddress.mailboxId,
 				expiresAt: mailAddress.expiresAt,
 			})
@@ -102,6 +104,7 @@ export async function listDirectory(
 			.where(eq(mailDomain.organizationId, workspaceId))
 			.orderBy(asc(mailDomain.name), asc(mailAddress.localPart)),
 	]);
+	const byMailbox = Map.groupBy(addresses, (address) => address.mailboxId);
 	return {
 		domains: domains.map((domain) => ({
 			id: domain.id,
@@ -109,36 +112,25 @@ export async function listDirectory(
 			verifiedAt: domain.verifiedAt?.getTime() ?? null,
 			proof:
 				admin && !domain.verifiedAt
-					? {
-							name: proofName(domain.name),
-							value: `${VERIFICATION_PREFIX}${domain.verificationToken}`,
-						}
+					? { name: proofName(domain.name), value: proofValue(domain.verificationToken) }
 					: null,
 		})),
 		mailboxes: mailboxes.map((box) => ({
 			...box,
-			addresses: addresses
-				.filter((address) => address.mailboxId === box.id)
-				.map((address) => ({
-					id: address.id,
-					address: `${address.localPart}@${address.domain}`,
-					expiresAt: address.expiresAt?.getTime() ?? null,
-				})),
+			addresses: (byMailbox.get(box.id) ?? []).map((address) => ({
+				id: address.id,
+				address: `${address.localPart}@${address.domain}`,
+				expiresAt: address.expiresAt?.getTime() ?? null,
+				domainProved: address.domainVerifiedAt !== null,
+			})),
 		})),
 	};
 }
 
-const PROVED_ELSEWHERE = "Another workspace on this server has proved this domain.";
-
+/** A claim proves nothing, so it is open to anyone: the real owner must be able to make one. */
 export async function addDomain(db: Database, workspaceId: string, input: string): Promise<Result> {
 	const name = parseDomainName(input);
 	if (!name) return refuse("That isn't a domain name, such as example.com.");
-	const proved = await db
-		.select({ workspaceId: mailDomain.organizationId })
-		.from(mailDomain)
-		.where(and(eq(mailDomain.name, name), isNotNull(mailDomain.verifiedAt)))
-		.get();
-	if (proved && proved.workspaceId !== workspaceId) return refuse(PROVED_ELSEWHERE, 409);
 	const held = await db
 		.select({ total: count() })
 		.from(mailDomain)
@@ -165,9 +157,11 @@ function mailRoute(hosts: string[]): MailRoute {
 }
 
 /**
- * Asks DNS about a domain and records the proof if it is there. Proof that later goes away doesn't
- * undo it, since people remove such records once they've served, so a domain stays with whoever
- * proved it until they remove it.
+ * Asks DNS about a domain and gives it to this workspace if its record is there. Whoever runs a
+ * domain's DNS now decides who holds it. A record that has gone doesn't undo a proof, since people
+ * remove them once they've served. But a fresh proof replaces an old one, or anyone who once had
+ * access could keep a domain from its real owner for good. While the holder's record is there too,
+ * it isn't clear who is meant, so nothing moves.
  */
 export async function checkDomain(
 	db: Database,
@@ -191,13 +185,37 @@ export async function checkDomain(
 	}
 	const mail = mailRoute(records.mailHosts);
 	if (domain.verifiedAt) return { ok: true, proved: true, mail };
-	if (!records.proof.includes(`${VERIFICATION_PREFIX}${domain.verificationToken}`)) {
+	if (!records.proof.includes(proofValue(domain.verificationToken))) {
 		return { ok: true, proved: false, mail };
 	}
+	const holder = await db
+		.select({ id: mailDomain.id, token: mailDomain.verificationToken })
+		.from(mailDomain)
+		.where(and(eq(mailDomain.name, domain.name), isNotNull(mailDomain.verifiedAt)))
+		.get();
+	if (holder && records.proof.includes(proofValue(holder.token))) {
+		return refuse(
+			"Another workspace's record is on this domain too. Remove it, then check again.",
+			409,
+		);
+	}
+	const prove = db.update(mailDomain).set({ verifiedAt: now }).where(eq(mailDomain.id, id));
 	try {
-		await db.update(mailDomain).set({ verifiedAt: now }).where(eq(mailDomain.id, id)).run();
+		if (holder) {
+			// One transaction, so the domain is never with both, and the unique index stays happy.
+			const release = db
+				.update(mailDomain)
+				.set({ verifiedAt: null })
+				.where(eq(mailDomain.id, holder.id));
+			await db.batch([release, prove]);
+		} else {
+			await prove.run();
+		}
 	} catch (error) {
-		if (isUniqueViolation(error)) return refuse(PROVED_ELSEWHERE, 409);
+		// Someone else proved it between the look and the write.
+		if (isUniqueViolation(error)) {
+			return refuse("Another workspace proved this domain a moment ago. Check again.", 409);
+		}
 		throw error;
 	}
 	return { ok: true, proved: true, mail };
@@ -263,7 +281,9 @@ export async function addAddress(
 ): Promise<Result> {
 	const localPart = parseLocalPart(input.localPart);
 	if (!localPart) {
-		return refuse("An address can have letters, digits, dots, hyphens and underscores.");
+		return refuse(
+			"An address can have letters, digits, dots, hyphens and underscores, and starts and ends with a letter or digit.",
+		);
 	}
 	const [domain, box, held] = await db.batch([
 		db

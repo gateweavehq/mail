@@ -60,6 +60,7 @@ export function dnsLookup(
 
 	return async (domain) => {
 		const [proof, mail] = await Promise.all([ask(proofName(domain), TXT), ask(domain, MX)]);
-		return { proof: proof.map(textOf), mailHosts: mail.map(hostOf) };
+		// `0 .` leaves no host: it is how a domain says it takes no mail at all (RFC 7505).
+		return { proof: proof.map(textOf), mailHosts: mail.map(hostOf).filter(Boolean) };
 	};
 }

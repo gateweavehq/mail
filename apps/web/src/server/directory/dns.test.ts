@@ -44,6 +44,14 @@ describe("dnsLookup", () => {
 		expect(records.mailHosts).toEqual(["route3.mx.cloudflare.net", "route2.mx.cloudflare.net"]);
 	});
 
+	it("takes a null MX for no mail host at all", async () => {
+		const records = await resolver({
+			TXT: empty,
+			MX: { Status: 0, Answer: [{ type: 15, data: "0 ." }] },
+		})("example.com");
+		expect(records.mailHosts).toEqual([]);
+	});
+
 	it("leaves out what a CNAME brings along", async () => {
 		const records = await resolver({
 			TXT: {

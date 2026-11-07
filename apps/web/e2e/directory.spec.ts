@@ -2,7 +2,7 @@ import { expect, test } from "./fixtures";
 import { createWorkspace, signUp, waitForHydration } from "./helpers";
 
 // The app reads this resolver from `DNS_RESOLVER_URL`, which `server.mjs` sets to the same port.
-const dnsStandIn = `http://localhost:${(Number(process.env.MAIL_E2E_PORT) || 4752) + 1}`;
+const dnsStandIn = `http://localhost:${(Number(process.env.MAIL_E2E_PORT) || 4752) + 20}`;
 
 test("an owner proves a domain, makes a mailbox and gives it an address that can end", async ({
 	page,
@@ -45,7 +45,7 @@ test("an owner proves a domain, makes a mailbox and gives it an address that can
 	expect(set.ok()).toBe(true);
 
 	await row.getByRole("button", { name: "Check DNS" }).click();
-	await expect(row.getByRole("status")).toContainText("its mail goes to Cloudflare");
+	await expect(row.getByRole("status")).toContainText("Its MX records point to Cloudflare");
 	await expect(row.getByText("Proved", { exact: true })).toBeVisible();
 	// The record has served its purpose, so it isn't shown any more.
 	await expect(row.locator("dd")).toHaveCount(0);
@@ -65,6 +65,9 @@ test("an owner proves a domain, makes a mailbox and gives it an address that can
 	await expect(box.getByRole("alert")).toContainText("That address is taken");
 
 	await box.getByRole("button", { name: `Remove help@${domain}` }).click();
+	const confirm = page.getByRole("dialog", { name: `Remove help@${domain}?` });
+	await expect(confirm).toContainText("can be used again straight away");
+	await confirm.getByRole("button", { name: "Remove address" }).click();
 	await expect(box.getByText(`help@${domain}`)).toBeHidden();
 
 	await page.reload();

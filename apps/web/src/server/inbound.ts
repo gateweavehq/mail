@@ -31,10 +31,24 @@ export async function receiveMail(
 	message: IncomingMessage,
 	find: (recipient: string) => Promise<unknown>,
 ): Promise<void> {
-	if (!(await find(message.to))) {
+	if (!(await lookUp(message.to, find))) {
 		message.setReject(NO_SUCH_ADDRESS);
 		return;
 	}
-	// No address in this message: Workers Logs keeps it.
 	throw new Error("Mail for a known address can't be stored yet");
+}
+
+/**
+ * A failed query's error quotes its parameters, which here are the recipient, and Workers Logs keeps
+ * what `email()` throws. So only the error's name is logged, and a plain error goes on up.
+ */
+async function lookUp(recipient: string, find: (recipient: string) => Promise<unknown>) {
+	try {
+		return await find(recipient);
+	} catch (error) {
+		console.error("email: the directory lookup failed", {
+			name: error instanceof Error ? error.name : "unknown",
+		});
+		throw new Error("The directory lookup failed");
+	}
 }

@@ -6,6 +6,7 @@ describe("parseDomainName", () => {
 		["Example.COM", "example.com"],
 		["  mail.example.com. ", "mail.example.com"],
 		["xn--bcher-kva.example", "xn--bcher-kva.example"],
+		["bücher.example", "xn--bcher-kva.example"],
 		["a-b.example.org", "a-b.example.org"],
 	])("takes %s", (input, name) => {
 		expect(parseDomainName(input)).toBe(name);
@@ -19,6 +20,8 @@ describe("parseDomainName", () => {
 		["an empty label", "a..example.com"],
 		["an address", "someone@example.com"],
 		["a URL", "https://example.com"],
+		["a URL with an accent", "https://bücher.example/page"],
+		["an accented name with a path", "bücher.example/page"],
 		["a space inside", "exa mple.com"],
 		["a label over 63", `${"a".repeat(64)}.example.com`],
 		["a name over 253", `${"a.".repeat(127)}example.com`],
