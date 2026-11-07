@@ -1,0 +1,26 @@
+version: 2
+updates:
+  # Workflow actions are pinned; keep them current.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # One weekly pull request for npm updates, so pinned versions do not drift far.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      dependencies:
+        patterns: ["*"]
+        update-types: [minor, patch]
+    open-pull-requests-limit: 5

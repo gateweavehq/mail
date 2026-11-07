@@ -1,0 +1,42 @@
+name: Release notes
+
+# A release carries the same notes as its CHANGELOG.md entry. Publishing a release with empty
+# notes fills them in from the entry; running this by hand does it for an existing tag.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "The release's tag, such as v1.2.3"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  notes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Copy the CHANGELOG entry into the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+          BODY: ${{ github.event.release.body }}
+        run: |
+          if [ "${{ github.event_name }}" = "release" ] && [ -n "$(printf '%s' "$BODY" | tr -d '[:space:]')" ]; then
+            echo "The release already has notes; leaving them."
+            exit 0
+          fi
+          version="${TAG#v}"
+          awk -v v="$version" '
+            index($0, "## [" v "]") == 1 { found = 1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          if [ -z "$(tr -d '[:space:]' < notes.md)" ]; then
+            echo "::error::CHANGELOG.md has no entry for $version."
+            exit 1
+          fi
+          gh release edit "$TAG" --notes-file notes.md

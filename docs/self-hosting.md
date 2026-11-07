@@ -1,0 +1,259 @@
+# Self-hosting
+
+Gateweave Mail runs on your own Cloudflare account as one Worker. It is early: today it has
+accounts and workspaces, and it refuses all incoming mail. It uses:
+
+- a D1 database for accounts and the list of workspaces;
+- a Durable Object that counts rate limits, one per client address or recipient;
+- optionally, Cloudflare Email Service, to send password resets, verification and invitations.
+
+You need a Cloudflare account with the **Workers Paid** plan. Sign-in takes more CPU than the Free
+plan gives a request, and Email Sending is a Paid feature.
+
+**Mail will need a domain of its own, or that domain's catch-all.** Once mailboxes ship, Cloudflare
+Email Routing's catch-all for a domain will send every message to the Worker, and the Worker
+decides which addresses exist. A zone has only one catch-all, so use a domain (or a subdomain with
+Email Routing enabled) that nothing else uses for mail. Nothing needs this today: the Worker
+refuses all mail, and you can deploy it without Email Routing.
+
+There are two ways to deploy: the button, which also sets up deploys on every push, or the
+command line.
+
+## Deploy with the button
+
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/gateweavehq/mail)
+
+The button copies this repository to your GitHub or GitLab account and connects the copy to
+Workers Builds, so every push to its main branch deploys. On the form:
+
+- **Git account** is the first field, the account the copy goes to. If nothing is connected yet,
+  connect GitHub or GitLab there.
+- **Project name** names the Worker. It answers on `<project name>.<your subdomain>.workers.dev`.
+- **D1 database**: choose **+ Create new** and give it a name. The form picks an existing database
+  when one in your account has the name in `wrangler.jsonc` (`gateweave-mail`), so check it
+  before you deploy.
+- **BETTER_AUTH_SECRET** signs sessions. Use a long random string, for example from
+  `openssl rand -base64 32`, and keep it secret. Changing it later signs everyone out.
+- Leave the build and deploy commands as they are. The deploy command applies the database
+  migrations before the new code goes live.
+
+When the build finishes, open the Worker's address, create an account and then a workspace.
+Anyone who can reach the address can sign up and create workspaces of their own; a workspace is
+only visible to its members.
+
+**Preview builds.** The button turns them on: a push to any other branch builds a Preview with its
+own URL. A Preview gets none of the Worker's bindings or secrets, so its address only says that it
+is not set up, and it cannot reach your data. To make Previews work, create another D1 database and
+apply the migrations to it, name it and the Durable Objects under `previews` in `wrangler.jsonc` as
+[Cloudflare's guide](https://developers.cloudflare.com/workers/previews/resources/) shows, and give
+them a secret of their own with `pnpm wrangler preview base-config secret put BETTER_AUTH_SECRET`.
+If you don't need them, untick **Enable Preview builds** on the form, or turn them off later under
+Settings › Build › Branch control.
+
+**Dependabot.** The copy brings this repository's `.github/dependabot.yml`, so Dependabot opens a
+pull request on it within minutes, and weekly after that. You don't need them: a release brings
+updates that were tested together, and what you merge can conflict with the next update. Delete the
+file unless you want them, and close what it opened.
+
+## Deploy from the command line
+
+Requirements: Node.js 24 (22+ works) and pnpm 12.
+
+```sh
+git clone https://github.com/gateweavehq/mail.git
+cd mail
+pnpm install
+pnpm wrangler login
+pnpm run deploy
+```
+
+`pnpm wrangler` runs the Wrangler version Mail pins, from the repository root. The Worker and its
+database are named `gateweave-mail`. To use other names, change `name` and `database_name` in
+`wrangler.jsonc` before the first deploy.
+
+The first deploy does three things:
+
+1. It creates the D1 database and the Durable Object namespace.
+2. It generates `BETTER_AUTH_SECRET`, which is never shown.
+3. It applies the migrations.
+
+Every later `pnpm run deploy` builds, applies new migrations, and only then deploys.
+
+Then open the Worker's address, create an account and then a workspace. Anyone who can reach the
+address can sign up and create workspaces of their own. A workspace is only visible to its members.
+
+## Where the database lives
+
+Every read and write of an account or a session goes to one place, the D1 database's primary, and
+D1 puts it close to whoever asked for the database unless told otherwise. That may be far from your
+people. To choose, make the database yourself before the first deploy, with a location hint
+(`wnam`, `enam`, `weur`, `eeur`, `apac` or `oc`):
+
+```sh
+pnpm wrangler d1 create gateweave-mail --location apac
+```
+
+Then pick it instead of **+ Create new** on the button's form, or put its id in `wrangler.jsonc` as
+`database_id`.
+
+## Settings
+
+Everything except `BETTER_AUTH_SECRET` is optional. Set them in the Cloudflare dashboard (Workers &
+Pages › your Worker › Settings › Variables and Secrets), or from the repository root:
+
+```sh
+pnpm wrangler secret put BETTER_AUTH_URL
+```
+
+Keep tokens, keys and email addresses as secrets. Plain variables stay through a deploy too,
+because `wrangler.jsonc` sets `keep_vars`.
+
+| Name                   | What it does                                                                                                       |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `BETTER_AUTH_SECRET`   | Signs sessions. Required.                                                                                          |
+| `BETTER_AUTH_URL`      | The address people use, such as `https://mail.example.com`. Inferred from each request when unset.                 |
+| `GITHUB_CLIENT_ID`     | Turns on "Sign in with GitHub", with `GITHUB_CLIENT_SECRET`.                                                       |
+| `GITHUB_CLIENT_SECRET` | The client secret of the same GitHub OAuth app.                                                                    |
+| `OIDC_ISSUER`          | Turns on an OpenID Connect provider, with the two below. See [below](#sign-in-through-an-openid-connect-provider). |
+| `OIDC_CLIENT_ID`       | This deployment's client ID at the provider.                                                                       |
+| `OIDC_CLIENT_SECRET`   | Its client secret there.                                                                                           |
+| `OIDC_PROVIDER_NAME`   | What the sign-in button calls it. Unset: "single sign-on".                                                         |
+| `EMAIL_FROM`           | Turns on email (invitations, password reset), such as `Gateweave Mail <mail@example.com>`.                         |
+| `LEGAL_NOTICE_URL`     | The address of your legal notice. See [below](#your-legal-pages).                                                  |
+| `PRIVACY_POLICY_URL`   | The address of your privacy policy.                                                                                |
+| `TERMS_URL`            | The address of your terms.                                                                                         |
+
+### Your own domain
+
+In the dashboard, open the Worker and add a custom domain under Settings › Domains & Routes. Or
+add `"routes": [{ "pattern": "mail.example.com", "custom_domain": true }]` to `wrangler.jsonc`.
+Then set `BETTER_AUTH_URL` to that address, and use it in the OAuth apps' URLs. Sign-in needs HTTPS:
+session cookies are marked `Secure`, so a browser won't keep them over plain HTTP. Turn on
+[Always Use HTTPS](https://developers.cloudflare.com/ssl/edge-certificates/additional-options/always-use-https/)
+for the domain so that nobody lands on the plain address.
+
+Mail's pages refuse scripts they did not name, so a zone setting that adds scripts to a page does
+nothing here or gets in the way. [Web Analytics' automatic setup and Rocket Loader](https://developers.cloudflare.com/fundamentals/reference/policies-compliances/content-security-policies/)
+are two of them: leave those off for this hostname.
+
+### Your legal pages
+
+Mail comes with no legal notice, privacy policy or terms, and never links to Gateweave's: whoever
+runs a copy decides what applies to it. Set any of the three addresses above, and it is linked from
+the sign-in pages and the workspace menu. With `TERMS_URL` set, the sign-in page also says that
+continuing means agreeing to them.
+
+### Email
+
+Mail sends email through [Cloudflare Email Service](https://developers.cloudflare.com/email-service/).
+Onboard the sender's domain once with `pnpm wrangler email sending enable example.com`, then set
+`EMAIL_FROM` to an address on it. Without email, Mail works, but invitations have to be accepted
+from a link that an admin copies, and nobody can reset a forgotten password for themselves.
+
+As you hold the database, you can do it for them, from the repository root. Find their `id` in this
+list. Don't paste an address someone sent you into a command, as it could run as part of it:
+
+```sh
+pnpm wrangler d1 execute DB --remote --command "SELECT id, email FROM user ORDER BY email"
+```
+
+Then make a link for that `id`. It works once, for an hour, and using it signs them out everywhere.
+Whoever opens it can choose the password, so send it only to them:
+
+```sh
+PERSON=the-id-from-that-list
+TOKEN=$(openssl rand -hex 32)
+pnpm wrangler d1 execute DB --remote --command \
+  "INSERT INTO verification (id, identifier, value, expires_at) VALUES ('$TOKEN', 'reset-password:$TOKEN', '$PERSON', (unixepoch() + 3600) * 1000)"
+echo "https://your-server/reset-password?token=$TOKEN"
+```
+
+### Sign in through an OpenID Connect provider
+
+Any OpenID Connect provider can sign people in: Gateweave ID, Pocket ID, authentik, Keycloak, Okta
+and others. It adds a button to the sign-in page, and passwords keep working.
+
+1. Register Mail with the provider as a confidential client that uses the authorization code
+   flow and `client_secret_basic`, with the scopes `openid`, `profile` and `email`:
+   - Redirect URI: `https://mail.example.com/api/auth/callback/oidc` (your address)
+   - Back-channel logout URI, if the provider has them:
+     `https://mail.example.com/api/auth/backchannel-logout/oidc`
+2. Set `OIDC_ISSUER` to the provider's issuer, the address its
+   `/.well-known/openid-configuration` is under, then `OIDC_CLIENT_ID` and `OIDC_CLIENT_SECRET`.
+   `OIDC_PROVIDER_NAME` names the button, as in "Continue with Acme".
+
+Someone new gets an account, named as the provider names them, and can change that name in Mail
+without the provider changing it back. Someone whose address already has one links to it only when
+the provider says the address is verified and they have verified it in Mail too, so anyone who could
+sign up at the provider with that address cannot take over the account. Without
+[email](#email) nobody can verify an address in Mail, so existing accounts stay with their
+passwords.
+
+If the provider is down, its button says so, and everything else keeps working. People already
+signed in stay signed in, because Mail asks the provider nothing except when someone uses that
+button or the provider signs someone out. With the back-channel logout URI registered, signing out
+at the provider ends the Mail sessions it started. Signing out of Mail leaves the provider's
+session alone.
+
+A member's picture shows when it comes from the provider's own host or from GitHub. From anywhere
+else, the page's policy stops it and their initials show instead.
+
+If Mail and the provider are both Workers, give each a
+[Custom Domain](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/#worker-to-worker-communication).
+A Worker cannot reach another on its own zone through a route, and two on `workers.dev` cannot reach
+each other at all: Cloudflare answers with error 1042, and the button says it could not reach the
+provider. If they have to stay on `workers.dev`, add `global_fetch_strictly_public` to
+`compatibility_flags` in each one's `wrangler.jsonc`.
+
+## When someone deletes their account
+
+People delete their own account on `/settings/account`, with no setting to turn on. The account,
+its sessions and sign-ins, its memberships, the invitations it sent and the invitations addressed
+to it are deleted from D1 at once. An account that is the only owner of a workspace is refused
+until someone else owns it or it is deleted. Workspaces they belonged to stay with the people still
+in them. Cloudflare keeps point-in-time recovery for D1 (30 days on Workers Paid, 7 on Free), and
+restoring D1 to a time before a deletion brings the person back.
+
+## Updating
+
+**Command line:**
+
+```sh
+git pull
+pnpm install
+pnpm run deploy
+```
+
+The deploy applies new D1 migrations before the new code goes live.
+
+**Button:** your copy does not follow this repository on its own, and shares no history with it,
+so `git pull` refuses. This takes the latest release into your copy instead, as one commit on top
+of it. A copy can skip releases, however old it is:
+
+```sh
+git remote add upstream https://github.com/gateweavehq/mail.git   # once
+git fetch upstream
+git show upstream/main:scripts/update-copy.mjs | node --input-type=module
+git push
+```
+
+The script pushes nothing, and `git reset --hard HEAD~1` undoes it until you do. The push is what
+deploys: Workers Builds builds it and applies the D1 migrations.
+
+If GitHub refuses the push with `push declined due to email privacy restrictions`, the commit
+carries the address your GitHub settings keep private. Use the `noreply` address those settings
+show you, and make the commit again:
+
+```sh
+git config user.email "<your noreply address>"
+git commit --amend --reset-author --no-edit
+git push
+```
+
+What your copy changed stays: the Worker's and database's names in `wrangler.jsonc`, the name in
+`package.json`, and having no workflows. If something else you changed conflicts with the release,
+the script names the files for you to fix before committing. To take a release other than the
+latest, end the third line with `node --input-type=module - --to v1.2.3`.
+
+Mail is in early development. Read [CHANGELOG.md](../CHANGELOG.md) before updating, as some
+releases change how things work.
