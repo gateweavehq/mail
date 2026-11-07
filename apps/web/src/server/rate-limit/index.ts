@@ -32,6 +32,17 @@ export const PASSWORD_TRIES_PER_PERSON: Rule[] = [
 	{ window: 24 * 60 * 60, max: 30 },
 ];
 
+/** DNS questions one workspace can have this server ask: 10 at once, refilling over a minute. */
+const DOMAIN_CHECKS_PER_WORKSPACE: Rule[] = [{ window: 60, max: 10 }];
+
+export async function allowDomainCheck(workspaceId: string): Promise<boolean> {
+	const { allowed } = await consumeDurably(
+		`domain-check:${workspaceId}`,
+		DOMAIN_CHECKS_PER_WORKSPACE,
+	);
+	return allowed;
+}
+
 /** Whether someone signed in as this person may offer another password, wherever from. */
 export async function allowPasswordTry(userId: string): Promise<boolean> {
 	const { allowed } = await consumeDurably(`password-try:${userId}`, PASSWORD_TRIES_PER_PERSON);

@@ -1,20 +1,28 @@
 # Self-hosting
 
 Gateweave Mail runs on your own Cloudflare account as one Worker. It is early: today it has
-accounts and workspaces, and it refuses all incoming mail. It uses:
+accounts, workspaces and a directory of addresses, and it can't store mail yet. It uses:
 
-- a D1 database for accounts and the list of workspaces;
+- a D1 database for accounts, the list of workspaces, and their domains, mailboxes and addresses;
 - a Durable Object that counts rate limits, one per client address or recipient;
 - optionally, Cloudflare Email Service, to send password resets, verification and invitations.
 
 You need a Cloudflare account with the **Workers Paid** plan. Sign-in takes more CPU than the Free
 plan gives a request, and Email Sending is a Paid feature.
 
-**Mail will need a domain of its own, or that domain's catch-all.** Once mailboxes ship, Cloudflare
-Email Routing's catch-all for a domain will send every message to the Worker, and the Worker
-decides which addresses exist. A zone has only one catch-all, so use a domain (or a subdomain with
-Email Routing enabled) that nothing else uses for mail. Nothing needs this today: the Worker
-refuses all mail, and you can deploy it without Email Routing.
+**Getting a domain's mail to the Worker.** Prove the domain under a workspace's Settings, then turn
+on Email Routing for it, or for a subdomain, in the same Cloudflare account. Then choose:
+
+- **Send its catch-all to the Worker.** The Worker decides which addresses exist, and a new one
+  works at once. A zone has one catch-all, and it also catches every subdomain with Email Routing
+  on, so use this where nothing else needs it.
+- **Add a routing rule per address.** Use this when something else holds the catch-all. A zone gets
+  200 rules in all, and a new one can take over a minute to work, with mail going to the catch-all
+  until it does.
+
+Nothing needs this yet. Mail can't be stored yet, so a message to an address that exists is told to
+try again later, and you can deploy without Email Routing. Proof stays after the TXT record is
+removed, and removing a domain from the workspace is what gives it up.
 
 There are two ways to deploy: the button, which also sets up deploys on every push, or the
 command line.

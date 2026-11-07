@@ -6,7 +6,8 @@
 
 <p align="center">
   <strong>Mailboxes for people and agents, on one Cloudflare Worker.</strong><br>
-  Open source, with no server to run. Early: today it signs people in and refuses all mail.
+  Open source, with no server to run. Early: today it signs people in and keeps a directory of
+  addresses, but can't store mail yet.
 </p>
 
 <p align="center">
@@ -23,9 +24,9 @@ tools that run on Cloudflare, next to [Gateweave Track](https://github.com/gatew
 [Gateweave ID](https://github.com/gateweavehq/id) and
 [Gateweave Agents](https://github.com/gateweavehq/agents).
 
-> **Status: early development.** Mail does not receive or send mail yet. What exists is sign-in
-> and workspaces, and a Worker that answers every incoming message with "No such address". Expect
-> breaking changes until 1.0; see [CHANGELOG.md](CHANGELOG.md).
+> **Status: early development.** Mail does not store or send mail yet. What exists is sign-in,
+> workspaces, and a directory of domains and addresses that a Worker checks each incoming message
+> against. Expect breaking changes until 1.0; see [CHANGELOG.md](CHANGELOG.md).
 
 ## What works today
 
@@ -35,9 +36,11 @@ tools that run on Cloudflare, next to [Gateweave Track](https://github.com/gatew
   configure, and optionally GitHub. Each is off until configured.
 - **Workspaces.** Create one, invite people by link or email, and give them roles (owner, admin
   or member).
-- **A workspace home page** that says plainly that there are no mailboxes yet.
-- **An `email()` handler** on the Worker, which refuses all incoming mail permanently with
-  "No such address", because no addresses exist yet.
+- **Domains, mailboxes and addresses.** Prove a domain with a DNS record, make mailboxes, and give
+  them addresses, for good or for a set number of days.
+- **An `email()` handler** on the Worker, which looks up each message's address. A message to an
+  address that doesn't exist is refused for good. Mail can't be stored yet, so one to an address
+  that does exist is told to try again later, and is never accepted and lost.
 
 ## What it is planned to become
 

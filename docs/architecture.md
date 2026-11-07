@@ -38,10 +38,21 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
   without a nonce.
 - **A deployment without its database or `BETTER_AUTH_SECRET`** serves a 503 that says so and
   nothing else. A branch's Preview is one, since it gets none of the Worker's bindings.
-- **The `email()` handler** (`apps/web/src/server/inbound.ts`) refuses every message with
-  `setReject("No such address")`. No addresses exist until the directory ships, so nothing could
-  be delivered to anyone. It is a separate entry from `fetch`, so it needs neither the database
-  nor the secret. The Worker tests deliver to it through Miniflare (`test/inbound.test.ts`).
+- **The directory** (`apps/web/src/server/directory/`) says which addresses exist. D1 holds
+  domains, mailboxes and addresses, because `email()` has to answer from anywhere with one query.
+  A workspace proves a domain with a TXT record at `_gateweave-mail.<domain>`. Only one workspace
+  can hold a proved domain, and claiming one proves nothing, so a stranger can't reserve a name by
+  asking first. Triggers refuse an address whose domain and mailbox are in different workspaces,
+  whatever a bug above them does. An address that has ended keeps its name for 30 days, refusing
+  mail, so it doesn't pass to someone else while what it signed up for still writes to it.
+  Everything is reached through `/api/directory/<workspace>`, which answers a non-member the same
+  404 as a missing workspace and takes changes only from an owner or admin.
+- **The `email()` handler** (`apps/web/src/server/inbound.ts`) looks up each message's address on
+  the primary, never a replica, so a new address works at once. No such address gets
+  `setReject("No such address")`, for good. A known address gets a throw, which tells the sender
+  to try again, until mailboxes can store mail: accepting a message we can't keep would lose it.
+  So does a failure of the database. The Worker tests deliver to it through Miniflare
+  (`test/inbound.test.ts`, `test/directory.test.ts`).
 
 ### Workspaces
 

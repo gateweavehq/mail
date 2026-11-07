@@ -21,6 +21,11 @@ declare namespace Cloudflare {
 		 */
 		EMAIL_FROM?: string;
 		/**
+		 * The DNS-over-HTTPS resolver that checks a domain's records, answering in JSON. Cloudflare's
+		 * when unset. The browser tests point it at a stand-in.
+		 */
+		DNS_RESOLVER_URL?: string;
+		/**
 		 * The addresses of this deployment's legal pages, linked from the sign-in pages and the
 		 * workspace menu. Each is left out when unset, or when it is not an http(s) address.
 		 */

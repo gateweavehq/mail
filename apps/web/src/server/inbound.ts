@@ -1,10 +1,10 @@
 /**
- * Incoming mail, from Cloudflare Email Routing's catch-all.
+ * Incoming mail, from Cloudflare Email Routing.
  *
- * No address exists yet: the directory that says which addresses belong to whom ships later. Until
- * it does, every message gets a permanent refusal, which tells the sender's server the mailbox is
- * not there (a 555 over SMTP). When addresses exist, this is where a message is looked up and
- * either refused or stored and handed off.
+ * Each message is looked up in the directory. An address that doesn't exist gets a permanent
+ * refusal, which tells the sender's server the mailbox is not there (a 555 over SMTP). Mailboxes
+ * can't store mail yet, so a message to an address that does exist throws, and the sender tries
+ * again later. Accepting it would lose it. This is where it gets stored and handed off instead.
  *
  * The rules this handler keeps, which the next version must keep too (see AGENTS.md):
  *
@@ -23,9 +23,18 @@ export const NO_SUCH_ADDRESS = "No such address";
 
 /** The part of Cloudflare's `ForwardableEmailMessage` this handler uses. */
 export interface IncomingMessage {
+	readonly to: string;
 	setReject(reason: string): void;
 }
 
-export async function receiveMail(message: IncomingMessage): Promise<void> {
-	message.setReject(NO_SUCH_ADDRESS);
+export async function receiveMail(
+	message: IncomingMessage,
+	find: (recipient: string) => Promise<unknown>,
+): Promise<void> {
+	if (!(await find(message.to))) {
+		message.setReject(NO_SUCH_ADDRESS);
+		return;
+	}
+	// No address in this message: Workers Logs keeps it.
+	throw new Error("Mail for a known address can't be stored yet");
 }

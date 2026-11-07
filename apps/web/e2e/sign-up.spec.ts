@@ -8,7 +8,7 @@ test("someone signs up, starts a workspace and sees that it has no mailboxes", a
 	const { name } = await startWorkspace(page);
 	await expect(page.getByRole("heading", { name, exact: true })).toBeVisible();
 	await expect(page.getByRole("heading", { name: "No mailboxes yet" })).toBeVisible();
-	await expect(page.getByText("it refuses all incoming mail")).toBeVisible();
+	await expect(page.getByText("it can't store mail yet")).toBeVisible();
 });
 
 test("the other pages of a workspace load", async ({ page }) => {
