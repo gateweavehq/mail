@@ -1,9 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startMail } from "./mail-worker";
 
-// A branch's Preview gets none of the Worker's bindings or secrets. Without the secret, Better Auth
-// would sign sessions with the default in its source, for anyone to forge. So a deployment missing
-// either says why and serves nothing else.
+// A branch's Preview gets none of the Worker's bindings or secrets. A deployment missing either the
+// database or the secret says why and serves nothing else.
 
 const origin = "https://mail.test";
 

@@ -50,7 +50,7 @@
 				{
 					"binding": "DB",
 					"database_name": "gateweave-mail-staging",
-					"database_id": "REPLACE_WITH_STAGING_D1_ID",
+					"database_id": "cc70b21d-878d-449d-b032-6e6af4577d87",
 					"migrations_dir": "apps/web/migrations"
 				}
 			],
