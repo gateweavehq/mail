@@ -33,7 +33,10 @@ interface Delivery {
 }
 
 interface ThreadPage {
-	messages: { id: string; sent: { status: { state: string } | null; deliveries: Delivery[] } }[];
+	messages: {
+		id: string;
+		sent: { status: { state: string } | null; deliveries: Delivery[]; recipients: number };
+	}[];
 }
 
 interface Directory {
@@ -123,6 +126,15 @@ async function deliveries(box: Box, sent: { id: string; threadId: string }) {
 	return page.messages.find((message) => message.id === sent.id)?.sent.deliveries;
 }
 
+async function recipients(box: Box, sent: { id: string; threadId: string }) {
+	const response = await mail.fetch(
+		`${origin}/api/mail/${box.slug}/${box.mailboxId}/threads/${sent.threadId}`,
+		{ headers: owner.headers },
+	);
+	const page = (await response.json()) as ThreadPage;
+	return page.messages.find((message) => message.id === sent.id)?.sent.recipients;
+}
+
 let queued = 0;
 
 /** An Email Sending event on the queue, as the staging measurement saw them. */
@@ -186,6 +198,7 @@ describe("delivery events", () => {
 		const box = await mailboxWithAddress();
 		const sent = await send(box, ["ada@example.org", "grace@example.org"]);
 		expect(await deliveries(box, sent)).toEqual([]);
+		expect(await recipients(box, sent)).toBe(2);
 		const base = { messageId: sent.messageId, sender: box.address };
 		const batch = [
 			event("deferred", {
@@ -194,7 +207,14 @@ describe("delivery events", () => {
 				at: Date.now() - 2000,
 				payload: { delivery: { status: "deferred", smtpResponse: "451 4.2.0 Try later" } },
 			}),
-			event("delivered", { ...base, recipient: "Ada@Example.org", at: Date.now() - 1000 }),
+			// Addresses and the domain as an event may write them.
+			event("delivered", {
+				...base,
+				sender: box.address.toUpperCase(),
+				domain: box.domain.toUpperCase(),
+				recipient: "Ada@Example.org",
+				at: Date.now() - 1000,
+			}),
 			event("bounced", {
 				...base,
 				recipient: "grace@example.org",
@@ -271,7 +291,7 @@ describe("delivery events", () => {
 		expect(await eventsAt(other)).toBeNull();
 	});
 
-	it("stops recording for a mailbox once another workspace proves its domain", async () => {
+	it("stops recording for a mailbox once another workspace proves its domain and takes the address", async () => {
 		const box = await mailboxWithAddress();
 		const sent = await send(box, ["ada@example.org"]);
 		const other = `events-other-${++counter}`;
@@ -290,15 +310,32 @@ describe("delivery events", () => {
 			({ name }) => name === box.domain,
 		);
 		expect(moved?.verifiedAt).toBeNull();
+		// The other workspace gives the same address to a mailbox of its own, which never sent the
+		// message: the event reaches that mailbox, which doesn't find it.
+		await directory(other, owner.headers, { action: "add-mailbox", name: "Theirs" });
+		const theirs = (await directory(other, owner.headers)).mailboxes.find(
+			({ name }) => name === "Theirs",
+		);
+		if (!theirs) throw new Error("expected a mailbox");
+		await directory(other, owner.headers, {
+			action: "add-address",
+			domainId: added.id,
+			mailboxId: theirs.id,
+			localPart: "help",
+			expiresInDays: null,
+		});
 
-		const outcome = await mail.runQueue(QUEUE, [
-			event("bounced", {
-				messageId: sent.messageId,
-				sender: box.address,
-				recipient: "ada@example.org",
-			}),
-		]);
+		const late = event("bounced", {
+			messageId: sent.messageId,
+			sender: box.address,
+			recipient: "ada@example.org",
+			at: Date.now() - 60 * 60 * 1000,
+		});
+		const outcome = await mail.runQueue(QUEUE, [late]);
 		expect(outcome.retryMessages).toEqual([]);
+		expect(outcome.explicitAcks).toEqual([late.id]);
+		const lines = mail.logs.filter(({ message }) => message.startsWith("delivery events:"));
+		expect(lines.at(-1)?.message).toContain('"notFound":1');
 		expect(await deliveries(box, sent)).toEqual([]);
 	});
 

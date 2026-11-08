@@ -310,17 +310,18 @@ function ThreadMessage({
 					>
 						<Chevron className="size-4 shrink-0 self-center text-muted-foreground" aria-hidden />
 						<span className="min-w-0 flex-1 truncate font-medium">{senderName(listed.from)}</span>
-						{listed.sent && sentLabel(listed.sent.status, listed.sent.deliveries) && (
-							<span
-								className={`shrink-0 self-center rounded-full border px-2 text-xs ${
-									canSendAgain(listed.sent.status) || deliveryTrouble(listed.sent.deliveries)
-										? "border-destructive/50 text-foreground"
-										: "text-muted-foreground"
-								}`}
-							>
-								{sentLabel(listed.sent.status, listed.sent.deliveries)}
-							</span>
-						)}
+						{listed.sent &&
+							sentLabel(listed.sent.status, listed.sent.deliveries, listed.sent.recipients) && (
+								<span
+									className={`shrink-0 self-center rounded-full border px-2 text-xs ${
+										canSendAgain(listed.sent.status) || deliveryTrouble(listed.sent.deliveries)
+											? "border-destructive/50 text-foreground"
+											: "text-muted-foreground"
+									}`}
+								>
+									{sentLabel(listed.sent.status, listed.sent.deliveries, listed.sent.recipients)}
+								</span>
+							)}
 						{listed.verifiedDomain && (
 							<span
 								className="flex max-w-[40%] shrink-0 items-center gap-1 self-center text-xs text-muted-foreground"

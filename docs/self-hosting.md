@@ -212,13 +212,14 @@ its Overview page in the dashboard:
 ```sh
 pnpm wrangler queues subscription create gateweave-mail-events --source email.sending \
   --events message.delivered,message.deferred,message.bounced,message.failed,message.rejected,message.complained \
-  --zone-id <zone id> --domain example.com
+  --zone-id <zone id> --domain example.com --name mail-events-example-com
 ```
 
-A subscription takes a few minutes to start. Settings › Domains says when events last came for
-each domain that sends this way, so a missing one shows. Events for mail that other apps send from
-the same domain reach the queue too, and Mail drops them. Queue operations past what the plan
-includes are billed: see [Queues pricing](https://developers.cloudflare.com/queues/platform/pricing/).
+Give each domain's subscription a name of its own. A subscription takes a few minutes to start.
+Settings › Domains says when events last came for each domain that sends this way, so a missing
+one shows. Events for mail that other apps send from the same domain reach the queue too, and Mail
+drops them. Queue operations past what the plan includes are billed: see
+[Queues pricing](https://developers.cloudflare.com/queues/platform/pricing/).
 
 A domain whose DNS isn't on the Cloudflare account that runs Mail can't be onboarded there, so it
 can send through [Resend](https://resend.com) instead, with each workspace's own key. Set
@@ -333,6 +334,11 @@ git push
 
 The script pushes nothing, and `git reset --hard HEAD~1` undoes it until you do. The push is what
 deploys: Workers Builds builds it and applies the D1 migrations.
+
+Since delivery events came in, Mail also deploys a queue. If the build of an update stops, saying
+its API token can't reach Queues, add the permission Account › Queues › Edit to that token (the
+Worker's Settings › Build shows which one it is, under My Profile › API Tokens), then retry the
+build. The deploy stops before it changes anything.
 
 If GitHub refuses the push with `push declined due to email privacy restrictions`, the commit
 carries the address your GitHub settings keep private. Use the `noreply` address those settings

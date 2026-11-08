@@ -447,7 +447,7 @@ function DomainRow({
 			{admin && domain.verifiedAt !== null && domain.sendsWith === "cloudflare" && (
 				<p className="text-sm text-muted-foreground">
 					{domain.eventsAt === null
-						? "No delivery events from Email Service yet. They come once the deployment's queue is subscribed to this domain, as the self-hosting guide shows, and something is sent."
+						? "No delivery events from Email Service yet. They come once whoever runs this deployment subscribes its queue to this domain, as the self-hosting guide shows, and something is sent."
 						: `Email Service's delivery events last came ${formatRelative(domain.eventsAt)}.`}
 				</p>
 			)}

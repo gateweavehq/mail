@@ -711,6 +711,7 @@ describe("an agent", () => {
 			status: { state: "held", code: null, nextAt: null, detail: null },
 			approval: null,
 			deliveries: [],
+			recipients: 1,
 		});
 		expect(await awaiting(box, reader)).toEqual({
 			count: 1,

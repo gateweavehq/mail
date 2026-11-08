@@ -40,6 +40,8 @@ export interface SentInfo {
 	 * said. Empty until one arrives, and for a provider that sends none.
 	 */
 	deliveries: Delivery[];
+	/** How many addresses it went to, counted once each; 0 when that isn't known. */
+	recipients: number;
 }
 
 /** A message an agent wrote that waits for a person to approve it. */

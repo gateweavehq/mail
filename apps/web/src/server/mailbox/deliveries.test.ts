@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { MAX_DELIVERY_DETAIL } from "../../lib/delivery";
-import { DELIVERIES_JSON, type DeliveryEvent, recordDelivery } from "./deliveries";
+import { DELIVERIES_JSON, type DeliveryEvent, RECIPIENT_COUNT, recordDelivery } from "./deliveries";
 import { migrate } from "./schema";
 import { nodeStorage } from "./testing";
 
@@ -102,6 +102,27 @@ describe("recording delivery events", () => {
 		]);
 	});
 
+	it("breaks a tie of rank and time the same way in any order", () => {
+		const events: Partial<DeliveryEvent>[] = [
+			{ state: "bounced", at: 5000, detail: "550 no such user" },
+			{ state: "failed", at: 5000, detail: "delivery_failed" },
+			{ state: "rejected", at: 5000, detail: null },
+			{ state: "rejected", at: 5000, detail: "suppressed" },
+		];
+		for (const order of [
+			[0, 1, 2, 3],
+			[3, 2, 1, 0],
+			[2, 0, 3, 1],
+			[1, 3, 0, 2],
+		]) {
+			const { record, rows } = mailbox();
+			for (const index of order) record(events[index] ?? {});
+			expect(rows()).toEqual([
+				{ recipient: "ada@example.org", state: "rejected", at: 5000, detail: "suppressed" },
+			]);
+		}
+	});
+
 	it("cuts what a server said short", () => {
 		const { record, rows } = mailbox();
 		record({ state: "bounced", detail: "x".repeat(MAX_DELIVERY_DETAIL + 50) });
@@ -130,5 +151,30 @@ describe("recording delivery events", () => {
 		expect(JSON.parse(json())).toEqual([
 			{ recipient: "ada@example.org", state: "bounced", at: 1000, detail: "550" },
 		]);
+	});
+
+	it("counts the addresses a message went to once each, and none for one it didn't send", () => {
+		const { db } = mailbox();
+		const count = (request: unknown) => {
+			db.prepare("UPDATE outgoing SET request = ? WHERE message = 'm1'").run(
+				JSON.stringify(request),
+			);
+			return (
+				db.prepare(`SELECT ${RECIPIENT_COUNT} AS count FROM message WHERE id = 'm1'`).get() as {
+					count: number;
+				}
+			).count;
+		};
+		expect(count({})).toBe(0);
+		expect(count({ to: ["Ada@Example.org", "grace@example.org"], subject: "x" })).toBe(2);
+		expect(
+			count({
+				to: ["ada@example.org", "grace@example.org"],
+				cc: ["ADA@example.org ", "lin@x.org"],
+			}),
+		).toBe(3);
+		expect(count({ to: "ada@example.org", cc: [] })).toBe(1);
+		db.prepare("DELETE FROM outgoing").run();
+		expect(count({})).toBe(0);
 	});
 });

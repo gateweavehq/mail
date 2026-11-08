@@ -22,8 +22,9 @@ const rank = (column: string) =>
 
 /**
  * Records an event for the message this mailbox sent under that id, unless the recipient's record
- * already says more: a state of a higher rank, or a newer event of the same rank. False when no
- * message here has that id, as when it was deleted, or never sent from here.
+ * already says more: a state of a higher rank, or a newer event of the same rank. The state, then
+ * what was said, breaks a tie, so the record ends the same whatever order events come in. False
+ * when no message here has that id, as when it was deleted, or never sent from here.
  */
 export function recordDelivery(sql: SqlStorage, event: DeliveryEvent): boolean {
 	const found = sql
@@ -38,8 +39,8 @@ export function recordDelivery(sql: SqlStorage, event: DeliveryEvent): boolean {
 		`INSERT INTO delivery (message, recipient, state, at, detail) VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT (message, recipient) DO UPDATE SET
 			state = excluded.state, at = excluded.at, detail = excluded.detail
-		WHERE ${rank("excluded.state")} > ${rank("delivery.state")}
-			OR (${rank("excluded.state")} = ${rank("delivery.state")} AND excluded.at >= delivery.at)`,
+		WHERE (${rank("excluded.state")}, excluded.at, excluded.state, coalesce(excluded.detail, ''))
+			> (${rank("delivery.state")}, delivery.at, delivery.state, coalesce(delivery.detail, ''))`,
 		found.message,
 		event.recipient.trim().toLowerCase(),
 		event.state,
@@ -53,3 +54,13 @@ export function recordDelivery(sql: SqlStorage, event: DeliveryEvent): boolean {
 export const DELIVERIES_JSON = `(SELECT json_group_array(json_object('recipient', recipient,
 		'state', state, 'at', at, 'detail', detail))
 	FROM delivery WHERE delivery.message = message.id)`;
+
+/**
+ * How many addresses a message the mailbox sent went to, counted once each, for a listing's row: its
+ * request's `to` and `cc`, each a list or one address.
+ */
+export const RECIPIENT_COUNT = `(SELECT count(DISTINCT lower(trim(address.value))) FROM outgoing
+	JOIN json_each(outgoing.request) AS field ON field.key IN ('to', 'cc')
+	JOIN json_each(CASE field.type WHEN 'array' THEN field.value ELSE json_array(field.value) END)
+		AS address
+	WHERE outgoing.message = message.id AND address.type = 'text')`;

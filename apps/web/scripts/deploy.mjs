@@ -3,7 +3,8 @@
 // the command line: the database does not exist until `wrangler deploy` creates it, so there the
 // migrations follow. (The "Deploy to Cloudflare" button creates the database beforehand.)
 //
-// The queue for Email Service's delivery events is made first when it is missing.
+// The queue for Email Service's delivery events is made first when it is missing, before
+// anything changes, so a token that can't reach Queues stops the deploy there.
 //
 // A first deploy also needs BETTER_AUTH_SECRET, which Wrangler only accepts for a new Worker as a
 // file. Unless the button has set one, a random secret is generated for it and never shown.
@@ -78,6 +79,11 @@ function createQueues() {
 		try {
 			ask(["queues", "info", queue]);
 		} catch (error) {
+			if (/Authentication error|code: 10000/i.test(error.stderr ?? "")) {
+				throw new Error(
+					`The API token this deploy runs with can't reach Queues, which Mail uses for Email Service's delivery events. Add the permission Account > Queues > Edit to it, then deploy again (see "Updating" in docs/self-hosting.md).`,
+				);
+			}
 			// Anything else, such as a network error, stops the deploy.
 			if (!/does not exist/.test(error.stderr ?? "")) throw error;
 			wrangler(["queues", "create", queue]);
@@ -88,9 +94,9 @@ function createQueues() {
 const migrate = () => wrangler(["d1", "migrations", "apply", "DB", "--remote"]);
 
 run("vite", "vite", ["build"]);
+createQueues();
 const exists = databaseExists();
 if (exists) migrate();
-createQueues();
 if (workerExists()) {
 	wrangler(["deploy"]);
 } else {

@@ -20,8 +20,11 @@ const TYPE_PREFIX = "cf.email.sending.message.";
 /** How long after an event Mail keeps looking for a message it doesn't find yet. */
 export const FIND_WINDOW_MS = 10 * 60 * 1000;
 
-/** How long to wait before looking again for a message not found yet, or after a failure. */
+/** How long to wait before looking again for a message not found yet, and after a first failure. */
 export const RETRY_DELAY_SECONDS = 60;
+
+/** The longest a message waits after failures, within the 24 hours Queues allows. */
+export const MAX_FAILURE_DELAY_SECONDS = 12 * 60 * 60;
 
 /** How many local parts one D1 query asks for, as D1 binds at most 100 values. */
 const LOOKUP_CHUNK = 50;
@@ -122,37 +125,55 @@ function split(address: string): { local: string; domain: string } | null {
 	return { local: address.slice(0, at), domain: address.slice(at + 1) };
 }
 
-/**
- * The mailbox of each of these addresses, on domains a workspace proved. A temporary address that
- * has ended still counts: it sent the message, and the mailbox still has it.
- */
-async function mailboxesOf(db: Database, senders: Set<string>): Promise<Map<string, string>> {
-	const byDomain = new Map<string, string[]>();
-	for (const sender of senders) {
-		const parts = split(sender);
-		if (!parts) continue;
-		byDomain.set(parts.domain, [...(byDomain.get(parts.domain) ?? []), parts.local]);
-	}
+/** What receiving events needs of the directory, which D1 holds. */
+export interface EventDirectory {
+	/** Notes that events came for these domains, where a workspace proved them. */
+	eventsCame(domains: string[], at: number): Promise<void>;
+	/**
+	 * The mailbox of each of these addresses, on domains a workspace proved. A temporary address
+	 * that has ended still counts: it sent the message, and the mailbox still has it.
+	 */
+	mailboxesOf(senders: Set<string>): Promise<Map<string, string>>;
+}
+
+/** The directory in D1. */
+export function directoryIn(db: Database): EventDirectory {
 	const { mailAddress, mailDomain } = schema;
-	const found = new Map<string, string>();
-	for (const [domain, locals] of byDomain) {
-		for (let start = 0; start < locals.length; start += LOOKUP_CHUNK) {
-			const rows = await db
-				.select({ local: mailAddress.localPart, mailboxId: mailAddress.mailboxId })
-				.from(mailAddress)
-				.innerJoin(mailDomain, eq(mailAddress.domainId, mailDomain.id))
-				.where(
-					and(
-						eq(mailDomain.name, domain),
-						isNotNull(mailDomain.verifiedAt),
-						inArray(mailAddress.localPart, locals.slice(start, start + LOOKUP_CHUNK)),
-					),
-				)
-				.all();
-			for (const row of rows) found.set(`${row.local}@${domain}`, row.mailboxId);
-		}
-	}
-	return found;
+	return {
+		async eventsCame(domains, at) {
+			await db
+				.update(mailDomain)
+				.set({ eventsAt: new Date(at) })
+				.where(and(inArray(mailDomain.name, domains), isNotNull(mailDomain.verifiedAt)));
+		},
+		async mailboxesOf(senders) {
+			const byDomain = new Map<string, string[]>();
+			for (const sender of senders) {
+				const parts = split(sender);
+				if (!parts) continue;
+				byDomain.set(parts.domain, [...(byDomain.get(parts.domain) ?? []), parts.local]);
+			}
+			const found = new Map<string, string>();
+			for (const [domain, locals] of byDomain) {
+				for (let start = 0; start < locals.length; start += LOOKUP_CHUNK) {
+					const rows = await db
+						.select({ local: mailAddress.localPart, mailboxId: mailAddress.mailboxId })
+						.from(mailAddress)
+						.innerJoin(mailDomain, eq(mailAddress.domainId, mailDomain.id))
+						.where(
+							and(
+								eq(mailDomain.name, domain),
+								isNotNull(mailDomain.verifiedAt),
+								inArray(mailAddress.localPart, locals.slice(start, start + LOOKUP_CHUNK)),
+							),
+						)
+						.all();
+					for (const row of rows) found.set(`${row.local}@${domain}`, row.mailboxId);
+				}
+			}
+			return found;
+		},
+	};
 }
 
 /** What `recordDeliveries` needs of a mailbox. */
@@ -169,7 +190,36 @@ export interface EventsHandled {
 	notOurs: number;
 	/** For a message the mailbox doesn't have, after the time it is looked for. */
 	notFound: number;
-	retried: number;
+	/** For a message not found yet, to be looked for again. */
+	waiting: number;
+	/** Not handled because D1 or a mailbox failed, to come again later. */
+	failed: number;
+	/** What failed, without addresses. */
+	failures: string[];
+}
+
+/**
+ * How long a message waits before it comes again after `attempts` deliveries ended in a failure:
+ * twice as long each time, from a minute up to twelve hours. With the consumer's `max_retries`,
+ * that outlasts an outage of up to about three days, or the queue's retention when it is shorter.
+ */
+export const failureDelay = (attempts: number) =>
+	Math.min(RETRY_DELAY_SECONDS * 2 ** Math.max(0, attempts - 1), MAX_FAILURE_DELAY_SECONDS);
+
+/** Anything in an error's words that looks like an address. */
+const ADDRESS = /[^\s<>"'(),;:]*@[^\s<>"'(),;:]+/g;
+
+/**
+ * What went wrong, for the log: D1's or the object's own words, without addresses. A query error
+ * from Drizzle lists the query's values, which include parts of addresses, so it gives its cause
+ * or only its name.
+ */
+function failureOf(where: string, error: unknown): string {
+	const inner = error instanceof Error && error.cause instanceof Error ? error.cause : error;
+	if (!(inner instanceof Error)) return `${where}: ${typeof inner}`;
+	if (inner === error && inner.name === "DrizzleQueryError") return `${where}: ${inner.name}`;
+	const words = said(`${inner.name}: ${inner.message}`.replace(ADDRESS, "<address>"));
+	return `${where}: ${words?.slice(0, 200) ?? inner.name}`;
 }
 
 /**
@@ -180,7 +230,7 @@ export interface EventsHandled {
  */
 export async function receiveDeliveryEvents(
 	batch: MessageBatch<unknown>,
-	db: Database,
+	directory: EventDirectory,
 	mailbox: (id: string) => DeliveryRecorder,
 	now = Date.now(),
 ): Promise<EventsHandled> {
@@ -189,11 +239,14 @@ export async function receiveDeliveryEvents(
 		unreadable: 0,
 		notOurs: 0,
 		notFound: 0,
-		retried: 0,
+		waiting: 0,
+		failed: 0,
+		failures: [],
 	};
-	const retry = (message: Message<unknown>) => {
-		message.retry({ delaySeconds: RETRY_DELAY_SECONDS });
-		handled.retried++;
+	const fail = (messages: Message<unknown>[], failure: string) => {
+		for (const message of messages) message.retry({ delaySeconds: failureDelay(message.attempts) });
+		handled.failed += messages.length;
+		if (!handled.failures.includes(failure)) handled.failures.push(failure);
 	};
 	const read: { message: Message<unknown>; event: ReadEvent }[] = [];
 	for (const message of batch.messages) {
@@ -209,16 +262,13 @@ export async function receiveDeliveryEvents(
 
 	let mailboxes: Map<string, string>;
 	try {
-		const domains = [...new Set(read.map(({ event }) => event.domain))];
-		await db
-			.update(schema.mailDomain)
-			.set({ eventsAt: new Date(now) })
-			.where(
-				and(inArray(schema.mailDomain.name, domains), isNotNull(schema.mailDomain.verifiedAt)),
-			);
-		mailboxes = await mailboxesOf(db, new Set(read.map(({ event }) => event.sender)));
-	} catch {
-		for (const { message } of read) retry(message);
+		await directory.eventsCame([...new Set(read.map(({ event }) => event.domain))], now);
+		mailboxes = await directory.mailboxesOf(new Set(read.map(({ event }) => event.sender)));
+	} catch (error) {
+		fail(
+			read.map(({ message }) => message),
+			failureOf("directory", error),
+		);
 		return handled;
 	}
 
@@ -239,8 +289,11 @@ export async function receiveDeliveryEvents(
 			let found: boolean[];
 			try {
 				found = await mailbox(mailboxId).recordDeliveries(events.map(({ event }) => event.event));
-			} catch {
-				for (const { message } of events) retry(message);
+			} catch (error) {
+				fail(
+					events.map(({ message }) => message),
+					failureOf("mailbox", error),
+				);
 				return;
 			}
 			events.forEach(({ message, event }, index) => {
@@ -248,7 +301,8 @@ export async function receiveDeliveryEvents(
 					message.ack();
 					handled.recorded++;
 				} else if (now - event.event.at < FIND_WINDOW_MS) {
-					retry(message);
+					message.retry({ delaySeconds: RETRY_DELAY_SECONDS });
+					handled.waiting++;
 				} else {
 					message.ack();
 					handled.notFound++;

@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import handler from "@tanstack/react-start/server-entry";
 import { db } from "./server/auth";
 import { pruneExpired } from "./server/db/prune";
-import { receiveDeliveryEvents } from "./server/delivery-events";
+import { directoryIn, receiveDeliveryEvents } from "./server/delivery-events";
 import { findAddress } from "./server/directory";
 import { receiveMail } from "./server/inbound";
 import { finishRemovals, mailboxStub, storeMail } from "./server/mailbox";
@@ -45,14 +45,14 @@ export default {
 		);
 	},
 	// Email Service's delivery events, from the queue each sending domain's subscription publishes to.
-	// The log has counts only: the events name people's addresses.
+	// The log has counts, and what failed without addresses: the events name people's addresses.
 	async queue(batch) {
 		if (!env.DB) {
 			batch.retryAll();
 			return;
 		}
-		const handled = await receiveDeliveryEvents(batch, db, mailboxStub);
-		console.log(`delivery events: ${JSON.stringify(handled)}`);
+		const handled = await receiveDeliveryEvents(batch, directoryIn(db), mailboxStub);
+		(handled.failed ? console.error : console.log)(`delivery events: ${JSON.stringify(handled)}`);
 	},
 	// Clears what is past its time, once a day, and finishes the removal of mailboxes' mail.
 	async scheduled() {

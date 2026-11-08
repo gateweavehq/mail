@@ -80,3 +80,36 @@ export function deliveryMeaning(state: DeliveryState): string {
 
 /** Whether something went wrong for a recipient, which the thread shows first. */
 export const isTrouble = (state: DeliveryState) => DELIVERY_RANK[state] >= 2;
+
+/** A few words for some of a message's recipients in a state: "2 bounced". */
+function countedLabel(state: DeliveryState, count: number): string {
+	switch (state) {
+		case "deferred":
+			return `${count} delayed`;
+		case "delivered":
+			return `${count} delivered`;
+		case "bounced":
+			return `${count} bounced`;
+		case "failed":
+			return `${count} not delivered`;
+		case "rejected":
+			return `${count} not sent`;
+		case "complained":
+			return `${count} marked it as spam`;
+	}
+}
+
+/**
+ * A word or two for the recipients' trouble that matters most, a complaint before a bounce, for the
+ * message's line, or null when there is none. When it is some of the `recipients` the message went
+ * to, it says how many, so one bounced cc doesn't read as the whole message bouncing.
+ */
+export function troubleLabel(deliveries: Delivery[], recipients: number): string | null {
+	let worst: DeliveryState | null = null;
+	for (const { state } of deliveries) {
+		if (isTrouble(state) && (!worst || DELIVERY_RANK[state] > DELIVERY_RANK[worst])) worst = state;
+	}
+	if (!worst) return null;
+	const count = deliveries.filter(({ state }) => state === worst).length;
+	return count < recipients ? countedLabel(worst, count) : deliveryLabel(worst);
+}

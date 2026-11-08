@@ -5,7 +5,7 @@ import { createDb } from "../db";
 import { openProviderKey } from "../providers/keys";
 import { RESEND_API, type ResendFailure, sendWithResend } from "../providers/resend";
 import { bodyHash } from "./body";
-import { DELIVERIES_JSON, type DeliveryEvent, recordDelivery } from "./deliveries";
+import { DELIVERIES_JSON, type DeliveryEvent, RECIPIENT_COUNT, recordDelivery } from "./deliveries";
 import { type Outcome, outcomeOf, resendOutcome, STALE_SENDING_MS, WAITS_MS } from "./delivery";
 import { indexBatch } from "./indexing";
 import { LINKED_THREADS, migrate } from "./schema";
@@ -166,6 +166,8 @@ export type StoredSummary = {
 	approvedBy: string | null;
 	/** For a message the mailbox sent, its recipients' `Delivery` records as a JSON array. */
 	deliveries: string;
+	/** For a message the mailbox sent, how many addresses it went to; 0 for any other. */
+	recipients: number;
 };
 
 export type StoredMessage = StoredSummary & {
@@ -221,7 +223,7 @@ const SUMMARY = `id, thread_id AS threadId, arrived_at AS arrivedAt, size, from_
 	(SELECT json_object('state', state, 'code', code, 'nextAt', next_at, 'detail', detail) FROM outgoing
 		WHERE outgoing.message = message.id) AS sending,
 	(SELECT approved_by FROM outgoing WHERE outgoing.message = message.id) AS approvedBy,
-	${DELIVERIES_JSON} AS deliveries`;
+	${DELIVERIES_JSON} AS deliveries, ${RECIPIENT_COUNT} AS recipients`;
 
 /**
  * One mailbox: its messages' index in SQLite, their raw mail in R2 under

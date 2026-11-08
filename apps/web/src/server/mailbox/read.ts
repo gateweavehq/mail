@@ -119,7 +119,9 @@ function sentOf(row: StoredSummary, names: Map<string, string>, me: string) {
 		mine: row.sentBy === me,
 		status: row.sending === null ? null : (JSON.parse(row.sending) as SendStatus),
 		approval: row.approvedBy === null ? null : { by: names.get(row.approvedBy) ?? null },
-		deliveries: JSON.parse(row.deliveries) as Delivery[],
+		// An object still on the code before delivery events, during a deploy, has neither.
+		deliveries: row.deliveries ? (JSON.parse(row.deliveries) as Delivery[]) : [],
+		recipients: row.recipients ?? 0,
 	};
 }
 
