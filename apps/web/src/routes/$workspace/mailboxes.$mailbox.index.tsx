@@ -123,11 +123,7 @@ function MailboxPage() {
 			</search>
 			{/* Said once a search's page is shown, as the focus stays in the box. */}
 			<p role="status" className="sr-only">
-				{query
-					? page.threads.length === 0
-						? "No thread matches."
-						: `${page.threads.length}${page.next ? " or more" : ""} ${page.threads.length === 1 && !page.next ? "thread matches" : "threads match"}.`
-					: ""}
+				{query ? searchSaid(query, page.threads.length, Boolean(page.next), older) : ""}
 			</p>
 
 			{page.threads.length === 0 ? (
@@ -243,4 +239,15 @@ function ThreadRow({ thread }: { thread: ListedThread }) {
 			</Link>
 		</li>
 	);
+}
+
+/**
+ * What a screen reader is told of a search's page: how many threads on it match, and the words, so
+ * that two searches in a row are both said.
+ */
+function searchSaid(query: string, shown: number, more: boolean, older: boolean): string {
+	const kind = older ? "older thread" : "thread";
+	if (shown === 0) return `No ${kind} matches “${query}”.`;
+	if (shown === 1 && !more) return `1 ${kind} matches “${query}”.`;
+	return `${shown}${more ? " or more" : ""} ${kind}s match “${query}”.`;
 }

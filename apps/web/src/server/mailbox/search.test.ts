@@ -1,6 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
-import { ftsQuery, MAX_QUERY_WORDS, searchable } from "./search";
+import { ftsQuery, MAX_QUERY_WORDS, MAX_SEARCHED_TEXT, searchable } from "./search";
 
 describe("ftsQuery", () => {
 	it("quotes each word, and lets the last be the start of one", () => {
@@ -129,6 +129,23 @@ describe("searchable", () => {
 			const query = ftsQuery(typed) ?? "";
 			expect(db.prepare("SELECT rowid FROM s WHERE s MATCH ?").all(query), typed).toHaveLength(1);
 		}
+	});
+
+	it("keeps to its cap on text once look-alike forms are made plain", async () => {
+		// NFKC makes this one character eighteen.
+		const raw = [
+			"MIME-Version: 1.0",
+			"Content-Type: text/plain; charset=utf-8",
+			"",
+			"ﷺ".repeat(MAX_SEARCHED_TEXT),
+		].join("\r\n");
+		const found = await searchable(holding(raw), {
+			object: "w/m/x.eml",
+			size: raw.length,
+			subject: null,
+			from: null,
+		});
+		expect(found.body).toHaveLength(MAX_SEARCHED_TEXT);
 	});
 
 	it("throws when R2 can't give it the mail, rather than index the message without it", async () => {

@@ -72,7 +72,8 @@ export async function searchable(
 	try {
 		const email = await PostalMime.parse(start);
 		const text = email.text ?? (email.html ? (await textOfHtml(email.html)).text : "");
-		found.body = plain(text.slice(0, MAX_SEARCHED_TEXT));
+		// Cut again once plain, as NFKC can make a character many.
+		found.body = plain(text.slice(0, MAX_SEARCHED_TEXT)).slice(0, MAX_SEARCHED_TEXT);
 		found.attachments = plain(
 			email.attachments
 				.map((attachment) => attachment.filename ?? "")

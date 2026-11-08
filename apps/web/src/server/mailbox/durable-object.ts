@@ -1,7 +1,8 @@
 import { DurableObject } from "cloudflare:workers";
 import { bodyHash } from "./body";
+import { indexBatch } from "./indexing";
 import { LINKED_THREADS, migrate } from "./schema";
-import { ftsQuery, type Searchable, searchable } from "./search";
+import { ftsQuery, searchable } from "./search";
 import { MAX_REFERENCES, messageIds, subjectKey } from "./thread";
 
 /** How much one mailbox may hold unless `MAILBOX_BYTES` says otherwise, counting messages on their way in. */
@@ -24,9 +25,6 @@ const MAX_SENDERS = 5;
 
 /** How many of a thread's first messages its listing looks through for senders. */
 const SENDERS_READ = 200;
-
-/** How many messages one run of the alarm indexes for search. */
-export const INDEX_BATCH = 20;
 
 /** How long after a message is stored the alarm indexes it, so that a burst is indexed together. */
 const INDEX_DELAY_MS = 1000;
@@ -548,63 +546,6 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 	}
 
 	/**
-	 * Indexes a few stored messages for search, the newest first, so that new mail can be found
-	 * soon even while a mailbox's older mail waits. Says whether more wait, or reading R2 failed.
-	 */
-	async #index(): Promise<"done" | "more" | "failed"> {
-		const sql = this.ctx.storage.sql;
-		const waiting = sql
-			.exec<{
-				id: string;
-				object: string;
-				size: number;
-				subject: string | null;
-				from: string | null;
-			}>(
-				`SELECT id, object, size, subject, from_header AS "from" FROM message
-				WHERE state = 'stored' AND search_id IS NULL ORDER BY arrived_at DESC, id DESC LIMIT ?`,
-				INDEX_BATCH + 1,
-			)
-			.toArray();
-		for (const message of waiting.slice(0, INDEX_BATCH)) {
-			let found: Searchable;
-			try {
-				found = await searchable(this.env.RAW_MAIL, message);
-			} catch (error) {
-				// Later, and without failing the alarm, which also expires deliveries.
-				console.error("mailbox: reading a message to index it failed; it will be tried again", {
-					name: error instanceof Error ? error.name : "unknown",
-				});
-				return "failed";
-			}
-			this.ctx.storage.transactionSync(() => {
-				// Read again: it may have been deleted while its mail was read.
-				const still = sql
-					.exec(
-						"SELECT 1 FROM message WHERE id = ? AND state = 'stored' AND search_id IS NULL",
-						message.id,
-					)
-					.toArray();
-				if (still.length === 0) return;
-				const searchId = sql
-					.exec<{ next: number }>("SELECT coalesce(max(search_id), 0) + 1 AS next FROM message")
-					.one().next;
-				sql.exec(
-					`INSERT INTO message_search (rowid, subject, sender, attachments, body)
-					VALUES (?, ?, ?, ?, ?)`,
-					searchId,
-					found.subject,
-					found.sender,
-					found.attachments,
-					found.body,
-				);
-				sql.exec("UPDATE message SET search_id = ? WHERE id = ?", searchId, message.id);
-			});
-		}
-		return waiting.length > INDEX_BATCH ? "more" : "done";
-	}
-
-	/**
 	 * Removes deliveries that never said they arrived, with whatever part of them reached R2, and
 	 * indexes stored messages for search.
 	 */
@@ -628,7 +569,9 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			await this.env.RAW_MAIL.delete(chunk.map((row) => row.object));
 			for (const row of chunk) sql.exec("DELETE FROM message WHERE id = ?", row.id);
 		}
-		const indexed = await this.#index();
+		const indexed = await indexBatch(this.ctx.storage, (message) =>
+			searchable(this.env.RAW_MAIL, message),
+		);
 		const next = sql
 			.exec<{ at: number | null }>(
 				"SELECT min(arrived_at) AS at FROM message WHERE state = 'pending'",
