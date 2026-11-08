@@ -28,6 +28,9 @@ export type Waiting = {
  */
 export type Indexed = "done" | "more" | "failed";
 
+/** What a message is found by when nothing it holds could be written: nothing. */
+const NOTHING: Searchable = { subject: "", sender: "", attachments: "", body: "" };
+
 /**
  * Indexes a few stored messages, the newest first, so that new mail can be found soon even while
  * a mailbox's older mail waits. A message whose mail can't be read is left for a later run while
@@ -52,32 +55,47 @@ export async function indexBatch(
 			failures++;
 			continue;
 		}
-		storage.transactionSync(() => {
-			// Read again: it may have been deleted while its mail was read.
-			const still = sql
-				.exec(
-					"SELECT 1 FROM message WHERE id = ? AND state = 'stored' AND search_id IS NULL",
-					message.id,
-				)
-				.toArray();
-			if (still.length === 0) return;
-			const searchId = sql
-				.exec<{ next: number }>("SELECT coalesce(max(search_id), 0) + 1 AS next FROM message")
-				.one().next;
-			sql.exec(
-				`INSERT INTO message_search (rowid, subject, sender, attachments, body)
-				VALUES (?, ?, ?, ?, ?)`,
-				searchId,
-				found.subject,
-				found.sender,
-				found.attachments,
-				found.body,
-			);
-			sql.exec("UPDATE message SET search_id = ? WHERE id = ?", searchId, message.id);
-		});
+		// What a message holds must never stop the alarm, which also expires deliveries: when its
+		// entry can't be written, it is found by its headers, or by nothing, rather than not indexed.
+		const entries = [found, { ...found, attachments: "", body: "" }, NOTHING];
+		for (const entry of entries) {
+			try {
+				write(storage, message.id, entry);
+				break;
+			} catch (error) {
+				console.error("mailbox: writing a message's search entry failed", {
+					name: error instanceof Error ? error.name : "unknown",
+				});
+			}
+		}
 	}
 	// When none of the batch could be read, R2 is likely down: running again at once won't help.
+	// So are 20 messages whose mail R2 always fails to give, which would hold up older mail.
 	if (failures > 0 && failures === batch.length) return "failed";
 	if (waiting.length > INDEX_BATCH) return "more";
 	return failures > 0 ? "failed" : "done";
+}
+
+/** Writes a message's search entry, unless it was deleted, or indexed, while its mail was read. */
+function write(storage: MigratedStorage, id: string, entry: Searchable): void {
+	const sql = storage.sql;
+	storage.transactionSync(() => {
+		const still = sql
+			.exec("SELECT 1 FROM message WHERE id = ? AND state = 'stored' AND search_id IS NULL", id)
+			.toArray();
+		if (still.length === 0) return;
+		const searchId = sql
+			.exec<{ next: number }>("SELECT coalesce(max(search_id), 0) + 1 AS next FROM message")
+			.one().next;
+		sql.exec(
+			`INSERT INTO message_search (rowid, subject, sender, attachments, body)
+			VALUES (?, ?, ?, ?, ?)`,
+			searchId,
+			entry.subject,
+			entry.sender,
+			entry.attachments,
+			entry.body,
+		);
+		sql.exec("UPDATE message SET search_id = ? WHERE id = ?", searchId, id);
+	});
 }

@@ -8,8 +8,17 @@ import { textOfHtml } from "./text";
 /** How much of a message's start is read for its text. Text parts come before most attachments. */
 export const SEARCH_READ_BYTES = 2 * 1024 * 1024;
 
-/** The most of a message's text the index takes, in characters. */
+/**
+ * The most of a message's text the index takes, in characters. With the caps below, a message's
+ * entry stays well under the 2 MB a Durable Object's SQLite takes in one value.
+ */
 export const MAX_SEARCHED_TEXT = 100_000;
+
+/** The most of a message's subject, or of its sender, the index takes. */
+export const MAX_SEARCHED_HEADER = 1_000;
+
+/** The most of a message's attachments' names, all together, the index takes. */
+export const MAX_SEARCHED_NAMES = 10_000;
 
 /** The longest query, in characters. */
 export const MAX_QUERY = 200;
@@ -43,10 +52,11 @@ function decoded(value: string | null): string {
 
 /**
  * Text as both the index and a query take it, with look-alike forms made plain: full-width and
- * half-width letters and digits, ligatures. Either side may be written in them.
+ * half-width letters and digits, ligatures. Either side may be written in them. Cut before, so
+ * that little is made plain, and after, as NFKC can make one character many.
  */
-function plain(text: string): string {
-	return text.normalize("NFKC");
+function plain(text: string, max: number): string {
+	return text.slice(0, max).normalize("NFKC").slice(0, max);
 }
 
 /**
@@ -59,8 +69,8 @@ export async function searchable(
 	message: { object: string; size: number; subject: string | null; from: string | null },
 ): Promise<Searchable> {
 	const found = {
-		subject: plain(decoded(message.subject)),
-		sender: plain(decoded(message.from)),
+		subject: plain(decoded(message.subject), MAX_SEARCHED_HEADER),
+		sender: plain(decoded(message.from), MAX_SEARCHED_HEADER),
 		attachments: "",
 		body: "",
 	};
@@ -72,13 +82,13 @@ export async function searchable(
 	try {
 		const email = await PostalMime.parse(start);
 		const text = email.text ?? (email.html ? (await textOfHtml(email.html)).text : "");
-		// Cut again once plain, as NFKC can make a character many.
-		found.body = plain(text.slice(0, MAX_SEARCHED_TEXT)).slice(0, MAX_SEARCHED_TEXT);
+		found.body = plain(text, MAX_SEARCHED_TEXT);
 		found.attachments = plain(
 			email.attachments
 				.map((attachment) => attachment.filename ?? "")
 				.filter((name) => name.length > 0)
 				.join(" "),
+			MAX_SEARCHED_NAMES,
 		);
 	} catch {
 		// Its headers are enough to find it by.
@@ -94,7 +104,7 @@ export async function searchable(
  * left out. Control characters part words: FTS5 would end a quoted word at a NUL.
  */
 export function ftsQuery(typed: string): string | null {
-	const words = plain(typed.slice(0, MAX_QUERY))
+	const words = plain(typed, MAX_QUERY)
 		.replace(/\p{Cc}/gu, " ")
 		.split(/\s+/)
 		.filter((word) => /[\p{L}\p{N}]/u.test(word))

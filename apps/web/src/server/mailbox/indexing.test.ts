@@ -118,6 +118,27 @@ describe("indexBatch", () => {
 		});
 	});
 
+	it("indexes a message whose entry can't be written by its headers, or by nothing", async () => {
+		const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+		const box = mailbox(2);
+		// Node's SQLite can't bind an object, as the object's can't take a value over 2 MB.
+		const unwritable = {} as unknown as string;
+		const holding = async (message: Waiting): Promise<Searchable> => ({
+			subject: message.id === "m0" ? unwritable : (message.subject ?? ""),
+			sender: "",
+			attachments: "",
+			body: unwritable,
+		});
+		expect(await indexBatch(box.storage, holding)).toBe("done");
+		expect(box.indexed()).toEqual(["m0", "m1"]);
+		// m1 by its subject, m0, whose subject couldn't be written either, by nothing.
+		expect(box.found("message")).toEqual(["m1"]);
+		expect(logged).toHaveBeenCalledTimes(3);
+		expect(box.db.prepare("SELECT count(*) AS count FROM message_search").get()).toEqual({
+			count: 2,
+		});
+	});
+
 	it("finds what waits through the index that holds only them, without sorting", () => {
 		const box = mailbox(0);
 		const plan = (

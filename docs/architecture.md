@@ -120,10 +120,13 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     The object's alarm indexes messages a second after they are stored, 20 at a time and the
     newest first, so a delivery never waits for its mail to be parsed and new mail is found soon
     even while older mail waits, as after an upgrade. It reads a message's first 2 MiB from R2 and
-    indexes up to 100,000 characters of its text, or of its HTML made text; a message postal-mime
-    can't parse is found by its subject and sender. A message whose mail R2 fails to give is tried
-    again later while the rest are indexed, and when none of a run's could be read, indexing waits
-    a minute; the alarm, which also expires deliveries, never fails for it. The table is contentless: it holds
+    indexes up to 100,000 characters of its text, or of its HTML made text, 10,000 of its
+    attachments' names and 1,000 each of its subject and sender, counted once made plain, as NFKC
+    can make one character eighteen. A message postal-mime can't parse is found by its subject and
+    sender. A message whose mail R2 fails to give is tried again later while the rest are indexed,
+    and when none of a run's could be read, indexing waits a minute. An entry that still can't be
+    written is written with the headers only, or empty. So nothing a message holds makes the alarm,
+    which also expires deliveries, fail. The table is contentless: it holds
     the words' places, not the mail, and a trigger takes a message's entry out with the message.
     Messages stored before search are indexed when their object next starts. A search is in its
     page's URL, so it can be shared and reloaded; Workers Logs, when on, keep URLs, and so what

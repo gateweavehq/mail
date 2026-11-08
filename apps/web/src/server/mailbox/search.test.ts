@@ -1,6 +1,13 @@
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
-import { ftsQuery, MAX_QUERY_WORDS, MAX_SEARCHED_TEXT, searchable } from "./search";
+import {
+	ftsQuery,
+	MAX_QUERY_WORDS,
+	MAX_SEARCHED_HEADER,
+	MAX_SEARCHED_NAMES,
+	MAX_SEARCHED_TEXT,
+	searchable,
+} from "./search";
 
 describe("ftsQuery", () => {
 	it("quotes each word, and lets the last be the start of one", () => {
@@ -146,6 +153,38 @@ describe("searchable", () => {
 			from: null,
 		});
 		expect(found.body).toHaveLength(MAX_SEARCHED_TEXT);
+	});
+
+	it("keeps to its caps on headers and attachments' names once they are plain", async () => {
+		// Each of these names NFKC makes 18,000 characters long.
+		const name = "ﷺ".repeat(1000);
+		const parts = Array.from({ length: 30 }, (_, n) => [
+			"--b1",
+			"Content-Type: application/octet-stream",
+			`Content-Disposition: attachment; filename="${name}${n}"`,
+			"",
+			"x",
+		]).flat();
+		const raw = [
+			"MIME-Version: 1.0",
+			'Content-Type: multipart/mixed; boundary="b1"',
+			"",
+			"--b1",
+			"Content-Type: text/plain",
+			"",
+			"hi",
+			...parts,
+			"--b1--",
+		].join("\r\n");
+		const found = await searchable(holding(raw), {
+			object: "w/m/x.eml",
+			size: raw.length,
+			subject: name,
+			from: `${name} <a@example.org>`,
+		});
+		expect(found.attachments).toHaveLength(MAX_SEARCHED_NAMES);
+		expect(found.subject).toHaveLength(MAX_SEARCHED_HEADER);
+		expect(found.sender).toHaveLength(MAX_SEARCHED_HEADER);
 	});
 
 	it("throws when R2 can't give it the mail, rather than index the message without it", async () => {
