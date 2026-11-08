@@ -1,9 +1,17 @@
-import { Check, CircleAlert, Clock, Send } from "lucide-react";
+import { Check, CircleAlert, CircleCheck, Clock, Send } from "lucide-react";
 import { useState } from "react";
 import { Button } from "#/components/ui/button";
 import { ConfirmDialog } from "#/components/workspace/confirm-dialog";
 import { isAdminRole, useMyRole } from "#/components/workspace/context";
 import { formatDateTime } from "#/lib/dates";
+import {
+	DELIVERY_RANK,
+	type Delivery,
+	deliveryLabel,
+	deliveryMeaning,
+	isTrouble,
+	troubleLabel,
+} from "#/lib/delivery";
 import {
 	canSendAgain,
 	changeOutbox,
@@ -13,8 +21,25 @@ import {
 } from "#/lib/outbox";
 import { KEY_CHANGED, resendMaybeWent, resendReason } from "#/lib/providers";
 
-/** A word or two for how a message the mailbox sent went, for its line in a thread. */
-export function sentLabel(status: SendStatus | null): string | null {
+/**
+ * Whether what the recipients' servers did needs looking at, which the thread's line marks: a
+ * bounce, a failure, a refusal or a complaint.
+ */
+export const deliveryTrouble = (deliveries: Delivery[]) =>
+	deliveries.some((one) => isTrouble(one.state));
+
+/**
+ * A word or two for how a message the mailbox sent went, for its line in a thread. Once sent, a
+ * recipient's server refusing it, or a complaint, says more than that it was sent, and how many of
+ * the `recipients` it hit when not all.
+ */
+export function sentLabel(
+	status: SendStatus | null,
+	deliveries: Delivery[] = [],
+	recipients = 0,
+): string | null {
+	const trouble = status?.state === "sent" ? troubleLabel(deliveries, recipients) : null;
+	if (trouble) return trouble;
 	switch (status?.state) {
 		case "held":
 			return "Waiting for approval";
@@ -148,6 +173,59 @@ export function SentNotice({
 				</ConfirmDialog>
 			)}
 		</div>
+	);
+}
+
+/**
+ * What each recipient's mail server did with a sent message, as the provider's delivery events said,
+ * trouble first. Nothing until an event arrives.
+ */
+export function DeliveryList({ deliveries }: { deliveries: Delivery[] }) {
+	if (deliveries.length === 0) return null;
+	const sorted = [...deliveries].sort(
+		(a, b) =>
+			DELIVERY_RANK[b.state] - DELIVERY_RANK[a.state] || a.recipient.localeCompare(b.recipient),
+	);
+	return (
+		<section aria-label="Delivery" className="rounded-lg border p-3 text-sm">
+			<ul className="space-y-2">
+				{sorted.map((one) => {
+					const Icon = isTrouble(one.state)
+						? CircleAlert
+						: one.state === "delivered"
+							? CircleCheck
+							: Clock;
+					return (
+						<li key={one.recipient} className="flex items-start gap-2">
+							<Icon
+								className={`mt-0.5 size-4 shrink-0 ${
+									isTrouble(one.state) ? "text-destructive" : "text-muted-foreground"
+								}`}
+								aria-hidden
+							/>
+							<div className="min-w-0 flex-1">
+								<p className="flex flex-wrap items-baseline gap-x-2">
+									<span className="min-w-0 break-all font-medium">{one.recipient}</span>
+									<span>{deliveryLabel(one.state)}</span>
+									<time
+										className="text-xs text-muted-foreground"
+										dateTime={new Date(one.at).toISOString()}
+									>
+										{formatDateTime(one.at)}
+									</time>
+								</p>
+								<p className="text-muted-foreground">{deliveryMeaning(one.state)}</p>
+								{one.detail && (
+									<p className="break-words font-mono text-xs text-muted-foreground">
+										{one.detail}
+									</p>
+								)}
+							</div>
+						</li>
+					);
+				})}
+			</ul>
+		</section>
 	);
 }
 

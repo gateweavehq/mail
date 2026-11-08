@@ -43,6 +43,18 @@
 	// Email through Cloudflare Email Service. Nothing is sent until EMAIL_FROM names a sender on a
 	// domain onboarded to Email Sending; without it, Mail runs with email off.
 	"send_email": [{ "name": "EMAIL" }],
+	// Email Service's delivery events: each sending domain gets an event subscription that publishes
+	// to this queue (docs/self-hosting.md). The Deploy button and `pnpm run deploy` create the queue.
+	"queues": {
+		"consumers": [
+			{
+				"queue": "gateweave-mail-events",
+				"max_batch_size": 50,
+				"max_batch_timeout": 5,
+				"max_retries": 15
+			}
+		]
+	},
 	// Optional: GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET, OIDC_ISSUER, OIDC_CLIENT_ID,
 	// OIDC_CLIENT_SECRET, OIDC_PROVIDER_NAME, BETTER_AUTH_URL, EMAIL_FROM and the legal page
 	// addresses (see apps/web/src/server/env.d.ts).
@@ -69,6 +81,16 @@
 				]
 			},
 			"send_email": [{ "name": "EMAIL" }],
+			"queues": {
+				"consumers": [
+					{
+						"queue": "gateweave-mail-staging-events",
+						"max_batch_size": 50,
+						"max_batch_timeout": 5,
+						"max_retries": 15
+					}
+				]
+			},
 			"secrets": { "required": ["BETTER_AUTH_SECRET"] }
 		}
 	}

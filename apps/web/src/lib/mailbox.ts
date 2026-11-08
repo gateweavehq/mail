@@ -1,5 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
+import type { Delivery } from "./delivery";
 import type { SendStatus } from "./outbox";
 
 /** Someone named in a message's headers. The name is decoded; either part may be empty. */
@@ -34,6 +35,13 @@ export interface SentInfo {
 	status: SendStatus | null;
 	/** For one that waited for approval, who approved it, named while they are in the workspace. */
 	approval: { by: string | null } | null;
+	/**
+	 * What its recipients' mail servers did with it, by address, as the provider's delivery events
+	 * said. Empty until one arrives, and for a provider that sends none.
+	 */
+	deliveries: Delivery[];
+	/** How many addresses it went to, counted once each; 0 when that isn't known. */
+	recipients: number;
 }
 
 /** A message an agent wrote that waits for a person to approve it. */

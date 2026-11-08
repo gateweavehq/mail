@@ -105,7 +105,8 @@ These are load-bearing. Breaking one breaks users' data or security, usually sil
     app's origin, nothing from elsewhere but images the reader asked for), and only in a frame with
     the same sandbox; never in one of the app's pages. Serve the original only as a download.
 12. **A mailbox's Durable Object has no public route.** Only `email()` and Resend's webhook, after
-    looking the address up, and server code, after checking membership and that the mailbox is in the caller's
+    looking the address up, the queue's delivery events, after looking the sender up (see 17), and
+    server code, after checking membership and that the mailbox is in the caller's
     workspace, reach it. Mail is read only through `openMailbox`
     (`apps/web/src/server/mailbox/read.ts`), which applies `canReadMailbox`: being in the workspace
     is not enough. Every R2 object is named by the mailbox's object, as pending, before it is
@@ -145,6 +146,13 @@ These are load-bearing. Breaking one breaks users' data or security, usually sil
     headers (`cc`, `received_for`), which the sender writes. Answer with a success only
     once it is stored, or when trying again can't help; otherwise answer 503, and Resend tries
     again for about a day.
+17. **A delivery event is data, and only reaches the mailbox that sent the message.** Only the
+    deployment's account can publish to its queue, but `queue()` still reads each event with zod
+    (`apps/web/src/server/delivery-events.ts`), records it only in the mailbox of the sending
+    address on a proved domain that is also the domain the event came from, and only for a message
+    that mailbox sent under that provider's id. Remote text is cut short and shown as text. A
+    record only moves forward (`DELIVERY_RANK`), so a repeated or late event can't undo a bounce.
+    Log counts, never addresses.
 
 ## Code style
 

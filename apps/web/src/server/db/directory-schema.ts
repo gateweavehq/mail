@@ -43,6 +43,11 @@ export const mailDomain = sqliteTable(
 		 * the workspace's webhook in `resend_inbound`, which takes mail only for domains set to it.
 		 */
 		receivesWith: text("receives_with", { enum: RECEIVES_WITH }).default("cloudflare").notNull(),
+		/**
+		 * When Email Service's delivery events for it last reached the deployment's queue, whoever
+		 * sent the mail. Null until the first, as while its event subscription is missing.
+		 */
+		eventsAt: integer("events_at", { mode: "timestamp_ms" }),
 	},
 	(table) => [
 		uniqueIndex("mail_domain_verified_name_unique")

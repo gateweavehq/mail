@@ -8,6 +8,7 @@ reply and write in plain text. It uses:
 - an R2 bucket for mail as it arrived, one object per message;
 - a Durable Object per mailbox, which holds the index of its messages;
 - a Durable Object that counts rate limits, one per client address or recipient;
+- a queue, `gateweave-mail-events`, for Email Service's delivery events;
 - optionally, Cloudflare Email Service, to send password resets, verification and invitations,
   and the mail people write from mailboxes.
 
@@ -55,6 +56,8 @@ Workers Builds, so every push to its main branch deploys. On the form:
   before you deploy.
 - **R2 bucket** holds the mail. Make a new one in the same way, and check that the form hasn't
   picked an existing bucket named `gateweave-mail`.
+- **Queue**: the form creates `gateweave-mail-events`, which brings Email Service's delivery
+  events (see [Email](#email)). Let it make a new one.
 - **BETTER_AUTH_SECRET** signs sessions. Use a long random string, for example from
   `openssl rand -base64 32`, and keep it secret. Changing it later signs everyone out.
 - Leave the build and deploy commands as they are. The deploy command applies the database
@@ -96,7 +99,7 @@ database and its bucket are named `gateweave-mail`. To use other names, change `
 
 The first deploy does three things:
 
-1. It creates the D1 database, the R2 bucket and the Durable Object namespaces.
+1. It creates the D1 database, the R2 bucket, the queue and the Durable Object namespaces.
 2. It generates `BETTER_AUTH_SECRET`, which is never shown.
 3. It applies the migrations.
 
@@ -199,6 +202,24 @@ is refused, and its copy in the thread says why. A workspace sends up to 200 mes
 address that bounced or complained before. An agent also has a day's count of its own, which an
 owner or admin sets on the Agents page, and mail it writes that waits for approval counts against
 the workspace's day only once it is approved.
+
+**Delivery events.** Email Service says what each recipient's mail server did with a message:
+delivered, delayed, bounced, failed, not sent, or marked as spam. Mail shows it under the message
+in its thread. The events reach the Worker through the `gateweave-mail-events` queue, which needs
+a subscription for each domain that sends through Email Service, with the domain's zone id from
+its Overview page in the dashboard:
+
+```sh
+pnpm wrangler queues subscription create gateweave-mail-events --source email.sending \
+  --events message.delivered,message.deferred,message.bounced,message.failed,message.rejected,message.complained \
+  --zone-id <zone id> --domain example.com --name mail-events-example-com
+```
+
+Give each domain's subscription a name of its own. A subscription takes a few minutes to start.
+Settings › Domains says when events last came for each domain that sends this way, so a missing
+one shows. Events for mail that other apps send from the same domain reach the queue too, and Mail
+drops them. Queue operations past what the plan includes are billed: see
+[Queues pricing](https://developers.cloudflare.com/queues/platform/pricing/).
 
 A domain whose DNS isn't on the Cloudflare account that runs Mail can't be onboarded there, so it
 can send through [Resend](https://resend.com) instead, with each workspace's own key. Set
@@ -313,6 +334,11 @@ git push
 
 The script pushes nothing, and `git reset --hard HEAD~1` undoes it until you do. The push is what
 deploys: Workers Builds builds it and applies the D1 migrations.
+
+Since delivery events came in, Mail also deploys a queue. If the build of an update stops, saying
+its API token can't reach Queues, add the permission Account › Queues › Edit to that token (the
+Worker's Settings › Build shows which one it is, under My Profile › API Tokens), then retry the
+build. The deploy stops before it changes anything.
 
 If GitHub refuses the push with `push declined due to email privacy restrictions`, the commit
 carries the address your GitHub settings keep private. Use the `noreply` address those settings

@@ -308,6 +308,31 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     - **Threading the copy.** Ids that aren't printable ASCII, which some senders use, stay out of
       the headers sent, as Email Service would refuse them, but the copy is still put in the thread
       of every id the reply answers.
+    - **Delivery events** (`apps/web/src/server/delivery-events.ts`). Sending ends when Email
+      Service takes a message, and what each recipient's server then does comes later, as events
+      (`cf.email.sending.message.{delivered,deferred,bounced,failed,rejected,complained}`) that a
+      subscription per sending domain publishes to the deployment's queue
+      (`gateweave-mail-events`), whose consumer is the Worker's `queue()`. An event names the
+      message by the id `send()` gave, which the object kept as `outgoing.provider_id` (measured on
+      staging on 2026-11-08: the same string, angle brackets included), and the mailbox by the
+      address it was sent from: the directory gives the mailbox of that address on a proved domain,
+      which must also be the domain whose subscription sent the event. Nothing is written when a
+      message is sent beyond what was, and there is nothing to prune. The object keeps one
+      `delivery` row per recipient, which an event replaces only when its state ranks higher
+      (`DELIVERY_RANK`: delayed, then delivered, then bounced, failed or rejected, then marked as
+      spam) or ranks the same and is newer, with the state and then the server's words breaking a
+      tie, so events that come twice or in any order end the same. The thread shows them under the
+      message, and the worst trouble (a bounce, a failure, a refusal or a complaint) on its line,
+      with how many recipients it hit when there were several. An event for an address that isn't
+      a mailbox's, such as another app's from the same domain, is dropped; one whose message isn't
+      found is looked for again for ten minutes from the event, then dropped, as for a message
+      deleted since. When D1 or the object fails, the events come again later, waiting twice as
+      long each time up to twelve hours, so they outlast an outage of up to about three days, or of
+      the queue's retention when that is shorter (24 hours on Workers Free). Every event that reads
+      as Email Sending's notes when its domain's events last came (`mail_domain.events_at`), which
+      the Domains page shows admins, so a missing subscription shows. The handler logs counts and
+      what failed, never addresses. A new subscription took a few minutes to start publishing on
+      staging.
   - **Removing.** Removing a mailbox, or deleting its workspace, removes its mail and its object's
     data, after the directory has forgotten its addresses, so nothing new arrives. A trigger in D1
     records each mailbox as its row goes, a workspace's by cascade too (`mailbox_removal`). The

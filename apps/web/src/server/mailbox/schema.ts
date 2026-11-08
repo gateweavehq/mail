@@ -183,6 +183,26 @@ ALTER TABLE outgoing ADD COLUMN maybe_sent INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE outgoing ADD COLUMN key_version TEXT;
 `;
 
+// What became of a sent message at each recipient's server, from the provider's delivery events,
+// which name the message by the id the provider gave it, kept in `provider_id`. One row per
+// recipient, moved on only as `DELIVERY_RANK` allows. The rows go with their message.
+const VERSION_7 = `
+CREATE INDEX outgoing_provider_id ON outgoing (provider_id) WHERE provider_id IS NOT NULL;
+CREATE TABLE delivery (
+	message TEXT NOT NULL,
+	recipient TEXT NOT NULL,
+	state TEXT NOT NULL CHECK (
+		state IN ('deferred', 'delivered', 'bounced', 'failed', 'rejected', 'complained')
+	),
+	at INTEGER NOT NULL,
+	detail TEXT,
+	PRIMARY KEY (message, recipient)
+) STRICT, WITHOUT ROWID;
+CREATE TRIGGER delivery_gone AFTER DELETE ON message BEGIN
+	DELETE FROM delivery WHERE message = old.id;
+END;
+`;
+
 /** Each brings the schema from the version before it. Append only: objects keep what they ran. */
 export const MIGRATIONS: ((sql: SqlStorage) => void)[] = [
 	(sql) => sql.exec(VERSION_1),
@@ -208,6 +228,7 @@ export const MIGRATIONS: ((sql: SqlStorage) => void)[] = [
 	(sql) => sql.exec(VERSION_4),
 	(sql) => sql.exec(VERSION_5),
 	(sql) => sql.exec(VERSION_6),
+	(sql) => sql.exec(VERSION_7),
 ];
 
 /** What migrating needs of a Durable Object's storage. */

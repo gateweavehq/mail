@@ -4,7 +4,12 @@ import { useEffect, useId, useRef, useState } from "react";
 import { z } from "zod";
 import { Composer } from "#/components/mail/composer";
 import { MessageView, person, senderName } from "#/components/mail/message-view";
-import { SentNotice, sentLabel } from "#/components/mail/sent-status";
+import {
+	DeliveryList,
+	deliveryTrouble,
+	SentNotice,
+	sentLabel,
+} from "#/components/mail/sent-status";
 import { Button } from "#/components/ui/button";
 import { useWorkspace } from "#/components/workspace/context";
 import { Notice } from "#/components/workspace/notice";
@@ -305,17 +310,18 @@ function ThreadMessage({
 					>
 						<Chevron className="size-4 shrink-0 self-center text-muted-foreground" aria-hidden />
 						<span className="min-w-0 flex-1 truncate font-medium">{senderName(listed.from)}</span>
-						{listed.sent && sentLabel(listed.sent.status) && (
-							<span
-								className={`shrink-0 self-center rounded-full border px-2 text-xs ${
-									canSendAgain(listed.sent.status)
-										? "border-destructive/50 text-foreground"
-										: "text-muted-foreground"
-								}`}
-							>
-								{sentLabel(listed.sent.status)}
-							</span>
-						)}
+						{listed.sent &&
+							sentLabel(listed.sent.status, listed.sent.deliveries, listed.sent.recipients) && (
+								<span
+									className={`shrink-0 self-center rounded-full border px-2 text-xs ${
+										canSendAgain(listed.sent.status) || deliveryTrouble(listed.sent.deliveries)
+											? "border-destructive/50 text-foreground"
+											: "text-muted-foreground"
+									}`}
+								>
+									{sentLabel(listed.sent.status, listed.sent.deliveries, listed.sent.recipients)}
+								</span>
+							)}
 						{listed.verifiedDomain && (
 							<span
 								className="flex max-w-[40%] shrink-0 items-center gap-1 self-center text-xs text-muted-foreground"
@@ -351,6 +357,7 @@ function ThreadMessage({
 								onDiscarded={onDeleted}
 							/>
 						)}
+						{listed.sent && <DeliveryList deliveries={listed.sent.deliveries} />}
 						{message ? (
 							<MessageView
 								workspace={slug}

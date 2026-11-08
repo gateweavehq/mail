@@ -85,6 +85,13 @@
       "when": 1794170215739,
       "tag": "0011_resend_inbound",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1794175962837,
+      "tag": "0012_delivery_events",
+      "breakpoints": true
     }
   ]
 }
