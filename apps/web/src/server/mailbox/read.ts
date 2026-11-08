@@ -18,6 +18,7 @@ import { db } from "../auth";
 import { schema } from "../db";
 import { appOrigin } from "../origin";
 import type { StoredSummary } from "./durable-object";
+import { cleanHtml, framePolicy, MAX_SHOWN_HTML, mayLoadImages } from "./html";
 import { mailboxStub } from "./index";
 import { textOfHtml } from "./text";
 import { threadSubject } from "./thread";
@@ -185,7 +186,7 @@ export async function openThread(
 
 /**
  * One message, parsed here and not when it arrived, since `email()` has too little CPU for it.
- * Only its text is shown. HTML waits until it can be shown without running what it holds.
+ * Its HTML is only said to be there: it has a page of its own, for a sandboxed frame.
  */
 export async function openMessage(
 	slug: string,
@@ -224,6 +225,8 @@ async function readMessage(
 		text: text.slice(0, MAX_SHOWN_TEXT),
 		textCut: text.length > MAX_SHOWN_TEXT || Boolean(fromHtml?.cut),
 		hasHtml: Boolean(email.html),
+		remoteImages: email.html ? mayLoadImages(email.html) : false,
+		htmlCut: (email.html?.length ?? 0) > MAX_SHOWN_HTML,
 		attachments: email.attachments.map((attachment) => ({
 			name: attachment.filename,
 			type: attachment.mimeType,
@@ -235,19 +238,25 @@ async function readMessage(
 	};
 }
 
+const notFound = () =>
+	new Response("Not found", { status: 404, headers: { "cache-control": "private, no-store" } });
+
+/** A message's raw mail, or null for anyone who can't see it. */
+async function storedMail(slug: string, mailboxId: string, messageId: string) {
+	const box = await openMailbox(slug, mailboxId);
+	if (!box) return null;
+	const row = await box.stub.get(messageId);
+	if (!row) return null;
+	return env.RAW_MAIL.get(row.object);
+}
+
 /** The raw mail, as a download, or a 404 for anyone who can't see it. */
 export async function originalMessage(
 	slug: string,
 	mailboxId: string,
 	messageId: string,
 ): Promise<Response> {
-	const notFound = () =>
-		new Response("Not found", { status: 404, headers: { "cache-control": "private, no-store" } });
-	const box = await openMailbox(slug, mailboxId);
-	if (!box) return notFound();
-	const row = await box.stub.get(messageId);
-	if (!row) return notFound();
-	const object = await env.RAW_MAIL.get(row.object);
+	const object = await storedMail(slug, mailboxId, messageId);
 	if (!object) return notFound();
 	return new Response(object.body, {
 		headers: {
@@ -256,6 +265,37 @@ export async function originalMessage(
 			// Never shown in the browser: a message can hold anything.
 			"content-disposition": 'attachment; filename="message.eml"',
 			"cache-control": "private, no-store",
+		},
+	});
+}
+
+/**
+ * A message's HTML, cleaned, as a page for the sandboxed frame in its page, or a 404 for anyone who
+ * can't see it and for a message without HTML. Remote images load only with `images=1`.
+ */
+export async function messageHtml(
+	slug: string,
+	mailboxId: string,
+	messageId: string,
+	url: URL,
+): Promise<Response> {
+	const object = await storedMail(slug, mailboxId, messageId);
+	if (!object) return notFound();
+	// Attachments stay bytes: only the inline images the HTML names are made text, as needed.
+	const email = await PostalMime.parse(object.body);
+	if (!email.html) return notFound();
+	const images = url.searchParams.get("images") === "1";
+	return new Response(await cleanHtml(email.html, email.attachments, { images }), {
+		headers: {
+			"content-type": "text/html; charset=utf-8",
+			// Its own policy, so the app's, which allows its scripts, never applies to it.
+			"content-security-policy": framePolicy({ images }),
+			"cache-control": "private, no-store",
+			// The frame's address names the workspace, mailbox and message.
+			"referrer-policy": "no-referrer",
+			"cross-origin-resource-policy": "same-origin",
+			// Looking up a link's host would tell the sender's name server the message was opened.
+			"x-dns-prefetch-control": "off",
 		},
 	});
 }

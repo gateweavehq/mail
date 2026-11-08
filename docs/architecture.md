@@ -100,12 +100,30 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     its messages oldest first, 50 at a time from the newest, with the newest open. The same are at
     `/api/mail/<workspace>/<mailbox>/threads` and `…/threads/<thread>`, beside the messages, newest
     first, at `/api/mail/<workspace>/<mailbox>`. A message is parsed with postal-mime when someone
-    opens it, and only its text is shown: HTML waits until it can be shown without running what it
-    holds. The original downloads from `/api/mail/<workspace>/<mailbox>/<message>/original`, as a
-    file, never as a page. Every member of a workspace can read its mailboxes for now. A
+    opens it. The original downloads from `/api/mail/<workspace>/<mailbox>/<message>/original`, as
+    a file, never as a page. Every member of a workspace can read its mailboxes for now. A
     non-member, or a mailbox of another workspace, gets the same "not found" as a missing one, and
     the mailbox is checked against the caller's workspace in D1 before its object is asked
     anything.
+  - **HTML.** A message's HTML is a page of its own, at `…/<message>/html`, which the message's
+    page shows in a frame; its text, or the text made from its HTML, is a click away. What makes
+    it safe is the policy it is served with (`framePolicy` in `html.ts`): `sandbox` without
+    `allow-scripts` or `allow-same-origin`, so nothing runs and the page has an opaque origin
+    that can't read the app's cookies or reach its pages, even when opened on its own;
+    `default-src 'none'`, so it loads nothing from elsewhere; and links that may only open a
+    tab of their own. An opaque origin gives what a second hostname would, without every
+    deployment having to set one up. Remote images load only when the reader asks, for that
+    view, since loading them tells the sender the message was opened. HTMLRewriter cleans the
+    HTML as well: it keeps known tags and attributes, drops scripts, frames, forms' controls,
+    `meta`, `base` and `link` with what they hold, opens links in a new tab without a referrer,
+    and puts the message's own `cid:` images in as `data:` addresses (PNG, JPEG, GIF and WebP,
+    5 MB at most). The cleaning is a second layer: the policy holds even where it misses
+    something. The first 1,000,000 characters of the HTML show, and the app says when there is
+    more; nothing is added to the page after the message's own HTML, since a tag the cut left
+    open would take it in. Inline images count at every use, so naming one many times can't
+    make the page huge. A frame that runs nothing can't say how tall it is, so the frame has a
+    height of its own, which the reader can drag. The app's own policy allows frames from itself
+    only.
   - **Search.** A mailbox's page, and `…/threads?q=`, list the threads with a message that has
     every word typed, newest news first. The last word also finds the words it starts, when it
     ends in two letters or digits or more (FTS5 takes the prefix from its last token, so `a.` is
@@ -242,8 +260,8 @@ Not built. This is where it is going, and it may change.
 - **D1 for accounts and the address directory**, a Durable Object per mailbox and R2 for raw mail,
   as above.
 - **Who may read a mailbox**, decided per mailbox, rather than every member of the workspace.
-- **HTML mail**, shown in a sandbox that runs nothing in it and loads nothing from outside unless
-  the reader asks.
+- **Remote images per sender**, remembered for those the reader trusts, where now they are asked
+  for each time.
 - **Sending and replying**, through Cloudflare Email Service, and addresses and aliases an agent
   can make for itself.
 

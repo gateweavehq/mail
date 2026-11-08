@@ -63,6 +63,8 @@ describe("a page", () => {
 		const policy = response.headers.get("content-security-policy");
 		expect(policy).toContain("default-src 'none'");
 		expect(policy).toContain("frame-ancestors 'none'");
+		// Only a message's HTML, whose own policy sandboxes it.
+		expect(policy).toContain("frame-src 'self'");
 		expect(policy).toContain("base-uri 'none'");
 		expect(policy).toContain("form-action 'self'");
 		expect(response.headers.get("x-frame-options")).toBe("DENY");

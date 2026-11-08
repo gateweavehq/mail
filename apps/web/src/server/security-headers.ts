@@ -55,6 +55,8 @@ export function contentSecurityPolicy(nonce: string, { url, oidcIssuer }: PagePo
 		`img-src 'self' data: ${pictures}`,
 		"font-src 'self'",
 		`connect-src 'self'${socket}`,
+		// A message's HTML, in a frame whose own policy sandboxes it.
+		"frame-src 'self'",
 		"frame-ancestors 'none'",
 		"base-uri 'none'",
 		"form-action 'self'",

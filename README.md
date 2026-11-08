@@ -42,7 +42,8 @@ tools that run on Cloudflare, next to [Gateweave Track](https://github.com/gatew
   one that doesn't exist. Mail for one that does is kept in its mailbox, once even when it arrives
   twice, up to 1 GiB per mailbox.
 - **Reading mail.** Members of a workspace see its mailboxes' threads, newest news first, and read
-  their messages' text, with the attachments listed and the original to download. Replies join
+  their messages, with the attachments listed and the original to download. HTML mail shows in a
+  sandbox that runs nothing and loads remote images only when asked. Replies join
   the thread of the message they answer, or of other replies to it, when their subject matches.
   A sender's domain shows as proved only when the message passed DMARC for it. Owners and admins
   can delete a message.
@@ -54,7 +55,7 @@ tools that run on Cloudflare, next to [Gateweave Track](https://github.com/gatew
 None of this exists yet; it is the direction, and it may change.
 
 - Mailboxes for people and for AI agents, in a workspace, with who may read each one.
-- HTML mail, shown safely, and sending and replying.
+- Sending and replying.
 - Addresses an agent can make for itself.
 - Aliases that point at a mailbox.
 - Transactional sending and templates, through Cloudflare Email Service.

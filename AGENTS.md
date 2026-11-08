@@ -96,8 +96,10 @@ These are load-bearing. Breaking one breaks users' data or security, usually sil
     (`verifiedDomain`). A forged message can arrive marked `dmarc=none`, bring an
     `Authentication-Results` of its own, or put an address in the name before the real one, so
     show the proved domain, never a mark alone. `message.from` is the envelope sender, not the
-    person the reader will see, so show the `From` header. Never show a message's HTML in a page,
-    and serve the original only as a download.
+    person the reader will see, so show the `From` header. Show a message's HTML only as the page
+    `messageHtml` serves, under its own policy (`framePolicy`: a sandbox without scripts or the
+    app's origin, nothing from elsewhere but images the reader asked for), and only in a frame with
+    the same sandbox; never in one of the app's pages. Serve the original only as a download.
 12. **A mailbox's Durable Object has no public route.** Only `email()`, after looking the address
     up, and server code, after checking membership and that the mailbox is in the caller's
     workspace, reach it. Every R2 object is named by the mailbox's object, as pending, before it is
