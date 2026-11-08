@@ -2,10 +2,12 @@ import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
 import { type FormEvent, useState } from "react";
 import { LiveButton } from "#/components/live-button";
 import { Button } from "#/components/ui/button";
+import { Checkbox } from "#/components/ui/checkbox";
 import { Input } from "#/components/ui/input";
 import { Label } from "#/components/ui/label";
 import { ConfirmDialog } from "#/components/workspace/confirm-dialog";
 import { isAdminRole, useMyRole, useWorkspace } from "#/components/workspace/context";
+import { accessSummary, MailboxAccessDialog } from "#/components/workspace/mailbox-access";
 import { Notice } from "#/components/workspace/notice";
 import { formatShortDate } from "#/lib/dates";
 import {
@@ -46,7 +48,9 @@ function WorkspaceHome() {
 
 			{data.mailboxes.length === 0 && (
 				<section className="space-y-3 rounded-lg border p-6">
-					<h2 className="text-sm font-medium">No mailboxes yet</h2>
+					<h2 className="text-sm font-medium">
+						{admin ? "No mailboxes yet" : "No mailboxes you can read"}
+					</h2>
 					<p className="text-sm text-muted-foreground">
 						A mailbox gets its mail through addresses on a domain this workspace has proved.
 					</p>
@@ -62,16 +66,16 @@ function WorkspaceHome() {
 						</Button>
 					) : (
 						<p className="text-sm text-muted-foreground">
-							An owner or admin can make one, or invite people.
+							An owner or admin can make one, or let you read one.
 						</p>
 					)}
 				</section>
 			)}
 
 			<p className="text-sm text-muted-foreground">
-				Gateweave Mail is early: it keeps what arrives at a mailbox's addresses and shows its text,
-				and every member of the workspace can read it. It can't send or reply yet. Mail to an
-				address that doesn't exist is refused.
+				Gateweave Mail is early: it keeps what arrives at a mailbox's addresses and shows it to
+				whoever may read that mailbox. Owners and admins read every one and choose who else can. It
+				can't send or reply yet. Mail to an address that doesn't exist is refused.
 			</p>
 
 			{admin && <AddMailbox />}
@@ -91,6 +95,7 @@ function AddMailbox() {
 	const { slug } = useWorkspace();
 	const router = useRouter();
 	const [name, setName] = useState("");
+	const [everyone, setEveryone] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [pending, setPending] = useState(false);
 
@@ -98,9 +103,10 @@ function AddMailbox() {
 		event.preventDefault();
 		setPending(true);
 		setError(null);
-		const result = await changeDirectory(slug, { action: "add-mailbox", name });
+		const result = await changeDirectory(slug, { action: "add-mailbox", name, everyone });
 		if (result.ok) {
 			setName("");
+			setEveryone(false);
 			await router.invalidate();
 		} else {
 			setError(result.error);
@@ -120,6 +126,16 @@ function AddMailbox() {
 					onChange={(event) => setName(event.target.value)}
 					required
 				/>
+			</div>
+			<div className="flex items-center gap-2">
+				<Checkbox
+					id="mailbox-everyone"
+					checked={everyone}
+					onCheckedChange={(checked) => setEveryone(checked === true)}
+				/>
+				<Label htmlFor="mailbox-everyone" className="font-normal">
+					Everyone in the workspace can read it
+				</Label>
 			</div>
 			{error && (
 				<p role="alert" className="text-sm text-destructive">
@@ -145,6 +161,7 @@ function MailboxCard({
 	const { slug } = useWorkspace();
 	const router = useRouter();
 	const [removing, setRemoving] = useState(false);
+	const [choosing, setChoosing] = useState(false);
 	const [removingAddress, setRemovingAddress] = useState<DirectoryAddress | null>(null);
 	const [error, setError] = useState<string | null>(null);
 
@@ -176,6 +193,20 @@ function MailboxCard({
 					</Button>
 				)}
 			</div>
+
+			{box.access && (
+				<div className="flex flex-wrap items-center justify-between gap-2">
+					<p className="text-sm text-muted-foreground">{accessSummary(box.access)}</p>
+					<Button
+						size="sm"
+						variant="ghost"
+						aria-label={`Choose who can read ${box.name}`}
+						onClick={() => setChoosing(true)}
+					>
+						Choose who
+					</Button>
+				</div>
+			)}
 
 			{box.addresses.length > 0 ? (
 				<ul aria-label={`Addresses of ${box.name}`} className="space-y-1">
@@ -213,6 +244,10 @@ function MailboxCard({
 			)}
 
 			{admin && <AddAddress box={box} domains={domains} />}
+
+			{choosing && box.access && (
+				<MailboxAccessDialog box={box} access={box.access} onClose={() => setChoosing(false)} />
+			)}
 
 			{removing && (
 				<ConfirmDialog

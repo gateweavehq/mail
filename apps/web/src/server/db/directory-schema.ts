@@ -1,6 +1,13 @@
 import { sql } from "drizzle-orm";
-import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
-import { organization, user } from "./auth-schema";
+import {
+	index,
+	integer,
+	primaryKey,
+	sqliteTable,
+	text,
+	uniqueIndex,
+} from "drizzle-orm/sqlite-core";
+import { member, organization, user } from "./auth-schema";
 
 const createdAt = () =>
 	integer("created_at", { mode: "timestamp_ms" })
@@ -43,9 +50,37 @@ export const mailbox = sqliteTable(
 			.notNull()
 			.references(() => organization.id, { onDelete: "cascade" }),
 		name: text("name").notNull(),
+		/**
+		 * Every person in the workspace may read it. An agent never counts as everyone: it reads a
+		 * mailbox only when it is given that one.
+		 */
+		everyone: integer("everyone", { mode: "boolean" }).default(false).notNull(),
 		createdAt: createdAt(),
 	},
 	(table) => [index("mailbox_organization_id_idx").on(table.organizationId)],
+);
+
+/**
+ * One membership's access to read one mailbox. Owners and admins read every mailbox without one. It
+ * belongs to the membership, not the person, so it ends when they leave the workspace and doesn't
+ * come back if they join again. Migration 0007 keeps the two in one workspace.
+ */
+export const mailboxAccess = sqliteTable(
+	"mailbox_access",
+	{
+		mailboxId: text("mailbox_id")
+			.notNull()
+			.references(() => mailbox.id, { onDelete: "cascade" }),
+		memberId: text("member_id")
+			.notNull()
+			.references(() => member.id, { onDelete: "cascade" }),
+		grantedBy: text("granted_by").references(() => user.id, { onDelete: "set null" }),
+		createdAt: createdAt(),
+	},
+	(table) => [
+		primaryKey({ columns: [table.mailboxId, table.memberId] }),
+		index("mailbox_access_member_id_idx").on(table.memberId),
+	],
 );
 
 /**

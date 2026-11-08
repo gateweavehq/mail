@@ -4,6 +4,8 @@ import type { Database } from "./db";
 import { schema } from "./db";
 
 export interface Membership {
+	/** The membership's own id, which grants such as a mailbox's access name. */
+	memberId: string;
 	workspaceId: string;
 	workspaceName: string;
 	role: MemberRole;
@@ -17,6 +19,7 @@ export async function findMembership(
 ): Promise<Membership | null> {
 	const row = await db
 		.select({
+			memberId: schema.member.id,
 			workspaceId: schema.member.organizationId,
 			workspaceName: schema.organization.name,
 			role: schema.member.role,
@@ -36,6 +39,7 @@ export async function findMembershipById(
 ): Promise<(Membership & { slug: string }) | null> {
 	const row = await db
 		.select({
+			memberId: schema.member.id,
 			workspaceId: schema.member.organizationId,
 			workspaceName: schema.organization.name,
 			slug: schema.organization.slug,

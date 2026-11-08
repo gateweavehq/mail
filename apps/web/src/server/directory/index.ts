@@ -1,11 +1,12 @@
-import { and, asc, count, eq, gt, inArray, isNotNull, isNull, or } from "drizzle-orm";
+import { and, asc, count, eq, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { parseDomainName, parseLocalPart, splitRecipient } from "../../lib/addresses";
 import type { Directory, MailRoute } from "../../lib/directory";
+import { canReadMailbox, isAdminRole, type MemberRole } from "../../lib/roles";
 import type { Database } from "../db";
 import { schema } from "../db";
 import { type LookUpDomain, proofName } from "./dns";
 
-const { mailAddress, mailDomain, mailbox } = schema;
+const { mailAddress, mailDomain, mailbox, mailboxAccess, member } = schema;
 
 // Caps, so a stranger signing up can't fill the database. Two requests at once can pass one by a
 // little, which does no harm.
@@ -13,6 +14,8 @@ export const MAX_DOMAINS_PER_WORKSPACE = 20;
 export const MAX_MAILBOXES_PER_WORKSPACE = 500;
 export const MAX_ADDRESSES_PER_WORKSPACE = 5_000;
 export const MAX_MAILBOX_NAME = 80;
+/** The most people one mailbox can be given to, besides everyone. */
+export const MAX_MAILBOX_READERS = 1_000;
 
 /**
  * How long a temporary address keeps its name once it ends, refusing mail all the while. Whatever
@@ -73,12 +76,22 @@ export async function findAddress(db: Database, recipient: string, now: Date) {
 	return found ?? null;
 }
 
-/** What a workspace has. `admin` adds what only someone who can act on it needs to see. */
+/** Who is asking, for what they may see. */
+export interface Viewer {
+	memberId: string;
+	role: MemberRole;
+}
+
+/**
+ * What a workspace has, as far as this viewer may see: the mailboxes they can read, and for owners
+ * and admins every mailbox, with who else can read it, and what they need to prove a domain.
+ */
 export async function listDirectory(
 	db: Database,
 	workspaceId: string,
-	{ admin }: { admin: boolean },
+	viewer: Viewer,
 ): Promise<Directory> {
+	const admin = isAdminRole(viewer.role);
 	const [domains, mailboxes, addresses] = await db.batch([
 		db
 			.select()
@@ -86,8 +99,17 @@ export async function listDirectory(
 			.where(eq(mailDomain.organizationId, workspaceId))
 			.orderBy(asc(mailDomain.name)),
 		db
-			.select({ id: mailbox.id, name: mailbox.name })
+			.select({
+				id: mailbox.id,
+				name: mailbox.name,
+				everyone: mailbox.everyone,
+				granted: mailboxAccess.memberId,
+			})
 			.from(mailbox)
+			.leftJoin(
+				mailboxAccess,
+				and(eq(mailboxAccess.mailboxId, mailbox.id), eq(mailboxAccess.memberId, viewer.memberId)),
+			)
 			.where(eq(mailbox.organizationId, workspaceId))
 			.orderBy(asc(mailbox.name), asc(mailbox.id)),
 		db
@@ -104,7 +126,19 @@ export async function listDirectory(
 			.where(eq(mailDomain.organizationId, workspaceId))
 			.orderBy(asc(mailDomain.name), asc(mailAddress.localPart)),
 	]);
+	const grants = admin
+		? await db
+				.select({ mailboxId: mailboxAccess.mailboxId, memberId: mailboxAccess.memberId })
+				.from(mailboxAccess)
+				.innerJoin(mailbox, eq(mailbox.id, mailboxAccess.mailboxId))
+				.where(eq(mailbox.organizationId, workspaceId))
+				.orderBy(asc(mailboxAccess.memberId))
+		: [];
 	const byMailbox = Map.groupBy(addresses, (address) => address.mailboxId);
+	const readers = Map.groupBy(grants, (grant) => grant.mailboxId);
+	const readable = mailboxes.filter((box) =>
+		canReadMailbox(viewer.role, { everyone: box.everyone, granted: box.granted !== null }),
+	);
 	return {
 		domains: domains.map((domain) => ({
 			id: domain.id,
@@ -115,14 +149,21 @@ export async function listDirectory(
 					? { name: proofName(domain.name), value: proofValue(domain.verificationToken) }
 					: null,
 		})),
-		mailboxes: mailboxes.map((box) => ({
-			...box,
+		mailboxes: readable.map((box) => ({
+			id: box.id,
+			name: box.name,
 			addresses: (byMailbox.get(box.id) ?? []).map((address) => ({
 				id: address.id,
 				address: `${address.localPart}@${address.domain}`,
 				expiresAt: address.expiresAt?.getTime() ?? null,
 				domainProved: address.domainVerifiedAt !== null,
 			})),
+			access: admin
+				? {
+						everyone: box.everyone,
+						memberIds: (readers.get(box.id) ?? []).map((grant) => grant.memberId),
+					}
+				: null,
 		})),
 	};
 }
@@ -230,10 +271,12 @@ export async function removeDomain(db: Database, workspaceId: string, id: string
 	return meta.changes ? { ok: true } : notFound();
 }
 
+/** A new mailbox is for owners and admins, and for everyone only when `everyone` says so. */
 export async function addMailbox(
 	db: Database,
 	workspaceId: string,
 	input: string,
+	everyone = false,
 ): Promise<Result> {
 	const name = input.trim();
 	if (!name || name.length > MAX_MAILBOX_NAME) {
@@ -247,7 +290,68 @@ export async function addMailbox(
 	if ((held?.total ?? 0) >= MAX_MAILBOXES_PER_WORKSPACE) {
 		return refuse(`A workspace can have ${MAX_MAILBOXES_PER_WORKSPACE} mailboxes.`, 409);
 	}
-	await db.insert(mailbox).values({ id: newId(), organizationId: workspaceId, name }).run();
+	await db
+		.insert(mailbox)
+		.values({ id: newId(), organizationId: workspaceId, name, everyone })
+		.run();
+	return { ok: true };
+}
+
+export interface MailboxAccessChange {
+	mailboxId: string;
+	everyone: boolean;
+	/** Every membership that may read it from now on, besides owners and admins. */
+	memberIds: string[];
+}
+
+/**
+ * Says who may read a mailbox: everyone, and these memberships. Each must be in the workspace now;
+ * the database holds to that too (migration 0007). The ids go in as one JSON value, since D1 binds
+ * at most 100 values to a query.
+ */
+export async function setMailboxAccess(
+	db: Database,
+	workspaceId: string,
+	grantedBy: string,
+	change: MailboxAccessChange,
+): Promise<Result> {
+	const ids = [...new Set(change.memberIds)];
+	if (ids.length > MAX_MAILBOX_READERS) {
+		return refuse(`A mailbox can be given to ${MAX_MAILBOX_READERS} people at most.`);
+	}
+	const box = await db
+		.select({ id: mailbox.id })
+		.from(mailbox)
+		.where(and(eq(mailbox.id, change.mailboxId), eq(mailbox.organizationId, workspaceId)))
+		.get();
+	if (!box) return notFound();
+	const listed = JSON.stringify(ids);
+	const chosen = sql`(SELECT value FROM json_each(${listed}))`;
+	const members = await db
+		.select({ total: count() })
+		.from(member)
+		.where(and(eq(member.organizationId, workspaceId), sql`${member.id} IN ${chosen}`))
+		.get();
+	if ((members?.total ?? 0) !== ids.length) {
+		return refuse("Someone you chose isn't in this workspace any more. Reload and try again.", 409);
+	}
+	await db.batch([
+		db.update(mailbox).set({ everyone: change.everyone }).where(eq(mailbox.id, box.id)),
+		db
+			.delete(mailboxAccess)
+			.where(
+				and(eq(mailboxAccess.mailboxId, box.id), sql`${mailboxAccess.memberId} NOT IN ${chosen}`),
+			),
+		// Only those still in the workspace, and whoever had it keeps their grant as it was. The
+		// select lists every column in the table's order, as Drizzle's insert-select needs.
+		db
+			.insert(mailboxAccess)
+			.select(
+				sql`SELECT ${box.id}, ${member.id}, ${grantedBy}, ${Date.now()} FROM ${member}
+					WHERE ${member.organizationId} = ${workspaceId} AND ${member.id} IN ${chosen}`,
+			)
+			.onConflictDoNothing(),
+	]);
 	return { ok: true };
 }
 

@@ -1,6 +1,6 @@
 import type { APIRequestContext, Page } from "@playwright/test";
-import { expect, test } from "./fixtures";
-import { startWorkspace, waitForHydration } from "./helpers";
+import { expect, newBrowserContext, test } from "./fixtures";
+import { newPerson, signUp, startWorkspace, waitForHydration } from "./helpers";
 
 // The app reads this resolver from `DNS_RESOLVER_URL`, which `server.mjs` sets to the same port.
 const dnsStandIn = `http://localhost:${(Number(process.env.MAIL_E2E_PORT) || 4752) + 20}`;
@@ -16,7 +16,7 @@ async function supportMailbox(page: Page, request: APIRequestContext, baseURL: s
 			headers: { origin: baseURL ?? "" },
 			data: action,
 		});
-		expect(response.ok()).toBe(true);
+		expect(response.ok(), `${JSON.stringify(action)}: ${await response.text()}`).toBe(true);
 	};
 	const read = async () =>
 		(await (await page.request.get(`/api/directory/${slug}`)).json()) as {
@@ -338,6 +338,70 @@ test("a message's HTML shows in a frame that runs nothing and loads only what is
 	await expect(page.getByRole("button", { name: "Show formatted" })).toBeFocused();
 	await page.getByRole("button", { name: "Show formatted" }).click();
 	await expect(message.getByRole("heading", { name: "Offers" })).toBeVisible();
+});
+
+test("an owner chooses who reads a mailbox, and only they find it", async ({
+	page,
+	browser,
+	request,
+	baseURL,
+}) => {
+	const { slug, to, deliver } = await supportMailbox(page, request, baseURL);
+	await deliver("customer@example.org", [
+		"From: A Customer <customer@example.org>",
+		`To: ${to}`,
+		"Subject: Where is my parcel",
+		"Date: Sun, 08 Nov 2026 09:00:00 +0000",
+		`Message-ID: <${Date.now()}.access@example.org>`,
+		"",
+		"Still waiting.",
+		"",
+	]);
+
+	// Someone joins as a member, through an invite link.
+	const reader = newPerson("reader");
+	await page.goto(`/${slug}/settings/members`);
+	await waitForHydration(page);
+	await page.getByLabel("Email address").fill(reader.email);
+	await page.getByRole("button", { name: "Create invite link" }).click();
+	const link = await page.getByLabel("Invite link").inputValue();
+
+	const context = await newBrowserContext(browser);
+	const theirs = await context.newPage();
+	await signUp(theirs, reader);
+	await theirs.goto(link);
+	await waitForHydration(theirs);
+	await theirs.getByRole("button", { name: /^Join / }).click();
+	await expect(theirs).toHaveURL(new RegExp(`/${slug}$`));
+	await expect(theirs.getByRole("heading", { name: "No mailboxes you can read" })).toBeVisible();
+	await expect(theirs.getByRole("link", { name: "Support" })).toHaveCount(0);
+
+	// A new mailbox is for owners and admins until someone says otherwise.
+	await page.goto(`/${slug}`);
+	await waitForHydration(page);
+	const card = page
+		.getByRole("listitem")
+		.filter({ has: page.getByRole("heading", { name: "Support" }) });
+	await expect(card.getByText("Only owners and admins can read it.")).toBeVisible();
+	await card.getByRole("button", { name: "Choose who can read Support" }).click();
+	const dialog = page.getByRole("dialog", { name: "Who can read Support" });
+	await dialog.getByLabel(reader.name).check();
+	await dialog.getByRole("button", { name: "Save" }).click();
+	await expect(dialog).toBeHidden();
+	await expect(card.getByText("Owners, admins and 1 other person can read it.")).toBeVisible();
+
+	await theirs.reload();
+	await theirs.getByRole("link", { name: "Support" }).click();
+	await expect(theirs.getByText("Where is my parcel")).toBeVisible();
+
+	// Taken back, it is gone for them again.
+	await card.getByRole("button", { name: "Choose who can read Support" }).click();
+	await dialog.getByLabel(reader.name).uncheck();
+	await dialog.getByRole("button", { name: "Save" }).click();
+	await expect(card.getByText("Only owners and admins can read it.")).toBeVisible();
+	await theirs.reload();
+	await expect(theirs.getByText("Where is my parcel")).toHaveCount(0);
+	await context.close();
 });
 
 /** A one-pixel PNG. */
