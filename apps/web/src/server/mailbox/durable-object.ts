@@ -5,6 +5,7 @@ import { createDb } from "../db";
 import { openProviderKey } from "../providers/keys";
 import { RESEND_API, type ResendFailure, sendWithResend } from "../providers/resend";
 import { bodyHash } from "./body";
+import { DELIVERIES_JSON, type DeliveryEvent, recordDelivery } from "./deliveries";
 import { type Outcome, outcomeOf, resendOutcome, STALE_SENDING_MS, WAITS_MS } from "./delivery";
 import { indexBatch } from "./indexing";
 import { LINKED_THREADS, migrate } from "./schema";
@@ -163,6 +164,8 @@ export type StoredSummary = {
 	sending: string | null;
 	/** For a message that waited for approval, the membership of whoever approved it. */
 	approvedBy: string | null;
+	/** For a message the mailbox sent, its recipients' `Delivery` records as a JSON array. */
+	deliveries: string;
 };
 
 export type StoredMessage = StoredSummary & {
@@ -217,7 +220,8 @@ const SUMMARY = `id, thread_id AS threadId, arrived_at AS arrivedAt, size, from_
 	subject, date_header AS date, dmarc, verified_domain AS verifiedDomain, sent_by AS sentBy,
 	(SELECT json_object('state', state, 'code', code, 'nextAt', next_at, 'detail', detail) FROM outgoing
 		WHERE outgoing.message = message.id) AS sending,
-	(SELECT approved_by FROM outgoing WHERE outgoing.message = message.id) AS approvedBy`;
+	(SELECT approved_by FROM outgoing WHERE outgoing.message = message.id) AS approvedBy,
+	${DELIVERIES_JSON} AS deliveries`;
 
 /**
  * One mailbox: its messages' index in SQLite, their raw mail in R2 under
@@ -697,6 +701,17 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			idempotencyKey: row.idempotencyKey ?? id,
 		});
 		return answer.ok ? { ok: true, providerId: answer.id } : failed(answer.failure);
+	}
+
+	/**
+	 * Records providers' delivery events for messages this mailbox sent, all or none. Says for each
+	 * whether its message is here.
+	 */
+	recordDeliveries(events: DeliveryEvent[]): boolean[] {
+		const sql = this.ctx.storage.sql;
+		return this.ctx.storage.transactionSync(() =>
+			events.map((event) => recordDelivery(sql, event)),
+		);
 	}
 
 	/**

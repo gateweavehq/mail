@@ -9,7 +9,7 @@ import { ConfirmDialog } from "#/components/workspace/confirm-dialog";
 import { isAdminRole, useMyRole, useWorkspace } from "#/components/workspace/context";
 import { Notice } from "#/components/workspace/notice";
 import { authClient } from "#/lib/auth-client";
-import { formatDateTime } from "#/lib/dates";
+import { formatDateTime, formatRelative } from "#/lib/dates";
 import {
 	changeDirectory,
 	type DirectoryDomain,
@@ -442,6 +442,13 @@ function DomainRow({
 			) : (
 				<p className="text-sm text-muted-foreground">
 					Receives with {RECEIVES_WITH_WORDS[domain.receivesWith]}
+				</p>
+			)}
+			{admin && domain.verifiedAt !== null && domain.sendsWith === "cloudflare" && (
+				<p className="text-sm text-muted-foreground">
+					{domain.eventsAt === null
+						? "No delivery events from Email Service yet. They come once the deployment's queue is subscribed to this domain, as the self-hosting guide shows, and something is sent."
+						: `Email Service's delivery events last came ${formatRelative(domain.eventsAt)}.`}
 				</p>
 			)}
 			{admin && domain.sendsWith === "resend" && keyed === false && (

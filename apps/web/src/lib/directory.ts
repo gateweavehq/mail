@@ -16,6 +16,11 @@ export interface DirectoryDomain {
 	sendsWith: SendsWith;
 	/** How its mail arrives. */
 	receivesWith: ReceivesWith;
+	/**
+	 * When Email Service's delivery events for it last arrived, for owners and admins. Null until the
+	 * first, and for everyone else.
+	 */
+	eventsAt: number | null;
 }
 
 /** How receiving through Resend goes for the workspace, for owners and admins. */

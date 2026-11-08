@@ -1,0 +1,1 @@
+ALTER TABLE `mail_domain` ADD `events_at` integer;

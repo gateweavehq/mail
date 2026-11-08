@@ -27,6 +27,25 @@ export interface SentEmail {
 	text: string;
 	html?: string;
 	headers?: Record<string, string>;
+	/** The id `send()` gave back for it, as Email Service's delivery events name it. */
+	messageId: string;
+}
+
+/** A message on a queue, as Cloudflare hands it to the Worker's `queue()`. */
+export interface QueuedMessage {
+	id: string;
+	timestamp: Date;
+	body: unknown;
+	attempts: number;
+}
+
+/** What `queue()` did with a batch: which messages it acknowledged and which it wants again. */
+export interface QueueOutcome {
+	outcome: string;
+	ackAll: boolean;
+	retryBatch: { retry: boolean; delaySeconds?: number };
+	explicitAcks: string[];
+	retryMessages: { msgId: string; delaySeconds?: number }[];
 }
 
 /** What tests do with the bucket raw mail goes to. */
@@ -83,8 +102,9 @@ export default class Outbox extends WorkerEntrypoint {
 			const error = failure(address);
 			if (error) throw error;
 		}
-		sent.push(message);
-		return { messageId: crypto.randomUUID() };
+		const messageId = "<" + crypto.randomUUID() + "@outbox.test>";
+		sent.push({ ...message, messageId });
+		return { messageId };
 	}
 	async fetch() {
 		return Response.json(sent);
@@ -289,6 +309,14 @@ export async function startMail(
 				scheduled(event: { cron: string; scheduledTime: Date }): Promise<unknown>;
 			};
 			await worker.scheduled({ cron: "29 3 * * *", scheduledTime: new Date() });
+		},
+		/** Hands a batch to the Worker's `queue()` handler, as Cloudflare Queues would. */
+		async runQueue(queue: string, messages: QueuedMessage[]): Promise<QueueOutcome> {
+			// As with scheduled(), Miniflare's Fetcher type leaves out what workerd adds.
+			const worker = (await mf.getWorker(names[0])) as unknown as {
+				queue(queue: string, messages: QueuedMessage[]): Promise<QueueOutcome>;
+			};
+			return worker.queue(queue, messages);
 		},
 		/**
 		 * Delivers a message to the Worker's `email()` handler, as Cloudflare Email Routing would,

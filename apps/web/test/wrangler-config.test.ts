@@ -21,3 +21,16 @@ describe("what a branch's Preview gets", () => {
 		expect(previews?.d1_databases ?? []).toEqual([]);
 	});
 });
+
+describe("where delivery events come from", () => {
+	it("gives each environment a queue of its own", () => {
+		// Bindings aren't inherited: staging consuming production's queue would take its events.
+		const config = resolve(import.meta.dirname, "../../../wrangler.jsonc");
+		const consumed = (env?: string) =>
+			unstable_readConfig({ config, env }, { hideWarnings: true }).queues.consumers?.map(
+				({ queue }: { queue: string }) => queue,
+			);
+		expect(consumed()).toEqual(["gateweave-mail-events"]);
+		expect(consumed("staging")).toEqual(["gateweave-mail-staging-events"]);
+	});
+});

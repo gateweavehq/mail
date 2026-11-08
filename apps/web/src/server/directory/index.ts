@@ -184,6 +184,7 @@ export async function listDirectory(
 					: null,
 			sendsWith: domain.sendsWith,
 			receivesWith: domain.receivesWith,
+			eventsAt: admin ? (domain.eventsAt?.getTime() ?? null) : null,
 		})),
 		mailboxes: readable.map((box) => ({
 			id: box.id,
