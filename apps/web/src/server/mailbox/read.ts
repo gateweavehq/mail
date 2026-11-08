@@ -11,6 +11,7 @@ import type {
 	ThreadPage,
 	ThreadsPage,
 } from "../../lib/mailbox";
+import { MAX_QUERY_SENT } from "../../lib/mailbox";
 import { isAdminRole } from "../../lib/roles";
 import { currentMember } from "../access";
 import { db } from "../auth";
@@ -18,6 +19,7 @@ import { schema } from "../db";
 import { appOrigin } from "../origin";
 import type { StoredSummary } from "./durable-object";
 import { mailboxStub } from "./index";
+import { textOfHtml } from "./text";
 import { threadSubject } from "./thread";
 
 /** Messages or threads on one page of a mailbox. */
@@ -120,14 +122,21 @@ function senders(froms: (string | null)[]): Person[] {
 	return found;
 }
 
+/**
+ * A page of a mailbox's threads, the one with the newest message first. With a query, only the
+ * threads with a message that has every word of it.
+ */
 export async function listThreads(
 	slug: string,
 	mailboxId: string,
 	before: ThreadCursor | null,
+	query: string | null = null,
 ): Promise<ThreadsPage | null> {
 	const box = await openMailbox(slug, mailboxId);
 	if (!box) return null;
-	const rows = await box.stub.threads(before, PAGE_SIZE + 1);
+	const rows = query
+		? await box.stub.search(query, before, PAGE_SIZE + 1)
+		: await box.stub.threads(before, PAGE_SIZE + 1);
 	const shown = rows.slice(0, PAGE_SIZE);
 	const last = shown.at(-1);
 	return {
@@ -226,36 +235,6 @@ async function readMessage(
 	};
 }
 
-/** The most HTML turned into text for one message, in characters. */
-const MAX_HTML_READ = 1_000_000;
-
-/**
- * The text of a message that only has HTML. postal-mime renders HTML as text, dropping scripts and
- * styles and decoding entities, but only for a message that has a text part too, and it has no
- * other way in to that. So it is given one: the HTML beside an empty text part, under a boundary
- * the sender can't know.
- */
-async function textOfHtml(html: string): Promise<{ text: string; cut: boolean }> {
-	const boundary = `gateweave-${crypto.randomUUID()}`;
-	const wrapped = [
-		`Content-Type: multipart/mixed; boundary="${boundary}"`,
-		"",
-		`--${boundary}`,
-		"Content-Type: text/plain; charset=utf-8",
-		"",
-		"",
-		`--${boundary}`,
-		"Content-Type: text/html; charset=utf-8",
-		"Content-Transfer-Encoding: 8bit",
-		"",
-		html.slice(0, MAX_HTML_READ),
-		`--${boundary}--`,
-		"",
-	].join("\r\n");
-	const email = await PostalMime.parse(wrapped);
-	return { text: (email.text ?? "").trim(), cut: html.length > MAX_HTML_READ };
-}
-
 /** The raw mail, as a download, or a 404 for anyone who can't see it. */
 export async function originalMessage(
 	slug: string,
@@ -303,13 +282,17 @@ export async function mailboxAnswer(slug: string, mailboxId: string, url: URL): 
 	return page ? answer(page) : notFoundJson();
 }
 
-/** A page of a mailbox's threads, for `GET /api/mail/<workspace>/<mailbox>/threads`. */
+/**
+ * A page of a mailbox's threads, for `GET /api/mail/<workspace>/<mailbox>/threads`, or of those
+ * that `q` finds.
+ */
 export async function threadsAnswer(slug: string, mailboxId: string, url: URL): Promise<Response> {
 	const at = Number(url.searchParams.get("beforeAt"));
 	const id = url.searchParams.get("beforeId");
 	const before =
 		id && Number.isSafeInteger(at) && at >= 0 && id.length <= 100 ? { latestAt: at, id } : null;
-	const page = await listThreads(slug, mailboxId, before);
+	const query = url.searchParams.get("q")?.slice(0, MAX_QUERY_SENT) || null;
+	const page = await listThreads(slug, mailboxId, before, query);
 	return page ? answer(page) : notFoundJson();
 }
 

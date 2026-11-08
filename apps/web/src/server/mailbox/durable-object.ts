@@ -1,6 +1,8 @@
 import { DurableObject } from "cloudflare:workers";
 import { bodyHash } from "./body";
+import { indexBatch } from "./indexing";
 import { LINKED_THREADS, migrate } from "./schema";
+import { ftsQuery, searchable } from "./search";
 import { MAX_REFERENCES, messageIds, subjectKey } from "./thread";
 
 /** How much one mailbox may hold unless `MAILBOX_BYTES` says otherwise, counting messages on their way in. */
@@ -23,6 +25,12 @@ const MAX_SENDERS = 5;
 
 /** How many of a thread's first messages its listing looks through for senders. */
 const SENDERS_READ = 200;
+
+/** How long after a message is stored the alarm indexes it, so that a burst is indexed together. */
+const INDEX_DELAY_MS = 1000;
+
+/** How long indexing waits after R2 failed to give it a message's mail. */
+const INDEX_RETRY_MS = 60_000;
 
 /** What `email()` knows of a message before storing it. */
 export interface Arrival {
@@ -102,6 +110,9 @@ export interface ThreadSummary {
 	latestVerifiedDomain: string | null;
 }
 
+/** A thread's own row. */
+type ThreadRow = { id: string; latestAt: number; count: number };
+
 /** A page of a thread. */
 export interface ThreadMessages {
 	/** How many messages it has, on every page. */
@@ -126,6 +137,9 @@ const SUMMARY = `id, thread_id AS threadId, arrived_at AS arrivedAt, size, from_
  * those that never arrive. So R2 holds nothing the mailbox doesn't know about, and removing a
  * mailbox's prefix removes all of it. The `held` row keeps what the messages add up to, through
  * triggers, so that a delivery doesn't have to count them.
+ *
+ * Search indexes a message after it is stored, in the alarm, so a delivery never waits for its
+ * mail to be parsed.
  */
 export class Mailbox extends DurableObject<Cloudflare.Env> {
 	/** Deliveries of one message finish one at a time, so a retry can't pass another unnoticed. */
@@ -134,6 +148,12 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 	constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
 		super(ctx, env);
 		migrate(ctx.storage);
+		// Messages that wait to be indexed, as after an upgrade, or when the object went away before
+		// it set its alarm, are indexed soon. An index finds them.
+		const waiting = ctx.storage.sql
+			.exec("SELECT 1 FROM message WHERE state = 'stored' AND search_id IS NULL LIMIT 1")
+			.toArray();
+		if (waiting.length > 0) void ctx.blockConcurrencyWhile(() => this.#indexSoon());
 	}
 
 	/** Gives a message a place in R2, or says the mailbox is full. */
@@ -198,7 +218,9 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 		const turn = before.catch(() => {}).then(() => this.#finishOne(id, key));
 		this.#finishing.set(key, turn);
 		try {
-			return await turn;
+			const result = await turn;
+			if (result === "stored") await this.#indexSoon();
+			return result;
 		} finally {
 			if (this.#finishing.get(key) === turn) this.#finishing.delete(key);
 		}
@@ -344,42 +366,80 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 		const sql = this.ctx.storage.sql;
 		const rows = (
 			before
-				? sql.exec<{ id: string; latestAt: number; count: number }>(
+				? sql.exec<ThreadRow>(
 						`SELECT id, latest_at AS latestAt, count FROM thread WHERE (latest_at, id) < (?, ?)
 						ORDER BY latest_at DESC, id DESC LIMIT ?`,
 						before.latestAt,
 						before.id,
 						take,
 					)
-				: sql.exec<{ id: string; latestAt: number; count: number }>(
+				: sql.exec<ThreadRow>(
 						`SELECT id, latest_at AS latestAt, count FROM thread
 						ORDER BY latest_at DESC, id DESC LIMIT ?`,
 						take,
 					)
 		).toArray();
-		return rows.map((thread) => {
-			const latest = this.#newest(thread.id);
-			// From its first messages only, so that a long thread costs no more than a short one.
-			const senders = sql
-				.exec<{ from: string | null }>(
-					`SELECT "from" FROM (
-						SELECT from_header AS "from", arrived_at FROM message
-						WHERE thread_id = ? AND state = 'stored' ORDER BY arrived_at, id LIMIT ?
+		return rows.map((thread) => this.#summary(thread));
+	}
+
+	/**
+	 * Threads with a message that has every word someone typed, the one with the newest message
+	 * first, after `before` when given. Nothing when what they typed has nothing to look for.
+	 */
+	search(typed: string, before: ThreadCursor | null, limit: number): ThreadSummary[] {
+		const query = ftsQuery(typed);
+		if (query === null) return [];
+		const take = Math.min(Math.max(1, limit), MAX_LISTED);
+		const sql = this.ctx.storage.sql;
+		const matching = `id IN (
+			SELECT message.thread_id FROM message_search
+			JOIN message ON message.search_id = message_search.rowid
+			WHERE message_search MATCH ? AND message.state = 'stored'
+		)`;
+		const rows = (
+			before
+				? sql.exec<ThreadRow>(
+						`SELECT id, latest_at AS latestAt, count FROM thread
+						WHERE ${matching} AND (latest_at, id) < (?, ?)
+						ORDER BY latest_at DESC, id DESC LIMIT ?`,
+						query,
+						before.latestAt,
+						before.id,
+						take,
 					)
-					GROUP BY "from" ORDER BY min(arrived_at) LIMIT ?`,
-					thread.id,
-					SENDERS_READ,
-					MAX_SENDERS,
+				: sql.exec<ThreadRow>(
+						`SELECT id, latest_at AS latestAt, count FROM thread WHERE ${matching}
+						ORDER BY latest_at DESC, id DESC LIMIT ?`,
+						query,
+						take,
+					)
+		).toArray();
+		return rows.map((thread) => this.#summary(thread));
+	}
+
+	/** A thread as a listing shows it. */
+	#summary(thread: ThreadRow): ThreadSummary {
+		const latest = this.#newest(thread.id);
+		// From its first messages only, so that a long thread costs no more than a short one.
+		const senders = this.ctx.storage.sql
+			.exec<{ from: string | null }>(
+				`SELECT "from" FROM (
+					SELECT from_header AS "from", arrived_at FROM message
+					WHERE thread_id = ? AND state = 'stored' ORDER BY arrived_at, id LIMIT ?
 				)
-				.toArray()
-				.map((row) => row.from);
-			return {
-				...thread,
-				subject: latest?.subject ?? null,
-				senders,
-				latestVerifiedDomain: latest?.verifiedDomain ?? null,
-			};
-		});
+				GROUP BY "from" ORDER BY min(arrived_at) LIMIT ?`,
+				thread.id,
+				SENDERS_READ,
+				MAX_SENDERS,
+			)
+			.toArray()
+			.map((row) => row.from);
+		return {
+			...thread,
+			subject: latest?.subject ?? null,
+			senders,
+			latestVerifiedDomain: latest?.verifiedDomain ?? null,
+		};
 	}
 
 	/** A thread's newest message, which its line in a listing speaks for. */
@@ -478,7 +538,17 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 		await deletePrefix(this.env.RAW_MAIL, prefix);
 	}
 
-	/** Removes deliveries that never said they arrived, with whatever part of them reached R2. */
+	/** Has the alarm run soon to index what waits, unless it runs sooner anyway. */
+	async #indexSoon(): Promise<void> {
+		const at = Date.now() + INDEX_DELAY_MS;
+		const set = await this.ctx.storage.getAlarm();
+		if (set === null || set > at) await this.ctx.storage.setAlarm(at);
+	}
+
+	/**
+	 * Removes deliveries that never said they arrived, with whatever part of them reached R2, and
+	 * indexes stored messages for search.
+	 */
 	override async alarm(): Promise<void> {
 		const sql = this.ctx.storage.sql;
 		// Marked before anything is awaited. A delivery that finishes from here on finds its row gone
@@ -499,12 +569,21 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			await this.env.RAW_MAIL.delete(chunk.map((row) => row.object));
 			for (const row of chunk) sql.exec("DELETE FROM message WHERE id = ?", row.id);
 		}
+		const indexed = await indexBatch(this.ctx.storage, (message) =>
+			searchable(this.env.RAW_MAIL, message),
+		);
 		const next = sql
 			.exec<{ at: number | null }>(
 				"SELECT min(arrived_at) AS at FROM message WHERE state = 'pending'",
 			)
 			.one();
-		if (next.at !== null) await this.ctx.storage.setAlarm(next.at + PENDING_MS);
+		// A delivery may have set the alarm while this ran, and the soonest wins.
+		const times = [
+			next.at === null ? null : next.at + PENDING_MS,
+			indexed === "more" ? Date.now() : indexed === "failed" ? Date.now() + INDEX_RETRY_MS : null,
+			await this.ctx.storage.getAlarm(),
+		].filter((at): at is number => at !== null);
+		if (times.length > 0) await this.ctx.storage.setAlarm(Math.min(...times));
 	}
 }
 

@@ -1,18 +1,21 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
-import { ShieldCheck } from "lucide-react";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { Search as SearchIcon, ShieldCheck } from "lucide-react";
 import { z } from "zod";
 import { senderName } from "#/components/mail/message-view";
 import { Button } from "#/components/ui/button";
+import { Input } from "#/components/ui/input";
 import { useWorkspace } from "#/components/workspace/context";
 import { Notice } from "#/components/workspace/notice";
 import { formatDateTime, formatShortDate } from "#/lib/dates";
-import { getThreads, type ListedThread } from "#/lib/mailbox";
+import { getThreads, type ListedThread, MAX_QUERY_SENT } from "#/lib/mailbox";
 import { useDocumentTitle } from "#/lib/title";
 
 /** How many senders a thread's line names before saying how many more. */
 const NAMED_SENDERS = 3;
 
 const Search = z.object({
+	// What someone looks for, when they search.
+	q: z.string().max(MAX_QUERY_SENT).optional().catch(undefined),
 	// Where an older page starts: the last thread of the page before it.
 	beforeAt: z.number().int().nonnegative().optional().catch(undefined),
 	beforeId: z.string().max(100).optional().catch(undefined),
@@ -30,6 +33,7 @@ export const Route = createFileRoute("/$workspace/mailboxes/$mailbox/")({
 					deps.beforeAt !== undefined && deps.beforeId
 						? { latestAt: deps.beforeAt, id: deps.beforeId }
 						: null,
+				query: deps.q?.trim() || null,
 			},
 		}),
 	component: MailboxPage,
@@ -40,6 +44,7 @@ function MailboxPage() {
 	const { mailbox } = Route.useParams();
 	const search = Route.useSearch();
 	const page = Route.useLoaderData();
+	const navigate = useNavigate();
 	useDocumentTitle(page?.name ?? "Mailbox");
 
 	if (!page) {
@@ -61,6 +66,16 @@ function MailboxPage() {
 
 	// Read as the loader reads it: a page of older threads has both.
 	const older = search.beforeAt !== undefined && Boolean(search.beforeId);
+	const query = search.q?.trim() || undefined;
+	const find = (event: React.FormEvent<HTMLFormElement>) => {
+		event.preventDefault();
+		const typed = String(new FormData(event.currentTarget).get("q") ?? "").trim();
+		void navigate({
+			to: "/$workspace/mailboxes/$mailbox",
+			params: { workspace: slug, mailbox },
+			search: typed ? { q: typed } : {},
+		});
+	};
 
 	return (
 		<div className="mx-auto max-w-4xl space-y-6 px-4 py-10 sm:px-6">
@@ -75,12 +90,57 @@ function MailboxPage() {
 				<h1 className="min-w-0 break-words text-xl font-semibold tracking-tight">{page.name}</h1>
 			</header>
 
+			<search>
+				<form onSubmit={find} className="flex gap-2">
+					<div className="relative min-w-0 flex-1">
+						<SearchIcon
+							className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
+							aria-hidden
+						/>
+						<Input
+							// A new search, or none, starts the box from what the page shows.
+							key={query ?? ""}
+							type="search"
+							name="q"
+							defaultValue={query ?? ""}
+							maxLength={MAX_QUERY_SENT}
+							aria-label={`Search ${page.name}`}
+							placeholder="Search words, senders, attachments"
+							className="pl-8"
+						/>
+					</div>
+					<Button type="submit" variant="outline">
+						Search
+					</Button>
+					{query && (
+						<Button asChild variant="ghost">
+							<Link to="/$workspace/mailboxes/$mailbox" params={{ workspace: slug, mailbox }}>
+								Clear
+							</Link>
+						</Button>
+					)}
+				</form>
+			</search>
+			{/* Said once a search's page is shown, as the focus stays in the box. */}
+			<p role="status" className="sr-only">
+				{query ? searchSaid(query, page.threads.length, Boolean(page.next), older) : ""}
+			</p>
+
 			{page.threads.length === 0 ? (
 				<p className="rounded-lg border p-6 text-sm text-muted-foreground">
-					{older ? "No older threads." : "No mail yet. What arrives at its addresses shows here."}
+					{query
+						? older
+							? "No older threads match."
+							: "No thread has all of those words. Mail that has just arrived can take a moment to be found."
+						: older
+							? "No older threads."
+							: "No mail yet. What arrives at its addresses shows here."}
 				</p>
 			) : (
-				<ul aria-label={`Threads in ${page.name}`} className="divide-y rounded-lg border">
+				<ul
+					aria-label={query ? `Threads in ${page.name} that match` : `Threads in ${page.name}`}
+					className="divide-y rounded-lg border"
+				>
 					{page.threads.map((thread) => (
 						<ThreadRow key={thread.id} thread={thread} />
 					))}
@@ -91,7 +151,11 @@ function MailboxPage() {
 				<nav aria-label="Pages" className="flex justify-between gap-2">
 					{older ? (
 						<Button asChild size="sm" variant="outline">
-							<Link to="/$workspace/mailboxes/$mailbox" params={{ workspace: slug, mailbox }}>
+							<Link
+								to="/$workspace/mailboxes/$mailbox"
+								params={{ workspace: slug, mailbox }}
+								search={query ? { q: query } : {}}
+							>
 								Newest
 							</Link>
 						</Button>
@@ -103,7 +167,7 @@ function MailboxPage() {
 							<Link
 								to="/$workspace/mailboxes/$mailbox"
 								params={{ workspace: slug, mailbox }}
-								search={{ beforeAt: page.next.latestAt, beforeId: page.next.id }}
+								search={{ q: query, beforeAt: page.next.latestAt, beforeId: page.next.id }}
 							>
 								Older
 							</Link>
@@ -175,4 +239,15 @@ function ThreadRow({ thread }: { thread: ListedThread }) {
 			</Link>
 		</li>
 	);
+}
+
+/**
+ * What a screen reader is told of a search's page: how many threads on it match, and the words, so
+ * that two searches in a row are both said.
+ */
+function searchSaid(query: string, shown: number, more: boolean, older: boolean): string {
+	const kind = older ? "older thread" : "thread";
+	if (shown === 0) return `No ${kind} matches “${query}”.`;
+	if (shown === 1 && !more) return `1 ${kind} matches “${query}”.`;
+	return `${shown}${more ? " or more" : ""} ${kind}s match “${query}”.`;
 }

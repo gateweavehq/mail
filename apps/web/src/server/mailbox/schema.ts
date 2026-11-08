@@ -91,6 +91,24 @@ export const LINKED_THREADS = `SELECT id FROM thread WHERE id IN (
 )
 ORDER BY first_at, id`;
 
+// Search. A stored message gets an entry in `message_search` once the alarm has read its text, and
+// keeps the entry's row id; deleting the message deletes the entry. The table keeps no text of its
+// own, only what finds it, so the text isn't held twice. Messages from before it are indexed by the
+// alarm like new ones.
+const VERSION_3 = `
+ALTER TABLE message ADD COLUMN search_id INTEGER;
+CREATE UNIQUE INDEX message_search_id ON message (search_id);
+CREATE INDEX message_unsearched ON message (arrived_at, id)
+	WHERE state = 'stored' AND search_id IS NULL;
+CREATE VIRTUAL TABLE message_search USING fts5(
+	subject, sender, attachments, body,
+	content = '', contentless_delete = 1, tokenize = 'unicode61 remove_diacritics 2'
+);
+CREATE TRIGGER message_search_gone AFTER DELETE ON message WHEN old.search_id IS NOT NULL BEGIN
+	DELETE FROM message_search WHERE rowid = old.search_id;
+END;
+`;
+
 /** Each brings the schema from the version before it. Append only: objects keep what they ran. */
 export const MIGRATIONS: ((sql: SqlStorage) => void)[] = [
 	(sql) => sql.exec(VERSION_1),
@@ -112,6 +130,7 @@ export const MIGRATIONS: ((sql: SqlStorage) => void)[] = [
 			);
 		}
 	},
+	(sql) => sql.exec(VERSION_3),
 ];
 
 /** What migrating needs of a Durable Object's storage. */

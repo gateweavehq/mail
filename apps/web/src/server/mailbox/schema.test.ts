@@ -1,41 +1,7 @@
-import { DatabaseSync, type SQLInputValue } from "node:sqlite";
+import type { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
-import { LINKED_THREADS, MIGRATIONS, type MigratedStorage, migrate } from "./schema";
-
-/**
- * A Durable Object's storage, as far as migrating goes, over Node's SQLite: `exec` runs a script
- * when it has no bindings, as the object's does, and `transactionSync` rolls back on a throw.
- */
-function storage() {
-	const db = new DatabaseSync(":memory:");
-	const cursor = <T>(rows: T[]) => ({
-		toArray: () => rows,
-		one: () => {
-			if (rows.length !== 1) throw new Error(`expected one row, got ${rows.length}`);
-			return rows[0] as T;
-		},
-	});
-	const sql = {
-		exec<T>(query: string, ...bindings: SQLInputValue[]) {
-			if (/^\s*SELECT/i.test(query)) return cursor(db.prepare(query).all(...bindings) as T[]);
-			if (bindings.length === 0) db.exec(query);
-			else db.prepare(query).run(...bindings);
-			return cursor<T>([]);
-		},
-	};
-	const transactionSync = <T>(run: () => T): T => {
-		db.exec("BEGIN");
-		try {
-			const result = run();
-			db.exec("COMMIT");
-			return result;
-		} catch (error) {
-			db.exec("ROLLBACK");
-			throw error;
-		}
-	};
-	return { db, storage: { sql, transactionSync } as unknown as MigratedStorage };
-}
+import { LINKED_THREADS, MIGRATIONS, migrate } from "./schema";
+import { nodeStorage as storage } from "./testing";
 
 const names = (db: DatabaseSync, type: string) =>
 	(
@@ -55,12 +21,19 @@ describe("migrate", () => {
 			"held",
 			"message",
 			"message_reference",
+			// The search index, and the tables FTS5 keeps it in.
+			"message_search",
+			"message_search_config",
+			"message_search_data",
+			"message_search_docsize",
+			"message_search_idx",
 			"schema_migration",
 			"thread",
 		]);
 		expect(db.prepare("SELECT version FROM schema_migration").all()).toEqual([
 			{ version: 1 },
 			{ version: 2 },
+			{ version: 3 },
 		]);
 	});
 
@@ -132,6 +105,27 @@ describe("migrate", () => {
 			.join("\n");
 		expect(plan).not.toMatch(/message_listed|SCAN message\b/);
 		expect(plan).toMatch(/MULTI-INDEX OR/);
+	});
+
+	it("deletes a message's entry in the search index with the message", () => {
+		const { db, storage: store } = storage();
+		migrate(store);
+		db.prepare(
+			`INSERT INTO message (id, state, delivery_key, object, size, arrived_at, envelope_from,
+				envelope_to, search_id)
+			VALUES ('one', 'stored', 'key', 'w/m/x.eml', 10, 1, 'a@x', 'b@y', 7)`,
+		).run();
+		db.prepare(
+			`INSERT INTO message_search (rowid, subject, sender, attachments, body)
+			VALUES (7, 'Lunch', '', '', 'at noon')`,
+		).run();
+		const found = () =>
+			db.prepare("SELECT rowid FROM message_search WHERE message_search MATCH 'noon'").all();
+		expect(found()).toHaveLength(1);
+
+		db.prepare("DELETE FROM message WHERE id = 'one'").run();
+
+		expect(found()).toEqual([]);
 	});
 
 	it("leaves an object as it was when a migration fails", () => {
