@@ -90,9 +90,9 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     thread's line shows its newest message's subject, which the proved domain beside it speaks for,
     and without `Re:`, list tags and their kin, with look-alike forms such as full-width brackets
     made plain: those are all that may differ between a thread's subjects, so no sender's own
-    words reach the line. The query that finds a message's threads
-    keeps SQLite off the index on `state`, which would read every stored message. A `thread` row keeps the count and the first and newest arrival, so a page of threads is
-    one indexed read; the object brings it up to date as messages are stored and deleted. The
+    words reach the line. The query that finds a message's threads keeps SQLite off the index on
+    `state`, which would read every stored message. A `thread` row keeps the count and the first
+    and newest arrival, so a page of threads is one indexed read; the object brings it up to date as messages are stored and deleted. The
     object's schema has versions, kept in a table, since Durable Objects have no
     `PRAGMA user_version` (`schema.ts`); messages stored before threads became a thread each, and
     so does any message stored without one, as code from before threads would after a rollback.
@@ -106,6 +106,18 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     non-member, or a mailbox of another workspace, gets the same "not found" as a missing one, and
     the mailbox is checked against the caller's workspace in D1 before its object is asked
     anything.
+  - **Search.** A mailbox's page, and `…/threads?q=`, list the threads with a message that has
+    every word typed, the last also as the start of one, newest news first. An FTS5 table in the
+    mailbox's object indexes each message's subject, sender, attachment names and text, with
+    accents set aside. Each word is quoted, so what FTS5 would read as syntax (`OR`, `NEAR`,
+    `column:`, `*`) is only text, and at most 10 words of the first 200 characters count. The
+    object's alarm indexes messages a second after they are stored, 20 at a time and the oldest
+    first, so a delivery never waits for its mail to be parsed, and mail that has just arrived can
+    take a moment to be found. It reads a message's first 2 MiB from R2 and indexes up to 100,000
+    characters of its text, or of its HTML made text; a message postal-mime can't parse is found by
+    its subject and sender. The table is contentless: it holds the words' places, not the mail, and
+    a trigger takes a message's entry out with the message. Messages stored before search are
+    indexed when their object next starts.
   - **Who sent it.** A message shows as from a domain only when Cloudflare's own
     `Authentication-Results` says `dmarc=pass` for that domain (`header.from`), and the message
     has one `From` holding one address on it. Cloudflare adds its headers at the top, below its

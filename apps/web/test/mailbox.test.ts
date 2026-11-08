@@ -980,3 +980,159 @@ describe("threads", () => {
 		expect(second.next).toBeNull();
 	});
 });
+
+describe("search", () => {
+	interface Found {
+		threads: { id: string; count: number; subject: string }[];
+		next: { latestAt: number; id: string } | null;
+	}
+
+	async function search(slug: string, mailboxId: string, q: string, query = "", person = owner) {
+		return mail.fetch(
+			`${origin}/api/mail/${slug}/${mailboxId}/threads?q=${encodeURIComponent(q)}${query}`,
+			{ headers: person.headers },
+		);
+	}
+
+	async function find(slug: string, mailboxId: string, q: string, query = "") {
+		const response = await search(slug, mailboxId, q, query);
+		expect(response.status).toBe(200);
+		return (await response.json()) as Found;
+	}
+
+	/**
+	 * Searches until it finds `count` threads. The alarm indexes a message a moment after it is
+	 * stored, the oldest first, so finding the last one delivered means the rest are indexed too.
+	 */
+	async function eventually(slug: string, mailboxId: string, q: string, count: number) {
+		const until = Date.now() + 15_000;
+		for (;;) {
+			const page = await find(slug, mailboxId, q);
+			if (page.threads.length >= count || Date.now() > until) return page;
+			await new Promise((resolve) => setTimeout(resolve, 200));
+		}
+	}
+
+	const subjects = (page: Found) => page.threads.map((one) => one.subject);
+
+	it("finds threads by words in a message's text, subject, sender or attachments", async () => {
+		const box = await mailboxWithAddress();
+		await kept(
+			box.address,
+			message(box.address, {
+				from: "Shop <orders@shop.example>",
+				subject: "Invoice 42",
+				messageId: "<invoice@shop.example>",
+				extra: ["MIME-Version: 1.0", 'Content-Type: multipart/mixed; boundary="b1"'],
+				body: [
+					"--b1",
+					"Content-Type: text/plain; charset=utf-8",
+					"",
+					"Your parcel has shipped.",
+					"--b1",
+					'Content-Type: application/pdf; name="receipt-42.pdf"',
+					'Content-Disposition: attachment; filename="receipt-42.pdf"',
+					"Content-Transfer-Encoding: base64",
+					"",
+					"JVBERi0xLjQK",
+					"--b1--",
+				].join("\r\n"),
+			}),
+		);
+		await kept(box.address, message(box.address, { subject: "Lunch", body: "Meet at noon?" }));
+		await kept(
+			box.address,
+			message(box.address, {
+				subject: "Re: Invoice 42",
+				body: "Where is my parcel? It's late.",
+				extra: ["In-Reply-To: <invoice@shop.example>"],
+			}),
+		);
+
+		// The thread with both messages, once.
+		const parcel = await eventually(box.slug, box.mailboxId, "late", 1);
+		expect(parcel.threads.map((one) => [one.subject, one.count])).toEqual([["Invoice 42", 2]]);
+		expect(subjects(await find(box.slug, box.mailboxId, "parcel"))).toEqual(["Invoice 42"]);
+		expect(subjects(await find(box.slug, box.mailboxId, "receipt-42.pdf"))).toEqual(["Invoice 42"]);
+		expect(subjects(await find(box.slug, box.mailboxId, "orders@shop.example"))).toEqual([
+			"Invoice 42",
+		]);
+		expect(subjects(await find(box.slug, box.mailboxId, "LUNCH noo"))).toEqual(["Lunch"]);
+		// Every word, not any.
+		expect(subjects(await find(box.slug, box.mailboxId, "parcel noon"))).toEqual([]);
+		// Nothing to look for finds nothing, rather than everything.
+		expect(subjects(await find(box.slug, box.mailboxId, " - "))).toEqual([]);
+	});
+
+	it("finds an HTML message by its text, not its markup", async () => {
+		const box = await mailboxWithAddress();
+		await kept(
+			box.address,
+			message(box.address, {
+				extra: ["MIME-Version: 1.0", "Content-Type: text/html; charset=utf-8"],
+				body: '<div class="hiddenclass">See you <b>tomorrow</b></div><script>scriptword()</script>',
+			}),
+		);
+		expect(subjects(await eventually(box.slug, box.mailboxId, "tomorrow", 1))).toEqual(["Hello"]);
+		expect(subjects(await find(box.slug, box.mailboxId, "hiddenclass"))).toEqual([]);
+		expect(subjects(await find(box.slug, box.mailboxId, "scriptword"))).toEqual([]);
+	});
+
+	it("takes what FTS5 would read as syntax as words to look for", async () => {
+		const box = await mailboxWithAddress();
+		await kept(
+			box.address,
+			message(box.address, { subject: "Plans", body: "Or near the station" }),
+		);
+		expect(subjects(await eventually(box.slug, box.mailboxId, "or near", 1))).toEqual(["Plans"]);
+		for (const q of ['"', "OR", "NEAR(station", "subject:plans", "*", "station OR x", "^near"]) {
+			expect((await search(box.slug, box.mailboxId, q)).status, q).toBe(200);
+		}
+		expect(subjects(await find(box.slug, box.mailboxId, "station OR x"))).toEqual([]);
+	});
+
+	it("no longer finds a message once it is deleted", async () => {
+		const box = await mailboxWithAddress();
+		await kept(box.address, message(box.address, { subject: "Gone soon", body: "ephemeral" }));
+		const [thread] = (await eventually(box.slug, box.mailboxId, "ephemeral", 1)).threads;
+		const opened = (await (
+			await mail.fetch(`${origin}/api/mail/${box.slug}/${box.mailboxId}/threads/${thread?.id}`, {
+				headers: owner.headers,
+			})
+		).json()) as { messages: { id: string }[] };
+		const deleted = await mail.fetch(
+			`${origin}/api/mail/${box.slug}/${box.mailboxId}/${opened.messages[0]?.id}`,
+			{ method: "DELETE", headers: owner.headers },
+		);
+		expect(deleted.status).toBe(200);
+		expect(subjects(await find(box.slug, box.mailboxId, "ephemeral"))).toEqual([]);
+	});
+
+	it("is for the workspace's members only", async () => {
+		const box = await mailboxWithAddress();
+		await kept(box.address, message(box.address, { body: "private words" }));
+		await eventually(box.slug, box.mailboxId, "private", 1);
+		expect((await search(box.slug, box.mailboxId, "private", "", outsider)).status).toBe(404);
+	});
+
+	it("pages through what it finds, a few messages indexed at a time", async () => {
+		const box = await mailboxWithAddress();
+		for (let n = 0; n < 51; n++) {
+			await kept(box.address, message(box.address, { subject: `Found ${n}`, body: "pagedword" }));
+		}
+		await kept(box.address, message(box.address, { subject: "Last", body: "lastword" }));
+		await eventually(box.slug, box.mailboxId, "lastword", 1);
+
+		const first = await find(box.slug, box.mailboxId, "pagedword");
+		expect(first.threads).toHaveLength(50);
+		expect(first.threads[0]?.subject).toBe("Found 50");
+		const second = await find(
+			box.slug,
+			box.mailboxId,
+			"pagedword",
+			`&beforeAt=${first.next?.latestAt}&beforeId=${first.next?.id}`,
+		);
+		expect(subjects(second)).toEqual(["Found 0"]);
+		expect(second.next).toBeNull();
+	});
+});

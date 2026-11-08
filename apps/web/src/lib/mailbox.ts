@@ -106,6 +106,9 @@ export interface OpenedMessage {
 	attachments: { name: string | null; type: string; size: number }[];
 }
 
+/** The most of a query that is sent. Search itself looks at less. */
+export const MAX_QUERY_SENT = 1000;
+
 const Id = z.string().min(1).max(100);
 const Slug = z.string().min(1).max(100);
 
@@ -123,18 +126,22 @@ export const getMailbox = createServerFn({ method: "GET" })
 		return listMessages(data.workspace, data.mailbox, data.before);
 	});
 
-/** A page of a mailbox's threads, the newest news first, or null when the caller can't see it. */
+/**
+ * A page of a mailbox's threads, the newest news first, or of those a query finds. Null when the
+ * caller can't see the mailbox.
+ */
 export const getThreads = createServerFn({ method: "GET" })
 	.validator(
 		z.object({
 			workspace: Slug,
 			mailbox: Id,
 			before: z.object({ latestAt: z.number().int().nonnegative(), id: Id }).nullable(),
+			query: z.string().max(MAX_QUERY_SENT).nullable(),
 		}),
 	)
 	.handler(async ({ data }): Promise<ThreadsPage | null> => {
 		const { listThreads } = await import("#/server/mailbox/read");
-		return listThreads(data.workspace, data.mailbox, data.before);
+		return listThreads(data.workspace, data.mailbox, data.before, data.query || null);
 	});
 
 /** A page of a thread, or null when there is no such thread the caller can see. */

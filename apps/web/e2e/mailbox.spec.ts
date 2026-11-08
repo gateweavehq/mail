@@ -210,3 +210,59 @@ test("a long thread pages from its newest messages", async ({ page, request, bas
 	await expect(page.getByRole("link", { name: "Newest messages" })).toHaveCount(0);
 	await expect(heading).toBeFocused();
 });
+
+test("searching a mailbox finds the threads with every word", async ({
+	page,
+	request,
+	baseURL,
+}) => {
+	const { slug, mailboxId, to, deliver } = await supportMailbox(page, request, baseURL);
+	await deliver("customer@example.org", [
+		"From: A Customer <customer@example.org>",
+		`To: ${to}`,
+		"Subject: Broken kettle",
+		`Message-ID: <${Date.now()}.kettle@example.org>`,
+		"",
+		"It stopped heating after a week.",
+		"",
+	]);
+	await deliver("orders@example.org", [
+		"From: Shop <orders@example.org>",
+		`To: ${to}`,
+		"Subject: Your order has shipped",
+		`Message-ID: <${Date.now()}.shop@example.org>`,
+		"",
+		"It's on its way.",
+		"",
+	]);
+	// Mail is indexed a moment after it arrives.
+	await expect
+		.poll(async () => {
+			const found = await page.request.get(
+				`/api/mail/${slug}/${mailboxId}/threads?q=${encodeURIComponent("way")}`,
+			);
+			return ((await found.json()) as { threads: unknown[] }).threads.length;
+		})
+		.toBe(1);
+
+	await page.goto(`/${slug}/mailboxes/${mailboxId}`);
+	await waitForHydration(page);
+	const box = page.getByRole("searchbox", { name: "Search Support" });
+	await box.fill("heat");
+	await box.press("Enter");
+	await expect(page).toHaveURL(/q=heat/);
+	const found = page.getByRole("list", { name: "Threads in Support that match" });
+	await expect(found.getByRole("link", { name: /Broken kettle/ })).toBeVisible();
+	await expect(found.getByRole("link")).toHaveCount(1);
+	await expect(box).toHaveValue("heat");
+
+	await box.fill("kettle shipped");
+	await page.getByRole("button", { name: "Search", exact: true }).click();
+	await expect(page.getByText(/No thread has all of those words/)).toBeVisible();
+
+	await page.getByRole("link", { name: "Clear" }).click();
+	await expect(page).not.toHaveURL(/q=/);
+	const all = page.getByRole("list", { name: "Threads in Support" });
+	await expect(all.getByRole("link")).toHaveCount(2);
+	await expect(box).toHaveValue("");
+});
