@@ -24,6 +24,11 @@ import { Route as WorkspaceSettingsMembersRouteImport } from './routes/$workspac
 import { Route as WorkspaceSettingsWorkspaceRouteImport } from './routes/$workspace/settings.workspace'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 import { Route as ApiDirectoryWorkspaceRouteImport } from './routes/api/directory/$workspace'
+import { Route as WorkspaceMailboxesMailboxIndexRouteImport } from './routes/$workspace/mailboxes.$mailbox.index'
+import { Route as WorkspaceMailboxesMailboxMessageRouteImport } from './routes/$workspace/mailboxes.$mailbox.$message'
+import { Route as ApiMailWorkspaceMailboxIndexRouteImport } from './routes/api/mail/$workspace.$mailbox.index'
+import { Route as ApiMailWorkspaceMailboxMessageIndexRouteImport } from './routes/api/mail/$workspace.$mailbox.$message.index'
+import { Route as ApiMailWorkspaceMailboxMessageOriginalRouteImport } from './routes/api/mail/$workspace.$mailbox.$message.original'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -103,6 +108,36 @@ const ApiDirectoryWorkspaceRoute = ApiDirectoryWorkspaceRouteImport.update({
   path: '/api/directory/$workspace',
   getParentRoute: () => rootRouteImport,
 } as any)
+const WorkspaceMailboxesMailboxIndexRoute =
+  WorkspaceMailboxesMailboxIndexRouteImport.update({
+    id: '/mailboxes/$mailbox/',
+    path: '/mailboxes/$mailbox/',
+    getParentRoute: () => WorkspaceRoute,
+  } as any)
+const WorkspaceMailboxesMailboxMessageRoute =
+  WorkspaceMailboxesMailboxMessageRouteImport.update({
+    id: '/mailboxes/$mailbox/$message',
+    path: '/mailboxes/$mailbox/$message',
+    getParentRoute: () => WorkspaceRoute,
+  } as any)
+const ApiMailWorkspaceMailboxIndexRoute =
+  ApiMailWorkspaceMailboxIndexRouteImport.update({
+    id: '/api/mail/$workspace/$mailbox/',
+    path: '/api/mail/$workspace/$mailbox/',
+    getParentRoute: () => rootRouteImport,
+  } as any)
+const ApiMailWorkspaceMailboxMessageIndexRoute =
+  ApiMailWorkspaceMailboxMessageIndexRouteImport.update({
+    id: '/api/mail/$workspace/$mailbox/$message/',
+    path: '/api/mail/$workspace/$mailbox/$message/',
+    getParentRoute: () => rootRouteImport,
+  } as any)
+const ApiMailWorkspaceMailboxMessageOriginalRoute =
+  ApiMailWorkspaceMailboxMessageOriginalRouteImport.update({
+    id: '/api/mail/$workspace/$mailbox/$message/original',
+    path: '/api/mail/$workspace/$mailbox/$message/original',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -120,6 +155,11 @@ export interface FileRoutesByFullPath {
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/directory/$workspace': typeof ApiDirectoryWorkspaceRoute
   '/$workspace/settings/': typeof WorkspaceSettingsIndexRoute
+  '/$workspace/mailboxes/$mailbox/$message': typeof WorkspaceMailboxesMailboxMessageRoute
+  '/$workspace/mailboxes/$mailbox/': typeof WorkspaceMailboxesMailboxIndexRoute
+  '/api/mail/$workspace/$mailbox/': typeof ApiMailWorkspaceMailboxIndexRoute
+  '/api/mail/$workspace/$mailbox/$message/original': typeof ApiMailWorkspaceMailboxMessageOriginalRoute
+  '/api/mail/$workspace/$mailbox/$message/': typeof ApiMailWorkspaceMailboxMessageIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -135,6 +175,11 @@ export interface FileRoutesByTo {
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/directory/$workspace': typeof ApiDirectoryWorkspaceRoute
   '/$workspace/settings': typeof WorkspaceSettingsIndexRoute
+  '/$workspace/mailboxes/$mailbox/$message': typeof WorkspaceMailboxesMailboxMessageRoute
+  '/$workspace/mailboxes/$mailbox': typeof WorkspaceMailboxesMailboxIndexRoute
+  '/api/mail/$workspace/$mailbox': typeof ApiMailWorkspaceMailboxIndexRoute
+  '/api/mail/$workspace/$mailbox/$message/original': typeof ApiMailWorkspaceMailboxMessageOriginalRoute
+  '/api/mail/$workspace/$mailbox/$message': typeof ApiMailWorkspaceMailboxMessageIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -153,6 +198,11 @@ export interface FileRoutesById {
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/directory/$workspace': typeof ApiDirectoryWorkspaceRoute
   '/$workspace/settings/': typeof WorkspaceSettingsIndexRoute
+  '/$workspace/mailboxes/$mailbox/$message': typeof WorkspaceMailboxesMailboxMessageRoute
+  '/$workspace/mailboxes/$mailbox/': typeof WorkspaceMailboxesMailboxIndexRoute
+  '/api/mail/$workspace/$mailbox/': typeof ApiMailWorkspaceMailboxIndexRoute
+  '/api/mail/$workspace/$mailbox/$message/original': typeof ApiMailWorkspaceMailboxMessageOriginalRoute
+  '/api/mail/$workspace/$mailbox/$message/': typeof ApiMailWorkspaceMailboxMessageIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -172,6 +222,11 @@ export interface FileRouteTypes {
     | '/api/auth/$'
     | '/api/directory/$workspace'
     | '/$workspace/settings/'
+    | '/$workspace/mailboxes/$mailbox/$message'
+    | '/$workspace/mailboxes/$mailbox/'
+    | '/api/mail/$workspace/$mailbox/'
+    | '/api/mail/$workspace/$mailbox/$message/original'
+    | '/api/mail/$workspace/$mailbox/$message/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -187,6 +242,11 @@ export interface FileRouteTypes {
     | '/api/auth/$'
     | '/api/directory/$workspace'
     | '/$workspace/settings'
+    | '/$workspace/mailboxes/$mailbox/$message'
+    | '/$workspace/mailboxes/$mailbox'
+    | '/api/mail/$workspace/$mailbox'
+    | '/api/mail/$workspace/$mailbox/$message/original'
+    | '/api/mail/$workspace/$mailbox/$message'
   id:
     | '__root__'
     | '/'
@@ -204,6 +264,11 @@ export interface FileRouteTypes {
     | '/api/auth/$'
     | '/api/directory/$workspace'
     | '/$workspace/settings/'
+    | '/$workspace/mailboxes/$mailbox/$message'
+    | '/$workspace/mailboxes/$mailbox/'
+    | '/api/mail/$workspace/$mailbox/'
+    | '/api/mail/$workspace/$mailbox/$message/original'
+    | '/api/mail/$workspace/$mailbox/$message/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -216,6 +281,9 @@ export interface RootRouteChildren {
   SettingsAccountRoute: typeof SettingsAccountRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiDirectoryWorkspaceRoute: typeof ApiDirectoryWorkspaceRoute
+  ApiMailWorkspaceMailboxIndexRoute: typeof ApiMailWorkspaceMailboxIndexRoute
+  ApiMailWorkspaceMailboxMessageOriginalRoute: typeof ApiMailWorkspaceMailboxMessageOriginalRoute
+  ApiMailWorkspaceMailboxMessageIndexRoute: typeof ApiMailWorkspaceMailboxMessageIndexRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -325,6 +393,41 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiDirectoryWorkspaceRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/$workspace/mailboxes/$mailbox/': {
+      id: '/$workspace/mailboxes/$mailbox/'
+      path: '/mailboxes/$mailbox'
+      fullPath: '/$workspace/mailboxes/$mailbox/'
+      preLoaderRoute: typeof WorkspaceMailboxesMailboxIndexRouteImport
+      parentRoute: typeof WorkspaceRoute
+    }
+    '/$workspace/mailboxes/$mailbox/$message': {
+      id: '/$workspace/mailboxes/$mailbox/$message'
+      path: '/mailboxes/$mailbox/$message'
+      fullPath: '/$workspace/mailboxes/$mailbox/$message'
+      preLoaderRoute: typeof WorkspaceMailboxesMailboxMessageRouteImport
+      parentRoute: typeof WorkspaceRoute
+    }
+    '/api/mail/$workspace/$mailbox/': {
+      id: '/api/mail/$workspace/$mailbox/'
+      path: '/api/mail/$workspace/$mailbox'
+      fullPath: '/api/mail/$workspace/$mailbox/'
+      preLoaderRoute: typeof ApiMailWorkspaceMailboxIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/mail/$workspace/$mailbox/$message/': {
+      id: '/api/mail/$workspace/$mailbox/$message/'
+      path: '/api/mail/$workspace/$mailbox/$message'
+      fullPath: '/api/mail/$workspace/$mailbox/$message/'
+      preLoaderRoute: typeof ApiMailWorkspaceMailboxMessageIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/mail/$workspace/$mailbox/$message/original': {
+      id: '/api/mail/$workspace/$mailbox/$message/original'
+      path: '/api/mail/$workspace/$mailbox/$message/original'
+      fullPath: '/api/mail/$workspace/$mailbox/$message/original'
+      preLoaderRoute: typeof ApiMailWorkspaceMailboxMessageOriginalRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -348,11 +451,15 @@ const WorkspaceSettingsRouteWithChildren =
 interface WorkspaceRouteChildren {
   WorkspaceSettingsRoute: typeof WorkspaceSettingsRouteWithChildren
   WorkspaceIndexRoute: typeof WorkspaceIndexRoute
+  WorkspaceMailboxesMailboxMessageRoute: typeof WorkspaceMailboxesMailboxMessageRoute
+  WorkspaceMailboxesMailboxIndexRoute: typeof WorkspaceMailboxesMailboxIndexRoute
 }
 
 const WorkspaceRouteChildren: WorkspaceRouteChildren = {
   WorkspaceSettingsRoute: WorkspaceSettingsRouteWithChildren,
   WorkspaceIndexRoute: WorkspaceIndexRoute,
+  WorkspaceMailboxesMailboxMessageRoute: WorkspaceMailboxesMailboxMessageRoute,
+  WorkspaceMailboxesMailboxIndexRoute: WorkspaceMailboxesMailboxIndexRoute,
 }
 
 const WorkspaceRouteWithChildren = WorkspaceRoute._addFileChildren(
@@ -369,6 +476,11 @@ const rootRouteChildren: RootRouteChildren = {
   SettingsAccountRoute: SettingsAccountRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiDirectoryWorkspaceRoute: ApiDirectoryWorkspaceRoute,
+  ApiMailWorkspaceMailboxIndexRoute: ApiMailWorkspaceMailboxIndexRoute,
+  ApiMailWorkspaceMailboxMessageOriginalRoute:
+    ApiMailWorkspaceMailboxMessageOriginalRoute,
+  ApiMailWorkspaceMailboxMessageIndexRoute:
+    ApiMailWorkspaceMailboxMessageIndexRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

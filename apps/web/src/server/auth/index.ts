@@ -1,6 +1,7 @@
 import { env, waitUntil } from "cloudflare:workers";
 import { createDb } from "../db";
 import { mailer } from "../email";
+import { removeMailboxes } from "../mailbox";
 import { allowPasswordTry, allowSpentTriesEmail, authRateLimits } from "../rate-limit";
 import { countedByWhoSentIt } from "../workers-address";
 import { createAuth } from "./config";
@@ -76,6 +77,7 @@ function buildAuth() {
 		rateLimitStorage: authRateLimits,
 		allowPasswordTry,
 		allowSpentTriesEmail,
+		removeMailboxes,
 	});
 }
 

@@ -1,14 +1,19 @@
 # Self-hosting
 
 Gateweave Mail runs on your own Cloudflare account as one Worker. It is early: today it has
-accounts, workspaces and a directory of addresses, and it can't store mail yet. It uses:
+accounts, workspaces, a directory of addresses and mailboxes that keep the mail sent to them, and
+it can't send or reply yet. It uses:
 
 - a D1 database for accounts, the list of workspaces, and their domains, mailboxes and addresses;
+- an R2 bucket for mail as it arrived, one object per message;
+- a Durable Object per mailbox, which holds the index of its messages;
 - a Durable Object that counts rate limits, one per client address or recipient;
 - optionally, Cloudflare Email Service, to send password resets, verification and invitations.
 
 You need a Cloudflare account with the **Workers Paid** plan. Sign-in takes more CPU than the Free
-plan gives a request, and Email Sending is a Paid feature.
+plan gives a request, and Email Sending is a Paid feature. Turn on R2 in the account before the
+first deploy, by opening R2 in the dashboard once and following its steps: until then, the bucket
+can't be created, and the deploy fails.
 
 **Getting a domain's mail to the Worker.** Prove the domain under a workspace's Settings, then turn
 on Email Routing for that same domain in the Cloudflare account that runs the Worker. Each domain
@@ -22,8 +27,8 @@ or subdomain is proved on its own: proving `example.com` gives no addresses on
   200 rules in all, and a new one can take over a minute to work, with mail going to the catch-all
   until it does.
 
-Nothing needs this yet, so don't do it for a domain people rely on. Mail can't be stored yet: a
-message to an address that exists is told to try again later, any other is refused, and you can
+Mail can't send or reply yet, so think before doing this for a domain people rely on: what
+arrives is kept and shown, and a message to an address that doesn't exist is refused. You can
 deploy without Email Routing. Proof stays after the TXT record is removed, but whoever runs the
 domain's DNS decides who holds it: if another workspace on the same server proves it later, it
 moves to them, unless your record is still there too.
@@ -44,6 +49,8 @@ Workers Builds, so every push to its main branch deploys. On the form:
 - **D1 database**: choose **+ Create new** and give it a name. The form picks an existing database
   when one in your account has the name in `wrangler.jsonc` (`gateweave-mail`), so check it
   before you deploy.
+- **R2 bucket** holds the mail. Make a new one in the same way, and check that the form hasn't
+  picked an existing bucket named `gateweave-mail`.
 - **BETTER_AUTH_SECRET** signs sessions. Use a long random string, for example from
   `openssl rand -base64 32`, and keep it secret. Changing it later signs everyone out.
 - Leave the build and deploy commands as they are. The deploy command applies the database
@@ -79,13 +86,13 @@ pnpm wrangler login
 pnpm run deploy
 ```
 
-`pnpm wrangler` runs the Wrangler version Mail pins, from the repository root. The Worker and its
-database are named `gateweave-mail`. To use other names, change `name` and `database_name` in
-`wrangler.jsonc` before the first deploy.
+`pnpm wrangler` runs the Wrangler version Mail pins, from the repository root. The Worker, its
+database and its bucket are named `gateweave-mail`. To use other names, change `name`,
+`database_name` and `bucket_name` in `wrangler.jsonc` before the first deploy.
 
 The first deploy does three things:
 
-1. It creates the D1 database and the Durable Object namespace.
+1. It creates the D1 database, the R2 bucket and the Durable Object namespaces.
 2. It generates `BETTER_AUTH_SECRET`, which is never shown.
 3. It applies the migrations.
 
@@ -107,6 +114,22 @@ pnpm wrangler d1 create gateweave-mail --location apac
 
 Then pick it instead of **+ Create new** on the button's form, or put its id in `wrangler.jsonc` as
 `database_id`.
+
+## Where mail is kept
+
+Each message goes into the R2 bucket as it arrived, one object per message, and each mailbox's
+Durable Object holds the index of its messages. A mailbox holds up to 1 GiB, which
+`MAILBOX_BYTES` changes; past that, a sender is told to try again later, and an owner or admin can
+delete messages to make room. Removing a mailbox, or deleting its workspace, removes its mail at
+once. The database keeps a record of each removal, and a daily run removes the mail again an hour
+or more later, for a removal that stopped part way, then forgets the record. Mail only touches its
+own mailboxes' objects, so the bucket can hold other things too. Deleting an account leaves mail
+alone, since it belongs to the workspace.
+
+R2 storage and Durable Object storage are billed past what the plan includes: see
+[R2 pricing](https://developers.cloudflare.com/r2/pricing/) and
+[Durable Objects pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/).
+R2 has no point-in-time recovery, so restoring D1 doesn't bring back removed mail.
 
 ## Settings
 
@@ -131,6 +154,7 @@ because `wrangler.jsonc` sets `keep_vars`.
 | `OIDC_CLIENT_SECRET`   | Its client secret there.                                                                                           |
 | `OIDC_PROVIDER_NAME`   | What the sign-in button calls it. Unset: "single sign-on".                                                         |
 | `EMAIL_FROM`           | Turns on email (invitations, password reset), such as `Gateweave Mail <mail@example.com>`.                         |
+| `MAILBOX_BYTES`        | How many bytes one mailbox may hold, as a whole number. Unset: 1 GiB.                                              |
 | `LEGAL_NOTICE_URL`     | The address of your legal notice. See [below](#your-legal-pages).                                                  |
 | `PRIVACY_POLICY_URL`   | The address of your privacy policy.                                                                                |
 | `TERMS_URL`            | The address of your terms.                                                                                         |

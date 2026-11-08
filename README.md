@@ -6,8 +6,8 @@
 
 <p align="center">
   <strong>Mailboxes for people and agents, on one Cloudflare Worker.</strong><br>
-  Open source, with no server to run. Early: today it signs people in and keeps a directory of
-  addresses, but can't store mail yet.
+  Open source, with no server to run. Early: it receives and keeps mail and shows its text, but
+  can't send or reply yet.
 </p>
 
 <p align="center">
@@ -24,9 +24,9 @@ tools that run on Cloudflare, next to [Gateweave Track](https://github.com/gatew
 [Gateweave ID](https://github.com/gateweavehq/id) and
 [Gateweave Agents](https://github.com/gateweavehq/agents).
 
-> **Status: early development.** Mail does not store or send mail yet. What exists is sign-in,
-> workspaces, and a directory of domains and addresses that a Worker checks each incoming message
-> against. Expect breaking changes until 1.0; see [CHANGELOG.md](CHANGELOG.md).
+> **Status: early development.** Mail receives and keeps mail, but does not send it yet. What exists
+> is sign-in, workspaces, a directory of domains and addresses, and mailboxes whose messages members
+> can read as text. Expect breaking changes until 1.0; see [CHANGELOG.md](CHANGELOG.md).
 
 ## What works today
 
@@ -38,15 +38,19 @@ tools that run on Cloudflare, next to [Gateweave Track](https://github.com/gatew
   or member).
 - **Domains, mailboxes and addresses.** Prove a domain with a DNS record, make mailboxes, and give
   them addresses, for good or for a set number of days.
-- **An `email()` handler** on the Worker, which looks up each message's address. A message to an
-  address that doesn't exist is refused for good. Mail can't be stored yet, so one to an address
-  that does exist is told to try again later, and is never accepted and lost.
+- **Receiving mail.** The Worker's `email()` handler looks up each message's address and refuses
+  one that doesn't exist. Mail for one that does is kept in its mailbox, once even when it arrives
+  twice, up to 1 GiB per mailbox.
+- **Reading mail.** Members of a workspace see its mailboxes' messages, newest first, and read
+  their text, with the attachments listed and the original to download. A sender's domain shows
+  as proved only when the message passed DMARC for it. Owners and admins can delete a message.
 
 ## What it is planned to become
 
 None of this exists yet; it is the direction, and it may change.
 
-- Mailboxes for people and for AI agents, in a workspace.
+- Mailboxes for people and for AI agents, in a workspace, with who may read each one.
+- HTML mail, shown safely, and sending and replying.
 - Addresses an agent can make for itself.
 - Aliases that point at a mailbox.
 - Transactional sending and templates, through Cloudflare Email Service.
@@ -57,7 +61,7 @@ The planned shape is in [docs/architecture.md](docs/architecture.md).
 
 [TanStack Start](https://tanstack.com/start) · React 19 · Tailwind CSS 4 ·
 [Better Auth](https://better-auth.com) · [Drizzle ORM](https://orm.drizzle.team) ·
-Cloudflare Workers, Durable Objects and D1 · TypeScript 7 · Vitest · Biome
+Cloudflare Workers, Durable Objects, D1 and R2 · TypeScript 7 · Vitest · Biome
 
 ## Getting started
 

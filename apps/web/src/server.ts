@@ -4,8 +4,10 @@ import { db } from "./server/auth";
 import { pruneExpired } from "./server/db/prune";
 import { findAddress } from "./server/directory";
 import { receiveMail } from "./server/inbound";
+import { finishRemovals, storeMail } from "./server/mailbox";
 import { newNonce, withSecurityHeaders } from "./server/security-headers";
 
+export { Mailbox } from "./server/mailbox";
 export { RateLimiter } from "./server/rate-limit";
 
 /**
@@ -35,10 +37,15 @@ export default {
 	// With no database this throws, and the sender tries again later: not knowing an address is our
 	// trouble, not a refusal.
 	async email(message) {
-		await receiveMail(message, (recipient) => findAddress(db, recipient, new Date()));
+		await receiveMail(
+			message,
+			(recipient) => findAddress(db, recipient, new Date()),
+			(found) => storeMail(found, message),
+		);
 	},
-	// Clears what is past its time, once a day.
+	// Clears what is past its time, once a day, and finishes the removal of mailboxes' mail.
 	async scheduled() {
 		await pruneExpired(db);
+		await finishRemovals(db);
 	},
 } satisfies ExportedHandler<Cloudflare.Env>;

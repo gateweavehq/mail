@@ -109,10 +109,10 @@ const refused = async (to: string) => {
 	expect(answer.text).toContain("No such address");
 };
 
-/** What a sender's server is told to try again from: anything but acceptance or the refusal. */
-const toldToRetry = async (to: string) => {
+/** A message the Worker took and kept, as its mailbox's. */
+const kept = async (to: string) => {
 	const answer = await deliver(to);
-	expect(answer.status).toBeGreaterThanOrEqual(500);
+	expect(answer.status).toBe(200);
 	expect(answer.text).not.toContain("No such address");
 };
 
@@ -394,13 +394,13 @@ describe("proving a domain", () => {
 	it("moves a domain to whoever proves it next, once the holder's record has gone", async () => {
 		const domain = "moved.example.com";
 		const old = await holder("Contractor", domain, "help");
-		await toldToRetry(`help@${domain}`);
+		await kept(`help@${domain}`);
 
 		records.delete(`_gateweave-mail.${domain}|TXT`);
 		expect(
 			await changed(old.slug, old.person.headers, { action: "check-domain", id: old.id }),
 		).toMatchObject({ proved: true });
-		await toldToRetry(`help@${domain}`);
+		await kept(`help@${domain}`);
 
 		const company = await claim("Company", domain);
 		expect(await company.check()).toMatchObject({ proved: false });
@@ -428,7 +428,7 @@ describe("proving a domain", () => {
 		const [address] =
 			(await list(company.slug, company.person.headers)).mailboxes[0]?.addresses ?? [];
 		expect(address?.domainProved).toBe(true);
-		await toldToRetry(`help@${domain}`);
+		await kept(`help@${domain}`);
 	});
 
 	it("moves nothing while the holder's record is there too, since it isn't clear who is meant", async () => {
@@ -444,7 +444,7 @@ describe("proving a domain", () => {
 			expect.any(Number),
 		);
 		expect((await list(other.slug, other.person.headers)).domains[0]?.verifiedAt).toBeNull();
-		await toldToRetry(`help@${domain}`);
+		await kept(`help@${domain}`);
 
 		setProof(domain, other.value);
 		expect(await other.check()).toMatchObject({ proved: true });
@@ -473,7 +473,7 @@ describe("proving a domain", () => {
 			localPart: "help",
 			expiresInDays: null,
 		});
-		await toldToRetry(`help@${domain}`);
+		await kept(`help@${domain}`);
 		await refused(`help@sub.${domain}`);
 	});
 });
@@ -715,10 +715,10 @@ describe("mail to the directory's addresses", () => {
 		return { ...made, address: `${localPart}@${made.domain}` };
 	}
 
-	it("tells the sender to try again for an address that exists, in any case", async () => {
+	it("keeps mail for an address that exists, in any case", async () => {
 		const { address } = await withAddress();
-		await toldToRetry(address);
-		await toldToRetry(address.toUpperCase());
+		await kept(address);
+		await kept(address.toUpperCase());
 	});
 
 	it("refuses for good an address that doesn't exist on a proved domain", async () => {
@@ -745,7 +745,7 @@ describe("mail to the directory's addresses", () => {
 
 	it("refuses an address past its time", async () => {
 		const { address, slug } = await withAddress("short");
-		await toldToRetry(address);
+		await kept(address);
 		const [listed] = (await list(slug, owner.headers)).mailboxes[0]?.addresses ?? [];
 		await mail.db
 			.prepare("UPDATE mail_address SET expires_at = ? WHERE id = ?")

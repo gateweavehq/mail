@@ -3,6 +3,7 @@ import { z } from "zod";
 import { isAdminRole } from "../../lib/roles";
 import { currentMember } from "../access";
 import { db } from "../auth";
+import { removeMailboxes } from "../mailbox";
 import { appOrigin } from "../origin";
 import { allowDomainCheck } from "../rate-limit";
 import { DEFAULT_DNS_RESOLVER, dnsLookup } from "./dns";
@@ -94,8 +95,11 @@ async function run(action: DirectoryAction, workspaceId: string, userId: string)
 			return removeDomain(db, workspaceId, action.id);
 		case "add-mailbox":
 			return addMailbox(db, workspaceId, action.name);
-		case "remove-mailbox":
-			return removeMailbox(db, workspaceId, action.id);
+		case "remove-mailbox": {
+			const result = await removeMailbox(db, workspaceId, action.id);
+			if (result.ok) await removeMailboxes(workspaceId, [action.id]);
+			return result;
+		}
 		case "add-address":
 			return addAddress(db, workspaceId, userId, action, now);
 		case "remove-address":

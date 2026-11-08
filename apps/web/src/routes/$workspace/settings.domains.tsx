@@ -63,8 +63,8 @@ function DomainsPage() {
 					Getting a domain's mail to this server
 				</h2>
 				<p className="text-sm text-muted-foreground">
-					Mail can't be stored yet, so don't do this for a domain people rely on: a message to one
-					of its addresses is told to try again later, and any other is refused.
+					Mail can't send or reply yet, so think before doing this for a domain people rely on: its
+					mail is kept here and shown, and a message to an address that doesn't exist is refused.
 				</p>
 				<p className="text-sm text-muted-foreground">
 					In the Cloudflare account that runs this server, turn on Email Routing for the domain you

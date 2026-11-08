@@ -69,8 +69,9 @@ function WorkspaceHome() {
 			)}
 
 			<p className="text-sm text-muted-foreground">
-				Gateweave Mail is early: it can't store mail yet. A message that reaches this server for a
-				live address is told to try again later, and any other is refused.
+				Gateweave Mail is early: it keeps what arrives at a mailbox's addresses and shows its text,
+				and every member of the workspace can read it. It can't send or reply yet. Mail to an
+				address that doesn't exist is refused.
 			</p>
 
 			{admin && <AddMailbox />}
@@ -160,7 +161,15 @@ function MailboxCard({
 	return (
 		<li className="space-y-3 rounded-lg border p-4">
 			<div className="flex flex-wrap items-center justify-between gap-2">
-				<h2 className="min-w-0 break-words text-sm font-medium">{box.name}</h2>
+				<h2 className="min-w-0 break-words text-sm font-medium">
+					<Link
+						to="/$workspace/mailboxes/$mailbox"
+						params={{ workspace: slug, mailbox: box.id }}
+						className="underline-offset-4 hover:underline"
+					>
+						{box.name}
+					</Link>
+				</h2>
 				{admin && (
 					<Button size="sm" variant="ghost" onClick={() => setRemoving(true)}>
 						Remove
@@ -215,7 +224,7 @@ function MailboxCard({
 					}}
 					onClose={() => setRemoving(false)}
 				>
-					Its addresses go with it, and mail to them is refused from then on.
+					Its mail and its addresses go with it, and mail to them is refused from then on.
 				</ConfirmDialog>
 			)}
 
