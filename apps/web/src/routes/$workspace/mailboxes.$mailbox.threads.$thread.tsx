@@ -1,13 +1,16 @@
 import { createFileRoute, Link, useNavigate, useRouter } from "@tanstack/react-router";
-import { ChevronDown, ChevronRight, ShieldCheck } from "lucide-react";
-import { useId, useRef, useState } from "react";
+import { ChevronDown, ChevronRight, Reply, ShieldCheck } from "lucide-react";
+import { useEffect, useId, useRef, useState } from "react";
 import { z } from "zod";
-import { MessageView, senderName } from "#/components/mail/message-view";
+import { Composer } from "#/components/mail/composer";
+import { MessageView, person, senderName } from "#/components/mail/message-view";
+import { SentNotice, sentLabel } from "#/components/mail/sent-status";
 import { Button } from "#/components/ui/button";
 import { useWorkspace } from "#/components/workspace/context";
 import { Notice } from "#/components/workspace/notice";
 import { formatDateTime, formatShortDate } from "#/lib/dates";
 import { getMessage, getThread, type ListedMessage, type OpenedMessage } from "#/lib/mailbox";
+import { canSendAgain, quoted, type Sent } from "#/lib/outbox";
 import { useDocumentTitle } from "#/lib/title";
 
 const Search = z.object({
@@ -128,10 +131,16 @@ function ThreadPage() {
 							listed={listed}
 							opened={opened}
 							onDeleted={deleted}
+							onChanged={() => router.invalidate()}
 						/>
 					);
 				})}
 			</ol>
+
+			{!newer && page.latest && (
+				// A reply begun in one thread doesn't follow the person into another.
+				<ReplyToLatest key={thread} latest={page.latest} senders={page.from} />
+			)}
 
 			{newer && (
 				<Button asChild size="sm" variant="outline">
@@ -147,16 +156,110 @@ function ThreadPage() {
 	);
 }
 
+/**
+ * A reply to the thread's newest message, from the mailbox: it goes to whoever that message asks
+ * replies to go to, quoting it. Once sent, its copy is the thread's newest message.
+ */
+function ReplyToLatest({ latest, senders }: { latest: OpenedMessage; senders: string[] }) {
+	const { slug } = useWorkspace();
+	const { mailbox, thread } = Route.useParams();
+	const router = useRouter();
+	const navigate = useNavigate();
+	// The message being answered, kept as it was when Reply was pressed: a newer one that comes in
+	// meanwhile doesn't change what the reply answers.
+	const [answering, setAnswering] = useState<OpenedMessage | null>(null);
+	const writing = answering !== null;
+	const [said, setSaid] = useState("");
+	const button = useRef<HTMLButtonElement>(null);
+	const wasWriting = useRef(false);
+
+	// Sent or not, the focus goes back to Reply rather than to nowhere.
+	useEffect(() => {
+		if (!writing && wasWriting.current) button.current?.focus();
+		wasWriting.current = writing;
+	}, [writing]);
+
+	const sent = async (copy: Sent) => {
+		setAnswering(null);
+		setSaid(
+			copy.state === "sent"
+				? "Your reply is sent."
+				: copy.state === "sending"
+					? "Your reply is being sent."
+					: copy.state === "waiting"
+						? "Your reply waits to be sent."
+						: "Your reply isn't sent. Its copy above says why.",
+		);
+		if (copy.threadId !== thread) {
+			await navigate({
+				to: "/$workspace/mailboxes/$mailbox/threads/$thread",
+				params: { workspace: slug, mailbox, thread: copy.threadId },
+			});
+		} else {
+			await router.invalidate();
+		}
+	};
+
+	return (
+		<section aria-label="Reply" className="space-y-3">
+			{answering && (
+				<div className="rounded-lg border p-4">
+					<Composer
+						workspace={slug}
+						mailbox={mailbox}
+						senders={senders}
+						replyTo={answering.id}
+						draft={{
+							to: answering.reply.to,
+							cc: answering.reply.cc,
+							subject: answering.reply.subject,
+							text: quoted(
+								answering.text,
+								`On ${formatDateTime(answering.arrivedAt)}, ${answering.from ? person(answering.from) : "Someone"} wrote:`,
+							),
+							from: answering.reply.from ?? senders[0] ?? "",
+						}}
+						onSent={sent}
+						onCancel={() => setAnswering(null)}
+					/>
+				</div>
+			)}
+			<div className="flex flex-wrap items-center gap-3">
+				{!writing && (
+					<Button
+						ref={button}
+						size="sm"
+						onClick={() => {
+							setSaid("");
+							setAnswering(latest);
+						}}
+					>
+						<Reply aria-hidden />
+						Reply
+					</Button>
+				)}
+				{/* Always there, so that what it comes to say is read out. */}
+				<p role="status" className="text-sm text-muted-foreground">
+					{said}
+				</p>
+			</div>
+		</section>
+	);
+}
+
 /** One message of the thread: a line saying who and when, which opens to the whole message. */
 function ThreadMessage({
 	listed,
 	opened,
 	onDeleted,
+	onChanged,
 }: {
 	listed: ListedMessage;
 	/** Already read, for the newest message, which starts open. */
 	opened: OpenedMessage | null;
 	onDeleted: () => Promise<void>;
+	/** After it was sent again, to read how it went. */
+	onChanged: () => Promise<void>;
 }) {
 	const { slug } = useWorkspace();
 	const { mailbox } = Route.useParams();
@@ -196,6 +299,17 @@ function ThreadMessage({
 					>
 						<Chevron className="size-4 shrink-0 self-center text-muted-foreground" aria-hidden />
 						<span className="min-w-0 flex-1 truncate font-medium">{senderName(listed.from)}</span>
+						{listed.sent && sentLabel(listed.sent.status) && (
+							<span
+								className={`shrink-0 self-center rounded-full border px-2 text-xs ${
+									canSendAgain(listed.sent.status)
+										? "border-destructive/50 text-foreground"
+										: "text-muted-foreground"
+								}`}
+							>
+								{sentLabel(listed.sent.status)}
+							</span>
+						)}
 						{listed.verifiedDomain && (
 							<span
 								className="flex max-w-[40%] shrink-0 items-center gap-1 self-center text-xs text-muted-foreground"
@@ -216,7 +330,18 @@ function ThreadMessage({
 					</button>
 				</h2>
 				{open && (
-					<div id={`${id}-body`} className="border-t px-4 py-4">
+					<div id={`${id}-body`} className="space-y-4 border-t px-4 py-4">
+						{listed.sent && (
+							<SentNotice
+								workspace={slug}
+								mailbox={mailbox}
+								id={listed.id}
+								status={listed.sent.status}
+								mine={listed.sent.mine}
+								onChanged={onChanged}
+								onDiscarded={onDeleted}
+							/>
+						)}
 						{message ? (
 							<MessageView
 								workspace={slug}

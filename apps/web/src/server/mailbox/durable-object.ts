@@ -1,5 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
+import type { SendStatus } from "../../lib/outbox";
 import { bodyHash } from "./body";
+import { outcomeOf, STALE_SENDING_MS } from "./delivery";
 import { indexBatch } from "./indexing";
 import { LINKED_THREADS, migrate } from "./schema";
 import { ftsQuery, searchable } from "./search";
@@ -60,6 +62,39 @@ export interface Arrival {
 
 export type Begun = { ok: true; id: string; object: string } | { ok: false; reason: "full" };
 
+/** A message the mailbox sends: the copy it keeps, and what Email Service is asked to send. */
+export interface Sending {
+	workspaceId: string;
+	mailboxId: string;
+	/** The membership of whoever sends it. */
+	sentBy: string;
+	/** The copy, as raw mail. */
+	raw: string;
+	/** Its headers as the copy has them. */
+	from: string;
+	subject: string;
+	date: string;
+	/** The address it is sent from, and those it goes to, joined. */
+	envelopeFrom: string;
+	envelopeTo: string;
+	/** Mail's own id for it. */
+	ownId: string;
+	/** The ids it follows, which thread it. */
+	references: string[];
+	/** What the `EMAIL` binding's `send()` is given. */
+	request: EmailMessageBuilder;
+	/** The draft's own id, which makes a second send of it the first one's. */
+	draft: string;
+}
+
+/** The states a person may discard a message the mailbox sent from. */
+const DISCARDABLE = new Set(["refused", "uncertain", "waiting", "discarded"]);
+
+export type Sent =
+	| ({ ok: true; id: string; threadId: string } & SendStatus)
+	// "busy": a send of the same draft is still storing its copy.
+	| { ok: false; reason: "full" | "busy" };
+
 // Types, not interfaces, so that SQLite's rows can be read as them.
 
 /** One message as a listing shows it. Header values are as sent, not decoded. */
@@ -73,6 +108,10 @@ export type StoredSummary = {
 	date: string | null;
 	dmarc: string | null;
 	verifiedDomain: string | null;
+	/** For a message the mailbox sent, the membership of whoever sent it. */
+	sentBy: string | null;
+	/** For a message the mailbox sent, its `SendStatus` as JSON. */
+	sending: string | null;
 };
 
 export type StoredMessage = StoredSummary & {
@@ -124,7 +163,9 @@ export interface ThreadMessages {
 }
 
 const SUMMARY = `id, thread_id AS threadId, arrived_at AS arrivedAt, size, from_header AS "from",
-	subject, date_header AS date, dmarc, verified_domain AS verifiedDomain`;
+	subject, date_header AS date, dmarc, verified_domain AS verifiedDomain, sent_by AS sentBy,
+	(SELECT json_object('state', state, 'code', code, 'nextAt', next_at) FROM outgoing
+		WHERE outgoing.message = message.id) AS sending`;
 
 /**
  * One mailbox: its messages' index in SQLite, their raw mail in R2 under
@@ -315,6 +356,183 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			this.#refreshThread(threadId);
 			return "stored";
 		});
+	}
+
+	/**
+	 * Sends a message a person wrote. Its copy is stored first, in its thread, as mail that arrives
+	 * is, and then Email Service is asked to send it; the answer says what became of it. The copy
+	 * counts against the mailbox's space, so a full mailbox sends nothing.
+	 */
+	async send(sending: Sending): Promise<Sent> {
+		const sql = this.ctx.storage.sql;
+		// The same draft again, as when its answer was lost: what became of it, not a second send.
+		const earlier = this.drafted(sending.draft);
+		if (earlier) return earlier;
+		const size = new TextEncoder().encode(sending.raw).length;
+		const held = sql
+			.exec<{ bytes: number; latest: number }>("SELECT bytes, latest FROM held")
+			.one();
+		if (held.bytes + size > mailboxLimit(this.env)) return { ok: false, reason: "full" };
+		const id = crypto.randomUUID();
+		const object = `${sending.workspaceId}/${sending.mailboxId}/${id}.eml`;
+		const arrivedAt = Math.max(Date.now(), held.latest + 1);
+		// Pending until its copy is in R2, as a delivery is, so the alarm clears it should R2 fail.
+		this.ctx.storage.transactionSync(() => {
+			sql.exec(
+				`INSERT INTO message (id, state, delivery_key, object, size, arrived_at, envelope_from,
+					envelope_to, from_header, subject, date_header, message_id, own_id, subject_key, sent_by)
+				VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				id,
+				`sent:${id}`,
+				object,
+				size,
+				arrivedAt,
+				sending.envelopeFrom,
+				sending.envelopeTo,
+				sending.from,
+				sending.subject,
+				sending.date,
+				`<${sending.ownId}>`,
+				sending.ownId,
+				subjectKey(sending.subject),
+				sending.sentBy,
+			);
+			for (const ref of sending.references.slice(-MAX_REFERENCES)) {
+				sql.exec("INSERT OR IGNORE INTO message_reference (message, ref) VALUES (?, ?)", id, ref);
+			}
+			// Not tried yet: should nothing try it, the alarm finds it waiting after a while.
+			sql.exec(
+				`INSERT INTO outgoing (message, state, request, attempted_at, draft)
+				VALUES (?, 'sending', ?, ?, ?)`,
+				id,
+				JSON.stringify(sending.request),
+				Date.now(),
+				sending.draft,
+			);
+		});
+		await this.#alarmBy(Date.now() + PENDING_MS);
+		await this.env.RAW_MAIL.put(object, sending.raw);
+		if (this.#store(id) === "gone") throw new Error("The copy was given up before it was stored");
+		const threadId = sql
+			.exec<{ threadId: string }>("SELECT thread_id AS threadId FROM message WHERE id = ?", id)
+			.one().threadId;
+		await this.#indexSoon();
+		return { ok: true, id, threadId, ...((await this.#tryNow(id, "first")) ?? this.#status(id)) };
+	}
+
+	/**
+	 * What became of the message sent from this draft, or null when none was. Asked before a send,
+	 * so that sending a draft again doesn't count as another message, and again within it.
+	 */
+	drafted(draft: string): Sent | null {
+		const earlier = this.ctx.storage.sql
+			.exec<{ id: string; state: string; threadId: string | null }>(
+				`SELECT message.id AS id, message.state AS state, message.thread_id AS threadId
+				FROM outgoing JOIN message ON message.id = outgoing.message WHERE outgoing.draft = ?`,
+				draft,
+			)
+			.toArray()[0];
+		if (!earlier) return null;
+		if (earlier.state !== "stored" || earlier.threadId === null) {
+			return { ok: false, reason: "busy" };
+		}
+		return { ok: true, id: earlier.id, threadId: earlier.threadId, ...this.#status(earlier.id) };
+	}
+
+	/**
+	 * Sends again a message that was refused, or that may or may not have gone. Null when there is
+	 * no such message here, or it isn't one of those.
+	 */
+	async sendAgain(id: string): Promise<SendStatus | null> {
+		return this.#tryNow(id, "again");
+	}
+
+	/**
+	 * Deletes a message that isn't sent, whether refused, uncertain or waiting to be tried again, or
+	 * discarded already when deleting its copy failed. False when there is no such message here, or
+	 * it is sent or being sent.
+	 */
+	async discard(id: string): Promise<boolean> {
+		const row = this.ctx.storage.sql
+			.exec<{ state: string }>("SELECT state FROM outgoing WHERE message = ?", id)
+			.toArray()[0];
+		if (!row || !DISCARDABLE.has(row.state)) return false;
+		return this.remove(id);
+	}
+
+	/**
+	 * Asks Email Service to send a stored message now, and records how that went. The try is
+	 * recorded before Email Service is asked, so that should this object stop while it waits, the
+	 * alarm finds the message uncertain rather than trying it again. A person's try starts the count
+	 * of tries over.
+	 *
+	 * Only from the state the caller found it in, checked as it changes: the first try of a new
+	 * message, the alarm's of one that waits, or a person's of one refused or uncertain. A message
+	 * discarded, deleted or tried by someone else meanwhile isn't sent, and the answer is null.
+	 */
+	async #tryNow(id: string, from: "first" | "due" | "again"): Promise<SendStatus | null> {
+		const sql = this.ctx.storage.sql;
+		const now = Date.now();
+		const found = {
+			first: "state = 'sending' AND attempts = 0",
+			due: "state = 'waiting'",
+			again: "state IN ('refused', 'uncertain')",
+		}[from];
+		const row = sql
+			.exec<{ request: string; attempts: number }>(
+				`UPDATE outgoing SET state = 'sending', attempted_at = ?, next_at = NULL,
+					attempts = CASE WHEN ? THEN 1 ELSE attempts + 1 END
+				WHERE message = ? AND ${found}
+				RETURNING request, attempts`,
+				now,
+				from === "again" ? 1 : 0,
+				id,
+			)
+			.toArray()[0];
+		if (!row) return null;
+		await this.#alarmBy(now + STALE_SENDING_MS);
+		try {
+			const result = await this.env.EMAIL.send(JSON.parse(row.request) as EmailMessageBuilder);
+			sql.exec(
+				`UPDATE outgoing SET state = 'sent', code = NULL, provider_id = ?, sent_at = ?
+				WHERE message = ? AND state = 'sending'`,
+				result.messageId,
+				Date.now(),
+				id,
+			);
+		} catch (error) {
+			const outcome = outcomeOf(error, row.attempts, Date.now());
+			sql.exec(
+				"UPDATE outgoing SET state = ?, code = ?, next_at = ? WHERE message = ? AND state = 'sending'",
+				outcome.state,
+				outcome.code,
+				outcome.state === "waiting" ? outcome.nextAt : null,
+				id,
+			);
+			if (outcome.state === "waiting") await this.#alarmBy(outcome.nextAt);
+		}
+		return this.#status(id);
+	}
+
+	/**
+	 * What became of a message the mailbox sends. When it is gone, deleted while it was sent, nobody
+	 * knows whether it went.
+	 */
+	#status(id: string): SendStatus {
+		return (
+			this.ctx.storage.sql
+				.exec<SendStatus>(
+					"SELECT state, code, next_at AS nextAt FROM outgoing WHERE message = ?",
+					id,
+				)
+				.toArray()[0] ?? { state: "uncertain", code: null, nextAt: null }
+		);
+	}
+
+	/** Has the alarm run by then, unless it runs sooner anyway. */
+	async #alarmBy(at: number): Promise<void> {
+		const set = await this.ctx.storage.getAlarm();
+		if (set === null || set > at) await this.ctx.storage.setAlarm(at);
 	}
 
 	/** Brings a thread's row up to date with its messages, and removes it when it has none. */
@@ -515,6 +733,13 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			.exec<{ object: string }>("SELECT object FROM message WHERE id = ? AND state = 'stored'", id)
 			.toArray()[0];
 		if (!row) return false;
+		// One that isn't sent is discarded before anything is awaited, a state no try starts from:
+		// the alarm, or a person's Send again, could otherwise send it while its copy is deleted.
+		sql.exec(
+			`UPDATE outgoing SET state = 'discarded', next_at = NULL
+			WHERE message = ? AND state IN ('waiting', 'refused', 'uncertain')`,
+			id,
+		);
 		await this.env.RAW_MAIL.delete(row.object);
 		this.ctx.storage.transactionSync(() => {
 			// Read again: another message may have merged its thread while R2 was deleting.
@@ -569,6 +794,31 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			await this.env.RAW_MAIL.delete(chunk.map((row) => row.object));
 			for (const row of chunk) sql.exec("DELETE FROM message WHERE id = ?", row.id);
 		}
+		const stale = Date.now() - STALE_SENDING_MS;
+		// A stored message whose first try never began, as when this object stopped just before it,
+		// sent nothing, so it waits to be tried.
+		sql.exec(
+			`UPDATE outgoing SET state = 'waiting', next_at = ?
+			WHERE state = 'sending' AND attempts = 0 AND attempted_at <= ?
+				AND message IN (SELECT id FROM message WHERE state = 'stored')`,
+			Date.now(),
+			stale,
+		);
+		// A try that never said how it went may have sent the message, so it isn't tried again.
+		sql.exec(
+			`UPDATE outgoing SET state = 'uncertain', code = NULL
+			WHERE state = 'sending' AND attempts > 0 AND attempted_at <= ?`,
+			stale,
+		);
+		const due = sql
+			.exec<{ id: string }>(
+				`SELECT message AS id FROM outgoing WHERE state = 'waiting' AND next_at <= ?
+				ORDER BY next_at LIMIT 20`,
+				Date.now(),
+			)
+			.toArray();
+		// Each is tried only if it still waits when its turn comes.
+		for (const { id } of due) await this.#tryNow(id, "due");
 		const indexed = await indexBatch(this.ctx.storage, (message) =>
 			searchable(this.env.RAW_MAIL, message),
 		);
@@ -577,9 +827,17 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 				"SELECT min(arrived_at) AS at FROM message WHERE state = 'pending'",
 			)
 			.one();
+		const sends = sql
+			.exec<{ waiting: number | null; sending: number | null }>(
+				`SELECT (SELECT min(next_at) FROM outgoing WHERE state = 'waiting') AS waiting,
+					(SELECT min(attempted_at) FROM outgoing WHERE state = 'sending') AS sending`,
+			)
+			.one();
 		// A delivery may have set the alarm while this ran, and the soonest wins.
 		const times = [
 			next.at === null ? null : next.at + PENDING_MS,
+			sends.waiting,
+			sends.sending === null ? null : sends.sending + STALE_SENDING_MS,
 			indexed === "more" ? Date.now() : indexed === "failed" ? Date.now() + INDEX_RETRY_MS : null,
 			await this.ctx.storage.getAlarm(),
 		].filter((at): at is number => at !== null);

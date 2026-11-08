@@ -1,14 +1,15 @@
 # Self-hosting
 
 Gateweave Mail runs on your own Cloudflare account as one Worker. It is early: today it has
-accounts, workspaces, a directory of addresses and mailboxes that keep the mail sent to them, and
-it can't send or reply yet. It uses:
+accounts, workspaces, a directory of addresses, and mailboxes that keep the mail sent to them and
+reply and write in plain text. It uses:
 
 - a D1 database for accounts, the list of workspaces, and their domains, mailboxes and addresses;
 - an R2 bucket for mail as it arrived, one object per message;
 - a Durable Object per mailbox, which holds the index of its messages;
 - a Durable Object that counts rate limits, one per client address or recipient;
-- optionally, Cloudflare Email Service, to send password resets, verification and invitations.
+- optionally, Cloudflare Email Service, to send password resets, verification and invitations,
+  and the mail people write from mailboxes.
 
 You need a Cloudflare account with the **Workers Paid** plan. Sign-in takes more CPU than the Free
 plan gives a request, and Email Sending is a Paid feature. Turn on R2 in the account before the
@@ -27,8 +28,8 @@ or subdomain is proved on its own: proving `example.com` gives no addresses on
   200 rules in all, and a new one can take over a minute to work, with mail going to the catch-all
   until it does.
 
-Mail can't send or reply yet, so think before doing this for a domain people rely on: what
-arrives is kept and shown, and a message to an address that doesn't exist is refused. You can
+Mail is early, so think before doing this for a domain people rely on: what arrives is kept and
+shown, and a message to an address that doesn't exist is refused. You can
 deploy without Email Routing. Proof stays after the TXT record is removed, but whoever runs the
 domain's DNS decides who holds it: if another workspace on the same server proves it later, it
 moves to them, unless your record is still there too.
@@ -155,6 +156,7 @@ because `wrangler.jsonc` sets `keep_vars`.
 | `OIDC_PROVIDER_NAME`   | What the sign-in button calls it. Unset: "single sign-on".                                                         |
 | `EMAIL_FROM`           | Turns on email (invitations, password reset), such as `Gateweave Mail <mail@example.com>`.                         |
 | `MAILBOX_BYTES`        | How many bytes one mailbox may hold, as a whole number. Unset: 1 GiB.                                              |
+| `SEND_PER_DAY`         | How many messages one workspace may send from its mailboxes a day, as a whole number. Unset: 200.                  |
 | `LEGAL_NOTICE_URL`     | The address of your legal notice. See [below](#your-legal-pages).                                                  |
 | `PRIVACY_POLICY_URL`   | The address of your privacy policy.                                                                                |
 | `TERMS_URL`            | The address of your terms.                                                                                         |
@@ -185,6 +187,12 @@ Mail sends email through [Cloudflare Email Service](https://developers.cloudflar
 Onboard the sender's domain once with `pnpm wrangler email sending enable example.com`, then set
 `EMAIL_FROM` to an address on it. Without email, Mail works, but invitations have to be accepted
 from a link that an admin copies, and nobody can reset a forgotten password for themselves.
+
+Mailboxes send through the same binding, from their own addresses, whether `EMAIL_FROM` is set or
+not. Onboard each domain whose addresses should send the same way. Until it is, a message from it
+is refused, and its copy in the thread says why. A workspace sends up to 200 messages a day, which
+`SEND_PER_DAY` changes; Email Service has limits of its own for the account, and won't send to an
+address that bounced or complained before.
 
 As you hold the database, you can do it for them, from the repository root. Find their `id` in this
 list. Don't paste an address someone sent you into a command, as it could run as part of it:

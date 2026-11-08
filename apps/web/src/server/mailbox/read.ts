@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import PostalMime, { type Address, addressParser, decodeWords } from "postal-mime";
 import type {
 	ListedMessage,
@@ -12,14 +12,17 @@ import type {
 	ThreadsPage,
 } from "../../lib/mailbox";
 import { MAX_QUERY_SENT } from "../../lib/mailbox";
+import type { SendStatus } from "../../lib/outbox";
 import { canReadMailbox, isAdminRole } from "../../lib/roles";
-import { currentCaller } from "../access";
+import { type Caller, currentCaller, currentMember } from "../access";
 import { db } from "../auth";
 import { schema } from "../db";
 import { appOrigin } from "../origin";
+import { replySubject } from "./compose";
 import type { StoredSummary } from "./durable-object";
 import { cleanHtml, framePolicy, MAX_SHOWN_HTML, mayLoadImages } from "./html";
 import { mailboxStub } from "./index";
+import { envelopeAddresses, replySender, senderAddresses } from "./senders";
 import { textOfHtml } from "./text";
 import { threadSubject } from "./thread";
 
@@ -33,10 +36,10 @@ export const MAX_SHOWN_TEXT = 200_000;
  * The mailbox with this id in the workspace with this slug, for a member who may read it (see
  * `canReadMailbox`), signed in or an agent with its key. Every route to a mailbox's mail comes
  * through here. Null for anyone else, and for a mailbox of another workspace, so its id gives
- * nothing away.
+ * nothing away. With `people`, only for someone signed in: what a key may not do, such as sending.
  */
-async function openMailbox(slug: string, mailboxId: string) {
-	const member = await currentCaller(slug);
+export async function openMailbox(slug: string, mailboxId: string, { people = false } = {}) {
+	const member = people ? await signedIn(slug) : await currentCaller(slug);
 	if (!member) return null;
 	const { memberId, workspaceId, role } = member.membership;
 	const { mailbox, mailboxAccess } = schema;
@@ -58,6 +61,48 @@ async function openMailbox(slug: string, mailboxId: string) {
 		return null;
 	}
 	return { id: box.id, name: box.name, member, stub: mailboxStub(box.id) };
+}
+
+/** The member signed in, as a caller. */
+async function signedIn(slug: string): Promise<Caller | null> {
+	const member = await currentMember(slug);
+	return member && { userId: member.user.id, membership: member.membership };
+}
+
+/** An open mailbox, as `openMailbox` gives it. */
+type OpenMailbox = NonNullable<Awaited<ReturnType<typeof openMailbox>>>;
+
+/**
+ * The names of those who sent these messages from the mailbox, by membership, while they are in
+ * the workspace. Someone who has left is no longer named.
+ */
+async function senderNames(
+	workspaceId: string,
+	rows: { sentBy: string | null }[],
+): Promise<Map<string, string>> {
+	const ids = [...new Set(rows.map((row) => row.sentBy).filter((id) => id !== null))];
+	if (ids.length === 0) return new Map();
+	const { member, user } = schema;
+	const found = await db
+		.select({ id: member.id, name: user.name })
+		.from(member)
+		.innerJoin(user, eq(member.userId, user.id))
+		.where(and(eq(member.organizationId, workspaceId), inArray(member.id, ids)))
+		.all();
+	return new Map(found.map((one) => [one.id, one.name]));
+}
+
+/**
+ * For a message the mailbox sent, who sent it and what became of it, and whether the caller, `me`,
+ * wrote it.
+ */
+function sentOf(row: StoredSummary, names: Map<string, string>, me: string) {
+	if (row.sentBy === null) return null;
+	return {
+		by: names.get(row.sentBy) ?? null,
+		mine: row.sentBy === me,
+		status: row.sending === null ? null : (JSON.parse(row.sending) as SendStatus),
+	};
 }
 
 /** A header as people read it. A word that won't decode is left as sent. */
@@ -100,14 +145,15 @@ export async function listMessages(
 	const rows = await box.stub.list(before, PAGE_SIZE + 1);
 	const shown = rows.slice(0, PAGE_SIZE);
 	const last = shown.at(-1);
+	const names = await senderNames(box.member.membership.workspaceId, shown);
 	return {
 		name: box.name,
-		messages: shown.map(listed),
+		messages: shown.map((row) => listed(row, names, box.member.membership.memberId)),
 		next: rows.length > PAGE_SIZE && last ? { arrivedAt: last.arrivedAt, id: last.id } : null,
 	};
 }
 
-function listed(row: StoredSummary): ListedMessage {
+function listed(row: StoredSummary, names: Map<string, string>, me: string): ListedMessage {
 	return {
 		id: row.id,
 		threadId: row.threadId,
@@ -116,6 +162,7 @@ function listed(row: StoredSummary): ListedMessage {
 		subject: decoded(row.subject),
 		verifiedDomain: row.verifiedDomain,
 		size: row.size,
+		sent: sentOf(row, names, me),
 	};
 }
 
@@ -145,13 +192,15 @@ export async function listThreads(
 ): Promise<ThreadsPage | null> {
 	const box = await openMailbox(slug, mailboxId);
 	if (!box) return null;
-	const rows = query
-		? await box.stub.search(query, before, PAGE_SIZE + 1)
-		: await box.stub.threads(before, PAGE_SIZE + 1);
+	const [rows, from] = await Promise.all([
+		query ? box.stub.search(query, before, PAGE_SIZE + 1) : box.stub.threads(before, PAGE_SIZE + 1),
+		senderAddresses(box.member.membership.workspaceId, box.id),
+	]);
 	const shown = rows.slice(0, PAGE_SIZE);
 	const last = shown.at(-1);
 	return {
 		name: box.name,
+		from,
 		threads: shown.map((row) => ({
 			id: row.id,
 			latestAt: row.latestAt,
@@ -181,16 +230,22 @@ export async function openThread(
 	const shown = thread.messages.slice(0, PAGE_SIZE);
 	const [newest] = shown;
 	const oldest = shown.at(-1);
+	const { workspaceId } = box.member.membership;
+	const [names, from] = await Promise.all([
+		senderNames(workspaceId, shown),
+		senderAddresses(workspaceId, box.id),
+	]);
 	return {
 		mailbox: box.name,
+		from,
 		subject: threadSubject(decoded(thread.subject)),
 		count: thread.count,
-		messages: shown.map(listed).reverse(),
+		messages: shown.map((row) => listed(row, names, box.member.membership.memberId)).reverse(),
 		older:
 			thread.messages.length > PAGE_SIZE && oldest
 				? { arrivedAt: oldest.arrivedAt, id: oldest.id }
 				: null,
-		latest: newest ? await readMessage(box.stub, newest.id) : null,
+		latest: newest ? await readMessage(box, newest.id, from) : null,
 	};
 }
 
@@ -204,21 +259,36 @@ export async function openMessage(
 	messageId: string,
 ): Promise<OpenedMessage | null> {
 	const box = await openMailbox(slug, mailboxId);
-	return box ? readMessage(box.stub, messageId) : null;
+	return box ? readMessage(box, messageId) : null;
 }
 
-/** Reads and parses a message of a mailbox the caller may read. */
+/**
+ * Reads and parses a message of a mailbox the caller may read. `from` is what the mailbox may send
+ * from, when the caller has it already.
+ */
 async function readMessage(
-	stub: ReturnType<typeof mailboxStub>,
+	box: OpenMailbox,
 	messageId: string,
+	from?: string[],
 ): Promise<OpenedMessage | null> {
-	const row = await stub.get(messageId);
+	const row = await box.stub.get(messageId);
 	if (!row) return null;
 	const object = await env.RAW_MAIL.get(row.object);
 	if (!object) return null;
 	const email = await PostalMime.parse(object.body);
 	const fromHtml = email.text === undefined && email.html ? await textOfHtml(email.html) : null;
 	const text = fromHtml?.text ?? email.text ?? "";
+	const { workspaceId, memberId } = box.member.membership;
+	const sent = sentOf(row, await senderNames(workspaceId, [row]), memberId);
+	const to = people(email.to);
+	const cc = people(email.cc);
+	// A reply goes where the message asks, or to whoever wrote it. One to a message the mailbox
+	// sent goes to those it went to, as another word to them.
+	const answerTo = sent
+		? to
+		: people(email.replyTo).length > 0
+			? people(email.replyTo)
+			: people(email.from ? [email.from] : []);
 	return {
 		id: row.id,
 		threadId: row.threadId,
@@ -226,8 +296,8 @@ async function readMessage(
 		size: row.size,
 		// The headers the listing kept are the first of each, which is what the page shows too.
 		from: sender(row.from),
-		to: people(email.to),
-		cc: people(email.cc),
+		to,
+		cc,
 		subject: decoded(row.subject),
 		date: row.date,
 		verifiedDomain: row.verifiedDomain,
@@ -245,6 +315,16 @@ async function readMessage(
 					? attachment.content.length
 					: attachment.content.byteLength,
 		})),
+		sent,
+		reply: {
+			to: answerTo.map((person) => person.address).filter(Boolean),
+			cc: sent ? cc.map((person) => person.address).filter(Boolean) : [],
+			subject: replySubject(decoded(row.subject)),
+			from: replySender(
+				envelopeAddresses(row),
+				from ?? (await senderAddresses(box.member.membership.workspaceId, box.id)),
+			),
+		},
 	};
 }
 

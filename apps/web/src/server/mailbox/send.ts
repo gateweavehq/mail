@@ -1,0 +1,222 @@
+import { env } from "cloudflare:workers";
+import { z } from "zod";
+import { isAddress, MAX_RECIPIENTS, MAX_SUBJECT, MAX_TEXT } from "../../lib/outbox";
+import { isAdminRole } from "../../lib/roles";
+import { appOrigin } from "../origin";
+import { allowSend } from "../rate-limit";
+import {
+	addressHeader,
+	dateHeader,
+	headerText,
+	newOwnId,
+	type Outgoing,
+	plainName,
+	rawCopy,
+	sendRequest,
+} from "./compose";
+import type { Sent } from "./durable-object";
+import { firstHeader, parseHeaders, readHeaderBlock } from "./headers";
+import type { mailboxStub } from "./index";
+import { openMailbox } from "./read";
+import { envelopeAddresses, replySender, senderAddresses } from "./senders";
+import { messageIds, ownId } from "./thread";
+
+const Id = z.string().min(1).max(100);
+
+/** An address someone types. `isAddress` takes no spaces or line breaks, so none reach a header. */
+const Address = z.string().trim().refine(isAddress);
+
+const Action = z.discriminatedUnion("action", [
+	z.object({
+		action: z.literal("send"),
+		to: z.array(Address).min(1).max(MAX_RECIPIENTS),
+		cc: z.array(Address).max(MAX_RECIPIENTS).default([]),
+		// A line break in a header would start another, so none gets in.
+		subject: z
+			.string()
+			.trim()
+			.min(1)
+			.max(MAX_SUBJECT)
+			.refine((subject) => !/[\r\n]/.test(subject)),
+		text: z
+			.string()
+			.max(MAX_TEXT)
+			.refine((text) => text.trim().length > 0),
+		/** The message it answers, in this mailbox. */
+		replyTo: Id.nullable().default(null),
+		/**
+		 * One of the mailbox's addresses, which is all it is compared with. Without one, the one a
+		 * reply's message came to, or the first.
+		 */
+		from: z.string().trim().toLowerCase().max(254).nullable().default(null),
+		/**
+		 * The draft's own id, made when it was opened. A send with one the mailbox has seen is the
+		 * same message again, as when its answer was lost, and isn't sent twice.
+		 */
+		draft: z.uuid(),
+	}),
+	z.object({ action: z.literal("send-again"), message: Id }),
+	z.object({ action: z.literal("discard"), message: Id }),
+]);
+
+export type OutboxAction = z.input<typeof Action>;
+
+function answer(body: unknown, status = 200): Response {
+	return Response.json(body, { status, headers: { "cache-control": "private, no-store" } });
+}
+
+const refuse = (error: string, status: number) => answer({ ok: false, error }, status);
+
+/**
+ * Sends from a mailbox, tries again or discards, for `POST /api/mail/<workspace>/<mailbox>/outbox`.
+ * Only a person who may read the mailbox may, signed in: a key never sends.
+ */
+export async function outboxAnswer(
+	request: Request,
+	slug: string,
+	mailboxId: string,
+): Promise<Response> {
+	// A session cookie comes along wherever a request is from, so ask where that is.
+	if (request.headers.get("origin") !== appOrigin()) return refuse("Not allowed from there", 403);
+	const box = await openMailbox(slug, mailboxId, { people: true });
+	if (!box) return refuse("Not found", 404);
+	const parsed = Action.safeParse(await request.json().catch(() => null));
+	if (!parsed.success) return refuse("That isn't something we can send.", 400);
+	const action = parsed.data;
+	const { workspaceId, memberId, role } = box.member.membership;
+
+	if (action.action === "discard") {
+		// Discarding deletes the copy, which only owners and admins may do to someone else's mail.
+		const row = await box.stub.get(action.message);
+		if (row && row.sentBy !== memberId && !isAdminRole(role)) {
+			return refuse("Only who wrote it, or an owner or admin, can discard it.", 403);
+		}
+		return (await box.stub.discard(action.message))
+			? answer({ ok: true })
+			: refuse("Only a message that isn't sent can be discarded.", 409);
+	}
+
+	if (action.action === "send-again") {
+		// Counted before it is known to go, as only the object can say, at once.
+		const allowed = await allowSend(workspaceId);
+		if (!allowed.allowed) return tooMany(allowed.retryAfter);
+		const status = await box.stub.sendAgain(action.message);
+		return status ? answer({ ok: true, ...status }) : refuse("It is sent, or being sent.", 409);
+	}
+
+	const recipients = [...action.to, ...action.cc];
+	if (recipients.length > MAX_RECIPIENTS) {
+		return refuse(`One message can go to at most ${MAX_RECIPIENTS} people.`, 400);
+	}
+	const lower = recipients.map((address) => address.toLowerCase());
+	if (new Set(lower).size !== lower.length) return refuse("An address is there twice.", 400);
+
+	const from = await senderAddresses(workspaceId, box.id);
+	let answering: Answering = { inReplyTo: null, references: [], addresses: [] };
+	if (action.replyTo) {
+		const found = await answered(box.stub, action.replyTo);
+		if (!found) return refuse("The message you are answering is gone.", 404);
+		answering = found;
+	}
+	const sender = action.from
+		? from.find((address) => address === action.from)
+		: replySender(answering.addresses, from);
+	if (!sender) {
+		return action.from
+			? refuse("This mailbox can't send from that address.", 400)
+			: refuse("This mailbox has no address on a proved domain to send from.", 409);
+	}
+	// A draft sent before, as when its answer was lost, is what became of it, and counts once.
+	const earlier = await box.stub.drafted(action.draft);
+	if (earlier) return sentAnswer(earlier);
+	// Counted once the message could go, so a mistake doesn't use up the day's allowance.
+	const allowed = await allowSend(workspaceId);
+	if (!allowed.allowed) return tooMany(allowed.retryAfter);
+
+	// What goes into its headers is only what Email Service takes; what threads its copy is all.
+	const message: Outgoing = {
+		from: { name: box.name, email: sender },
+		to: action.to,
+		cc: action.cc,
+		// A tab or other control character pasted in becomes a space.
+		subject: plainName(action.subject),
+		text: action.text,
+		inReplyTo: headerSafe(answering.inReplyTo),
+		references: answering.references.filter(isHeaderSafe),
+		ownId: newOwnId(sender),
+	};
+	const date = new Date();
+	// Headers as the copy has them, unfolded, which is how arriving mail's are kept.
+	const unfolded = (value: string) => value.replace(/\r\n /g, " ");
+	const sent = await box.stub.send({
+		workspaceId,
+		mailboxId: box.id,
+		sentBy: memberId,
+		raw: rawCopy(message, date),
+		from: unfolded(addressHeader(message.from)),
+		subject: unfolded(headerText(message.subject)),
+		date: dateHeader(date),
+		envelopeFrom: sender,
+		envelopeTo: [...message.to, ...message.cc].join(", "),
+		ownId: message.ownId,
+		references: answering.references,
+		request: sendRequest(message),
+		draft: action.draft,
+	});
+	return sentAnswer(sent);
+}
+
+function sentAnswer(sent: Sent): Response {
+	if (sent.ok) return answer(sent);
+	return sent.reason === "full"
+		? refuse("The mailbox is full. Delete some mail, then send again.", 409)
+		: refuse("It is still being saved. Look in the thread in a moment.", 409);
+}
+
+function tooMany(retryAfter: number | null | undefined): Response {
+	const hours = Math.max(1, Math.round((retryAfter ?? 0) / 3600));
+	return refuse(
+		`This workspace has sent as much as it may for now. Try again in about ${hours === 1 ? "an hour" : `${hours} hours`}.`,
+		429,
+	);
+}
+
+/** What a reply takes from the message it answers. */
+interface Answering {
+	inReplyTo: string | null;
+	/** The ids it follows, oldest first, ending with the answered message's own. */
+	references: string[];
+	/** The addresses it was to and from, lower case, which a reply may go from. */
+	addresses: string[];
+}
+
+/**
+ * What threads a reply to this message of the mailbox, read from the message's own headers, as
+ * RFC 5322 says: its `References`, or failing those its `In-Reply-To`, then its own id. Null when
+ * there is no such message here.
+ */
+async function answered(
+	stub: ReturnType<typeof mailboxStub>,
+	messageId: string,
+): Promise<Answering | null> {
+	const row = await stub.get(messageId);
+	if (!row) return null;
+	const object = await env.RAW_MAIL.get(row.object);
+	if (!object) return null;
+	const headers = parseHeaders(await readHeaderBlock(object.body));
+	const own = ownId(headers);
+	// Whole, as a long thread's runs past what `firstHeader` keeps.
+	const before = messageIds(headers.find((header) => header.name === "references")?.value ?? null);
+	const followed =
+		before.length > 0 ? before : messageIds(firstHeader(headers, "in-reply-to")).slice(0, 1);
+	const references = [...new Set([...followed, ...(own ? [own] : [])])];
+	return { inReplyTo: own, references, addresses: envelopeAddresses(row) };
+}
+
+/**
+ * Whether an id from arriving mail can go into a header Mail sends: printable ASCII only, as RFC
+ * 5322 has it. Anything else would have Email Service refuse every reply to that message.
+ */
+const isHeaderSafe = (id: string) => /^[\x21-\x7e]+$/.test(id);
+
+const headerSafe = (id: string | null) => (id !== null && isHeaderSafe(id) ? id : null);

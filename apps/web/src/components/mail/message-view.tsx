@@ -1,4 +1,4 @@
-import { ImageOff, Paperclip, ShieldAlert, ShieldCheck, Trash2 } from "lucide-react";
+import { ImageOff, Paperclip, Send, ShieldAlert, ShieldCheck, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { Button } from "#/components/ui/button";
 import { ConfirmDialog } from "#/components/workspace/confirm-dialog";
@@ -51,7 +51,7 @@ export function MessageView({
 							<dd className="min-w-0 break-words">{message.cc.map(person).join(", ")}</dd>
 						</>
 					)}
-					<dt className="text-muted-foreground">Arrived</dt>
+					<dt className="text-muted-foreground">{message.sent ? "Written" : "Arrived"}</dt>
 					<dd>
 						<time dateTime={new Date(message.arrivedAt).toISOString()}>
 							{formatDateTime(message.arrivedAt)}
@@ -225,9 +225,27 @@ function DeleteMessage({
 /**
  * Whether the From header can be believed. Only Cloudflare's DMARC pass, for the domain of the
  * address shown, says that domain sent the message. The name in front of the address is the
- * sender's to write, so the domain is named. Anything else may be forged.
+ * sender's to write, so the domain is named. Anything else may be forged. A message the mailbox
+ * sent was written here, by someone in the workspace.
  */
 function Sender({ message }: { message: OpenedMessage }) {
+	if (message.sent) {
+		return (
+			<p className="flex items-center gap-2 text-sm text-muted-foreground">
+				<Send className="size-4 shrink-0" aria-hidden />
+				<span className="min-w-0 break-words">
+					Written in this mailbox
+					{message.sent.by ? (
+						<>
+							{" "}
+							by <span className="font-medium text-foreground">{message.sent.by}</span>
+						</>
+					) : null}
+					.
+				</span>
+			</p>
+		);
+	}
 	if (message.verifiedDomain) {
 		return (
 			<p className="flex items-start gap-2 text-sm text-muted-foreground">

@@ -29,6 +29,7 @@ import { Route as WorkspaceMailboxesMailboxIndexRouteImport } from './routes/$wo
 import { Route as WorkspaceMailboxesMailboxMessageRouteImport } from './routes/$workspace/mailboxes.$mailbox.$message'
 import { Route as WorkspaceMailboxesMailboxThreadsThreadRouteImport } from './routes/$workspace/mailboxes.$mailbox.threads.$thread'
 import { Route as ApiMailWorkspaceMailboxIndexRouteImport } from './routes/api/mail/$workspace.$mailbox.index'
+import { Route as ApiMailWorkspaceMailboxOutboxRouteImport } from './routes/api/mail/$workspace.$mailbox.outbox'
 import { Route as ApiMailWorkspaceMailboxMessageIndexRouteImport } from './routes/api/mail/$workspace.$mailbox.$message.index'
 import { Route as ApiMailWorkspaceMailboxMessageHtmlRouteImport } from './routes/api/mail/$workspace.$mailbox.$message.html'
 import { Route as ApiMailWorkspaceMailboxMessageOriginalRouteImport } from './routes/api/mail/$workspace.$mailbox.$message.original'
@@ -142,6 +143,12 @@ const ApiMailWorkspaceMailboxIndexRoute =
     path: '/api/mail/$workspace/$mailbox/',
     getParentRoute: () => rootRouteImport,
   } as any)
+const ApiMailWorkspaceMailboxOutboxRoute =
+  ApiMailWorkspaceMailboxOutboxRouteImport.update({
+    id: '/api/mail/$workspace/$mailbox/outbox',
+    path: '/api/mail/$workspace/$mailbox/outbox',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const ApiMailWorkspaceMailboxMessageIndexRoute =
   ApiMailWorkspaceMailboxMessageIndexRouteImport.update({
     id: '/api/mail/$workspace/$mailbox/$message/',
@@ -193,6 +200,7 @@ export interface FileRoutesByFullPath {
   '/$workspace/mailboxes/$mailbox/$message': typeof WorkspaceMailboxesMailboxMessageRoute
   '/$workspace/mailboxes/$mailbox/': typeof WorkspaceMailboxesMailboxIndexRoute
   '/$workspace/mailboxes/$mailbox/threads/$thread': typeof WorkspaceMailboxesMailboxThreadsThreadRoute
+  '/api/mail/$workspace/$mailbox/outbox': typeof ApiMailWorkspaceMailboxOutboxRoute
   '/api/mail/$workspace/$mailbox/': typeof ApiMailWorkspaceMailboxIndexRoute
   '/api/mail/$workspace/$mailbox/$message/html': typeof ApiMailWorkspaceMailboxMessageHtmlRoute
   '/api/mail/$workspace/$mailbox/$message/original': typeof ApiMailWorkspaceMailboxMessageOriginalRoute
@@ -218,6 +226,7 @@ export interface FileRoutesByTo {
   '/$workspace/mailboxes/$mailbox/$message': typeof WorkspaceMailboxesMailboxMessageRoute
   '/$workspace/mailboxes/$mailbox': typeof WorkspaceMailboxesMailboxIndexRoute
   '/$workspace/mailboxes/$mailbox/threads/$thread': typeof WorkspaceMailboxesMailboxThreadsThreadRoute
+  '/api/mail/$workspace/$mailbox/outbox': typeof ApiMailWorkspaceMailboxOutboxRoute
   '/api/mail/$workspace/$mailbox': typeof ApiMailWorkspaceMailboxIndexRoute
   '/api/mail/$workspace/$mailbox/$message/html': typeof ApiMailWorkspaceMailboxMessageHtmlRoute
   '/api/mail/$workspace/$mailbox/$message/original': typeof ApiMailWorkspaceMailboxMessageOriginalRoute
@@ -246,6 +255,7 @@ export interface FileRoutesById {
   '/$workspace/mailboxes/$mailbox/$message': typeof WorkspaceMailboxesMailboxMessageRoute
   '/$workspace/mailboxes/$mailbox/': typeof WorkspaceMailboxesMailboxIndexRoute
   '/$workspace/mailboxes/$mailbox/threads/$thread': typeof WorkspaceMailboxesMailboxThreadsThreadRoute
+  '/api/mail/$workspace/$mailbox/outbox': typeof ApiMailWorkspaceMailboxOutboxRoute
   '/api/mail/$workspace/$mailbox/': typeof ApiMailWorkspaceMailboxIndexRoute
   '/api/mail/$workspace/$mailbox/$message/html': typeof ApiMailWorkspaceMailboxMessageHtmlRoute
   '/api/mail/$workspace/$mailbox/$message/original': typeof ApiMailWorkspaceMailboxMessageOriginalRoute
@@ -275,6 +285,7 @@ export interface FileRouteTypes {
     | '/$workspace/mailboxes/$mailbox/$message'
     | '/$workspace/mailboxes/$mailbox/'
     | '/$workspace/mailboxes/$mailbox/threads/$thread'
+    | '/api/mail/$workspace/$mailbox/outbox'
     | '/api/mail/$workspace/$mailbox/'
     | '/api/mail/$workspace/$mailbox/$message/html'
     | '/api/mail/$workspace/$mailbox/$message/original'
@@ -300,6 +311,7 @@ export interface FileRouteTypes {
     | '/$workspace/mailboxes/$mailbox/$message'
     | '/$workspace/mailboxes/$mailbox'
     | '/$workspace/mailboxes/$mailbox/threads/$thread'
+    | '/api/mail/$workspace/$mailbox/outbox'
     | '/api/mail/$workspace/$mailbox'
     | '/api/mail/$workspace/$mailbox/$message/html'
     | '/api/mail/$workspace/$mailbox/$message/original'
@@ -327,6 +339,7 @@ export interface FileRouteTypes {
     | '/$workspace/mailboxes/$mailbox/$message'
     | '/$workspace/mailboxes/$mailbox/'
     | '/$workspace/mailboxes/$mailbox/threads/$thread'
+    | '/api/mail/$workspace/$mailbox/outbox'
     | '/api/mail/$workspace/$mailbox/'
     | '/api/mail/$workspace/$mailbox/$message/html'
     | '/api/mail/$workspace/$mailbox/$message/original'
@@ -345,6 +358,7 @@ export interface RootRouteChildren {
   SettingsAccountRoute: typeof SettingsAccountRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiDirectoryWorkspaceRoute: typeof ApiDirectoryWorkspaceRoute
+  ApiMailWorkspaceMailboxOutboxRoute: typeof ApiMailWorkspaceMailboxOutboxRoute
   ApiMailWorkspaceMailboxIndexRoute: typeof ApiMailWorkspaceMailboxIndexRoute
   ApiMailWorkspaceMailboxMessageHtmlRoute: typeof ApiMailWorkspaceMailboxMessageHtmlRoute
   ApiMailWorkspaceMailboxMessageOriginalRoute: typeof ApiMailWorkspaceMailboxMessageOriginalRoute
@@ -495,6 +509,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiMailWorkspaceMailboxIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/mail/$workspace/$mailbox/outbox': {
+      id: '/api/mail/$workspace/$mailbox/outbox'
+      path: '/api/mail/$workspace/$mailbox/outbox'
+      fullPath: '/api/mail/$workspace/$mailbox/outbox'
+      preLoaderRoute: typeof ApiMailWorkspaceMailboxOutboxRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/mail/$workspace/$mailbox/$message/': {
       id: '/api/mail/$workspace/$mailbox/$message/'
       path: '/api/mail/$workspace/$mailbox/$message'
@@ -583,6 +604,7 @@ const rootRouteChildren: RootRouteChildren = {
   SettingsAccountRoute: SettingsAccountRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiDirectoryWorkspaceRoute: ApiDirectoryWorkspaceRoute,
+  ApiMailWorkspaceMailboxOutboxRoute: ApiMailWorkspaceMailboxOutboxRoute,
   ApiMailWorkspaceMailboxIndexRoute: ApiMailWorkspaceMailboxIndexRoute,
   ApiMailWorkspaceMailboxMessageHtmlRoute:
     ApiMailWorkspaceMailboxMessageHtmlRoute,

@@ -31,6 +31,11 @@ declare namespace Cloudflare {
 		 */
 		MAILBOX_BYTES?: string;
 		/**
+		 * How many messages one workspace may send a day, as a whole number. 200 when unset. The
+		 * allowance comes back over the day.
+		 */
+		SEND_PER_DAY?: string;
+		/**
 		 * The addresses of this deployment's legal pages, linked from the sign-in pages and the
 		 * workspace menu. Each is left out when unset, or when it is not an http(s) address.
 		 */
