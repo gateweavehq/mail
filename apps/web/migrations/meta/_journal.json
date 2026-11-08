@@ -71,6 +71,13 @@
       "when": 1794161304666,
       "tag": "0009_agent_send",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1794165112806,
+      "tag": "0010_resend_key",
+      "breakpoints": true
     }
   ]
 }

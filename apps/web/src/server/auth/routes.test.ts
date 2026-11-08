@@ -74,6 +74,13 @@ const SERVED = [
 	"POST /agents/revoke-key",
 	"POST /agents/set-policy",
 	"POST /agents/update",
+
+	// A workspace's Resend key, for owners and admins (`provider-keys.ts`). Putting one in and
+	// checking it each ask Resend, and have a limit of their own.
+	"GET /providers/key",
+	"POST /providers/check-key",
+	"POST /providers/remove-key",
+	"POST /providers/set-key",
 ];
 
 let mf: Miniflare;

@@ -337,7 +337,7 @@ describe("a reply", () => {
 		expect(after.messages.at(-1)).toMatchObject({
 			id: sent.id,
 			from: { name: box.name, address: accounts },
-			sent: { by: "Owner", status: { state: "sent", code: null, nextAt: null } },
+			sent: { by: "Owner", status: { state: "sent", code: null, nextAt: null, detail: null } },
 		});
 		expect(after.messages[0]?.sent).toBeNull();
 		expect(after.latest.text.replace(/\r\n/g, "\n")).toBe("It's paid.\n\nThanks!");
@@ -406,7 +406,12 @@ describe("a message that isn't sent", () => {
 		expect(refused).toMatchObject({ state: "refused", code: "E_RECIPIENT_SUPPRESSED" });
 		expect(await sentTo("refuse-E_RECIPIENT_SUPPRESSED@example.org")).toEqual([]);
 		const shown = (await thread(box, refused.threadId)).messages[0]?.sent?.status;
-		expect(shown).toEqual({ state: "refused", code: "E_RECIPIENT_SUPPRESSED", nextAt: null });
+		expect(shown).toEqual({
+			state: "refused",
+			code: "E_RECIPIENT_SUPPRESSED",
+			nextAt: null,
+			detail: null,
+		});
 
 		const again = await outbox(box, owner, { action: "send-again", message: refused.id });
 		expect(await again.json()).toMatchObject({ ok: true, state: "refused" });
@@ -703,7 +708,7 @@ describe("an agent", () => {
 		expect(message?.sent).toEqual({
 			by: agent.name,
 			mine: false,
-			status: { state: "held", code: null, nextAt: null },
+			status: { state: "held", code: null, nextAt: null, detail: null },
 			approval: null,
 		});
 		expect(await awaiting(box, reader)).toEqual({

@@ -37,6 +37,7 @@ describe("migrate", () => {
 			{ version: 3 },
 			{ version: 4 },
 			{ version: 5 },
+			{ version: 6 },
 		]);
 	});
 
@@ -78,6 +79,11 @@ describe("migrate", () => {
 				draft: "draft-1",
 				approved_by: null,
 				approved_at: null,
+				// Version 6's: what was there before goes through Email Service.
+				provider: "cloudflare",
+				workspace_id: null,
+				idempotency_key: null,
+				detail: null,
 			},
 		]);
 		sent("held");

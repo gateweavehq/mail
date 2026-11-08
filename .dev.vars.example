@@ -27,6 +27,10 @@ BETTER_AUTH_SECRET=
 # Mail people write in local dev isn't sent either: it is printed and saved the same way.
 # SEND_PER_DAY=
 
+# Optional: encrypts the keys workspaces keep here, such as a Resend key, which can't be added
+# without it. 32 random bytes, base64: openssl rand -base64 32. `pnpm dev:setup` fills one in.
+# SECRETS_KEY=
+
 # Optional: the addresses of your legal pages, linked from the sign-in pages and the workspace menu.
 # Nothing is linked when they are unset.
 # LEGAL_NOTICE_URL=

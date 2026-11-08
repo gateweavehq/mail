@@ -144,22 +144,23 @@ pnpm wrangler secret put BETTER_AUTH_URL
 Keep tokens, keys and email addresses as secrets. Plain variables stay through a deploy too,
 because `wrangler.jsonc` sets `keep_vars`.
 
-| Name                   | What it does                                                                                                       |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `BETTER_AUTH_SECRET`   | Signs sessions. Required.                                                                                          |
-| `BETTER_AUTH_URL`      | The address people use, such as `https://mail.example.com`. Inferred from each request when unset.                 |
-| `GITHUB_CLIENT_ID`     | Turns on "Sign in with GitHub", with `GITHUB_CLIENT_SECRET`.                                                       |
-| `GITHUB_CLIENT_SECRET` | The client secret of the same GitHub OAuth app.                                                                    |
-| `OIDC_ISSUER`          | Turns on an OpenID Connect provider, with the two below. See [below](#sign-in-through-an-openid-connect-provider). |
-| `OIDC_CLIENT_ID`       | This deployment's client ID at the provider.                                                                       |
-| `OIDC_CLIENT_SECRET`   | Its client secret there.                                                                                           |
-| `OIDC_PROVIDER_NAME`   | What the sign-in button calls it. Unset: "single sign-on".                                                         |
-| `EMAIL_FROM`           | Turns on email (invitations, password reset), such as `Gateweave Mail <mail@example.com>`.                         |
-| `MAILBOX_BYTES`        | How many bytes one mailbox may hold, as a whole number. Unset: 1 GiB.                                              |
-| `SEND_PER_DAY`         | How many messages one workspace may send from its mailboxes a day, as a whole number. Unset: 200.                  |
-| `LEGAL_NOTICE_URL`     | The address of your legal notice. See [below](#your-legal-pages).                                                  |
-| `PRIVACY_POLICY_URL`   | The address of your privacy policy.                                                                                |
-| `TERMS_URL`            | The address of your terms.                                                                                         |
+| Name                   | What it does                                                                                                          |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `BETTER_AUTH_SECRET`   | Signs sessions. Required.                                                                                             |
+| `BETTER_AUTH_URL`      | The address people use, such as `https://mail.example.com`. Inferred from each request when unset.                    |
+| `GITHUB_CLIENT_ID`     | Turns on "Sign in with GitHub", with `GITHUB_CLIENT_SECRET`.                                                          |
+| `GITHUB_CLIENT_SECRET` | The client secret of the same GitHub OAuth app.                                                                       |
+| `OIDC_ISSUER`          | Turns on an OpenID Connect provider, with the two below. See [below](#sign-in-through-an-openid-connect-provider).    |
+| `OIDC_CLIENT_ID`       | This deployment's client ID at the provider.                                                                          |
+| `OIDC_CLIENT_SECRET`   | Its client secret there.                                                                                              |
+| `OIDC_PROVIDER_NAME`   | What the sign-in button calls it. Unset: "single sign-on".                                                            |
+| `EMAIL_FROM`           | Turns on email (invitations, password reset), such as `Gateweave Mail <mail@example.com>`.                            |
+| `MAILBOX_BYTES`        | How many bytes one mailbox may hold, as a whole number. Unset: 1 GiB.                                                 |
+| `SEND_PER_DAY`         | How many messages one workspace may send from its mailboxes a day, as a whole number. Unset: 200.                     |
+| `SECRETS_KEY`          | Encrypts workspaces' keys, such as a Resend key: 32 random bytes, base64. None can be added without it.               |
+| `LEGAL_NOTICE_URL`     | The address of your legal notice. See [below](#your-legal-pages).                                                     |
+| `PRIVACY_POLICY_URL`   | The address of your privacy policy.                                                                                   |
+| `TERMS_URL`            | The address of your terms.                                                                                            |
 
 ### Your own domain
 
@@ -195,6 +196,19 @@ is refused, and its copy in the thread says why. A workspace sends up to 200 mes
 address that bounced or complained before. An agent also has a day's count of its own, which an
 owner or admin sets on the Agents page, and mail it writes that waits for approval counts against
 the workspace's day only once it is approved.
+
+A domain whose DNS isn't on the Cloudflare account that runs Mail can't be onboarded there, so it
+can send through [Resend](https://resend.com) instead, with each workspace's own key. Set
+`SECRETS_KEY` once, which encrypts those keys:
+
+```sh
+openssl rand -base64 32 | pnpm wrangler secret put SECRETS_KEY
+```
+
+Then, in the workspace, an owner or admin verifies the domain at Resend, adds a Resend key under
+Settings › Domains, and sets the domain to send with Resend. A key that may only send is enough.
+Keep `SECRETS_KEY` as it is: the keys sealed with it can't be opened with another, and would have
+to be added again. Resend's own limits and quotas apply to that account.
 
 As you hold the database, you can do it for them, from the repository root. Find their `id` in this
 list. Don't paste an address someone sent you into a command, as it could run as part of it:

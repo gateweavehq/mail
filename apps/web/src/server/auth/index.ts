@@ -78,6 +78,7 @@ function buildAuth() {
 		allowPasswordTry,
 		allowSpentTriesEmail,
 		removeMailboxes,
+		providers: { secretsKey: env.SECRETS_KEY, resendApi: env.RESEND_API_URL },
 	});
 }
 

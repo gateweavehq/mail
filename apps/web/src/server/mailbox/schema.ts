@@ -171,6 +171,16 @@ CREATE TRIGGER outgoing_gone AFTER DELETE ON message BEGIN
 END;
 `;
 
+// How each message goes: through Email Service's binding, or Resend with the workspace's key, which
+// the object reads from D1 at each try. Resend knows a message by `idempotency_key` for a day, and
+// `detail` keeps its words for a refusal. Rows from before are all Email Service's.
+const VERSION_6 = `
+ALTER TABLE outgoing ADD COLUMN provider TEXT NOT NULL DEFAULT 'cloudflare';
+ALTER TABLE outgoing ADD COLUMN workspace_id TEXT;
+ALTER TABLE outgoing ADD COLUMN idempotency_key TEXT;
+ALTER TABLE outgoing ADD COLUMN detail TEXT;
+`;
+
 /** Each brings the schema from the version before it. Append only: objects keep what they ran. */
 export const MIGRATIONS: ((sql: SqlStorage) => void)[] = [
 	(sql) => sql.exec(VERSION_1),
@@ -195,6 +205,7 @@ export const MIGRATIONS: ((sql: SqlStorage) => void)[] = [
 	(sql) => sql.exec(VERSION_3),
 	(sql) => sql.exec(VERSION_4),
 	(sql) => sql.exec(VERSION_5),
+	(sql) => sql.exec(VERSION_6),
 ];
 
 /** What migrating needs of a Durable Object's storage. */

@@ -119,11 +119,17 @@ These are load-bearing. Breaking one breaks users' data or security, usually sil
     key.
 14. **A message that may have gone is never sent again by itself.** Email Service has no
     idempotency key, so a send that failed without a code, with its own failure, or that nothing
-    finished, is `uncertain`, and only a person's "Send again" sends it again. A draft's id makes a
-    second send of it the first. The copy and its `outgoing` row are written in one transaction
-    before the binding is called, each change of state is made only from the state it was found
-    in, and the message's own id goes in its `References`, so its thread doesn't depend on the
-    `Message-ID` Email Service gives it.
+    finished, is `uncertain`, and only a person's "Send again" sends it again. Through Resend, the
+    one exception, every try of a message carries its `outgoing.idempotency_key`, which Resend
+    keeps for a day, so the alarm may try it again; change that key only after Resend has refused
+    it. A draft's id makes a second send of it the first. The copy and its `outgoing` row are
+    written in one transaction before anything is called, each change of state is made only from
+    the state it was found in, and the message's own id goes in its `References`, so its thread
+    doesn't depend on the `Message-ID` the provider gives it.
+15. **A workspace's provider key never leaves the server.** It is sealed with `SECRETS_KEY` and the
+    workspace's id (`apps/web/src/server/secrets.ts`) before it is written, opened only to send or
+    to check it with Resend, and pages see only its last four characters. Never log it, return it
+    or put it in an error. Putting one in takes an owner or admin with a recent sign-in.
 
 ## Code style
 

@@ -1,6 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import type { DirectoryAction } from "#/server/directory/gateway";
+import type { SendsWith } from "./providers";
 
 /** Where a domain's MX records send its mail. */
 export type MailRoute = "cloudflare" | "elsewhere" | "none";
@@ -11,6 +12,8 @@ export interface DirectoryDomain {
 	verifiedAt: number | null;
 	/** The TXT record that would prove it. Only for those who can act on it, and until it's proved. */
 	proof: { name: string; value: string } | null;
+	/** How its mail is sent. */
+	sendsWith: SendsWith;
 }
 
 export interface DirectoryAddress {

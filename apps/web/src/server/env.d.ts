@@ -36,6 +36,13 @@ declare namespace Cloudflare {
 		 */
 		SEND_PER_DAY?: string;
 		/**
+		 * At least 32 random bytes, base64 (`openssl rand -base64 32`). Seals the keys workspaces keep
+		 * here, such as a Resend key, which can't be added without it. Changing it loses them.
+		 */
+		SECRETS_KEY?: string;
+		/** Resend's API. `https://api.resend.com` when unset. The browser tests point it at a stand-in. */
+		RESEND_API_URL?: string;
+		/**
 		 * The addresses of this deployment's legal pages, linked from the sign-in pages and the
 		 * workspace menu. Each is left out when unset, or when it is not an http(s) address.
 		 */

@@ -7,6 +7,7 @@ import {
 	text,
 	uniqueIndex,
 } from "drizzle-orm/sqlite-core";
+import { KEYED_PROVIDERS, SENDS_WITH } from "../../lib/providers";
 import { member, organization, user } from "./auth-schema";
 
 const createdAt = () =>
@@ -32,6 +33,11 @@ export const mailDomain = sqliteTable(
 		verificationToken: text("verification_token").notNull(),
 		verifiedAt: integer("verified_at", { mode: "timestamp_ms" }),
 		createdAt: createdAt(),
+		/**
+		 * How its mail is sent: `cloudflare`, through Email Service's binding, or `resend`, with the
+		 * workspace's key in `provider_key`.
+		 */
+		sendsWith: text("sends_with", { enum: SENDS_WITH }).default("cloudflare").notNull(),
 	},
 	(table) => [
 		uniqueIndex("mail_domain_verified_name_unique")
@@ -148,3 +154,24 @@ export const agentPolicy = sqliteTable("agent_policy", {
 	updatedBy: text("updated_by").references(() => user.id, { onDelete: "set null" }),
 	updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
 });
+
+/**
+ * A workspace's key for a mail provider, sealed with the deployment's `SECRETS_KEY` and the
+ * workspace's id (`server/secrets.ts`). It is never sent to a browser: pages see its last four
+ * characters. It goes with the workspace.
+ */
+export const providerKey = sqliteTable(
+	"provider_key",
+	{
+		organizationId: text("organization_id")
+			.notNull()
+			.references(() => organization.id, { onDelete: "cascade" }),
+		provider: text("provider", { enum: KEYED_PROVIDERS }).notNull(),
+		sealed: text("sealed").notNull(),
+		/** The key's last four characters. */
+		hint: text("hint").notNull(),
+		addedBy: text("added_by").references(() => user.id, { onDelete: "set null" }),
+		addedAt: integer("added_at", { mode: "timestamp_ms" }).notNull(),
+	},
+	(table) => [primaryKey({ columns: [table.organizationId, table.provider] })],
+);

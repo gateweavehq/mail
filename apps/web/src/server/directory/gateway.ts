@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
 import { z } from "zod";
+import { SENDS_WITH } from "../../lib/providers";
 import { isAdminRole } from "../../lib/roles";
 import { currentCaller, currentMember } from "../access";
 import { db } from "../auth";
@@ -17,6 +18,7 @@ import {
 	removeAddress,
 	removeDomain,
 	removeMailbox,
+	setDomainSending,
 	setMailboxAccess,
 } from "./index";
 
@@ -26,6 +28,11 @@ const Action = z.discriminatedUnion("action", [
 	z.object({ action: z.literal("add-domain"), name: z.string().max(300) }),
 	z.object({ action: z.literal("check-domain"), id: Id }),
 	z.object({ action: z.literal("remove-domain"), id: Id }),
+	z.object({
+		action: z.literal("set-domain-sending"),
+		id: Id,
+		sendsWith: z.enum(SENDS_WITH),
+	}),
 	z.object({
 		action: z.literal("add-mailbox"),
 		name: z.string().max(300),
@@ -108,6 +115,8 @@ async function run(action: z.output<typeof Action>, workspaceId: string, userId:
 			);
 		case "remove-domain":
 			return removeDomain(db, workspaceId, action.id);
+		case "set-domain-sending":
+			return setDomainSending(db, workspaceId, action.id, action.sendsWith);
 		case "add-mailbox":
 			return addMailbox(db, workspaceId, action.name, action.everyone);
 		case "set-mailbox-access":

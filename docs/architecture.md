@@ -226,6 +226,26 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
       approved, once the gateway has seen it still waits. A changed policy doesn't start the
       agent's day again (the limiter keeps a named rule's use when its number changes). Only a
       key is an agent here: agents never sign in, so a session is a person's, whatever its role.
+    - **Resend, for a domain elsewhere** (`providers/`). Email Service sends only from domains on
+      this deployment's account, so a domain can be set to send through Resend instead
+      (`mail_domain.sends_with`, `cloudflare` by default), with the workspace's own Resend key. An
+      owner or admin adds the key on the Domains page. Adding or replacing it takes a recent
+      sign-in, and Resend is asked first whether it takes it (`GET /domains`, which a full-access
+      key may call and a sending-only key is refused as restricted: both are real). The key is kept
+      in `provider_key`, sealed with AES-256-GCM under a key that HKDF derives from `SECRETS_KEY`
+      and the workspace's id, with its place as additional data (`secrets.ts`, as Agents seals its
+      keys). No page gets it back, only its last four characters, and without `SECRETS_KEY` no key
+      can be added. A domain can be set to Resend only while the workspace has a key, and a message
+      from it is refused when it is written if the key has gone since, before anything is counted.
+      Each message keeps the way it was written with (`outgoing.provider`), and the object reads and
+      opens the key from D1 at each try, so one replaced or removed meanwhile is the one that
+      counts. Resend gets the same message the binding would, with Mail's own id in `References`
+      as before, and the message's id as `Idempotency-Key`, which Resend keeps for a day: a repeat
+      gets the first answer and sends nothing. So, unlike Email Service's, a Resend try that may
+      have gone (its own failure, a timeout, the same key still in progress, or a try the alarm
+      finds still `sending`) is tried again on the busy waits, and is `uncertain` only when they
+      run out. A refusal keeps Resend's own words (`outgoing.detail`) for the page, and spends the
+      key, as Resend would only refuse it again: the next try, after a fix, gets a new one.
     - **States** (`outgoing.state`). `held` for an agent's message that waits for approval, as
       above. `sending`, then `sent`. `waiting` when Email Service is busy
       (its rate or daily limit): the object's alarm tries again after 15 seconds, 1, 5 and 30

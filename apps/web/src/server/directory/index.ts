@@ -1,6 +1,7 @@
 import { and, asc, count, eq, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { parseDomainName, parseLocalPart, splitRecipient } from "../../lib/addresses";
 import type { Directory, MailRoute } from "../../lib/directory";
+import type { SendsWith } from "../../lib/providers";
 import { canReadMailbox, isAdminRole, type MemberRole } from "../../lib/roles";
 import { AGENT_ROLE, isAgentMembership } from "../auth/agents";
 import type { Database } from "../db";
@@ -8,7 +9,7 @@ import { schema } from "../db";
 import { toRole } from "../workspaces";
 import { type LookUpDomain, proofName } from "./dns";
 
-const { mailAddress, mailDomain, mailbox, mailboxAccess, member } = schema;
+const { mailAddress, mailDomain, mailbox, mailboxAccess, member, providerKey } = schema;
 
 // Caps, so a stranger signing up can't fill the database. Two requests at once can pass one by a
 // little, which does no harm.
@@ -174,6 +175,7 @@ export async function listDirectory(
 				admin && !domain.verifiedAt
 					? { name: proofName(domain.name), value: proofValue(domain.verificationToken) }
 					: null,
+			sendsWith: domain.sendsWith,
 		})),
 		mailboxes: readable.map((box) => ({
 			id: box.id,
@@ -287,6 +289,32 @@ export async function checkDomain(
 export async function removeDomain(db: Database, workspaceId: string, id: string): Promise<Result> {
 	const { meta } = await db
 		.delete(mailDomain)
+		.where(and(eq(mailDomain.id, id), eq(mailDomain.organizationId, workspaceId)))
+		.run();
+	return meta.changes ? { ok: true } : notFound();
+}
+
+/**
+ * How a domain's mail is sent from now on. Resend needs the workspace's key first, so that mail
+ * written next has a way to go. Mail already written keeps the way it was written with.
+ */
+export async function setDomainSending(
+	db: Database,
+	workspaceId: string,
+	id: string,
+	sendsWith: SendsWith,
+): Promise<Result> {
+	if (sendsWith === "resend") {
+		const keyed = await db
+			.select({ provider: providerKey.provider })
+			.from(providerKey)
+			.where(and(eq(providerKey.organizationId, workspaceId), eq(providerKey.provider, "resend")))
+			.get();
+		if (!keyed) return refuse("Add the workspace's Resend key first.", 409);
+	}
+	const { meta } = await db
+		.update(mailDomain)
+		.set({ sendsWith })
 		.where(and(eq(mailDomain.id, id), eq(mailDomain.organizationId, workspaceId)))
 		.run();
 	return meta.changes ? { ok: true } : notFound();

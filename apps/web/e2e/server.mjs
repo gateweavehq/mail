@@ -7,6 +7,7 @@ import { randomBytes } from "node:crypto";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { startDnsStandIn } from "./dns-stand-in.mjs";
+import { startResendStandIn } from "./resend-stand-in.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 process.chdir(root);
@@ -18,6 +19,8 @@ rmSync(state, { recursive: true, force: true });
 const appPort = Number(process.env.MAIL_E2E_PORT) || 4752;
 const dnsPort = appPort + 20;
 const dns = startDnsStandIn(dnsPort);
+const resendPort = appPort + 21;
+const resend = startResendStandIn(resendPort);
 
 // Only the secrets matter; the app runs with email off. A preview reads them from beside the built
 // Worker, where a build leaves a copy of .dev.vars if there is one, and CI has none. A Worker
@@ -28,15 +31,19 @@ writeFileSync(
 	[
 		`BETTER_AUTH_SECRET=${randomBytes(32).toString("hex")}`,
 		`DNS_RESOLVER_URL=http://localhost:${dnsPort}/dns-query`,
+		`SECRETS_KEY=${randomBytes(32).toString("base64")}`,
+		`RESEND_API_URL=http://localhost:${resendPort}`,
 		"",
 	].join("\n"),
 );
 
 // `secrets.required` keeps a preview from reading anything else in that file, and the tests need
-// the stand-in resolver, so the built copy of the config lists it too.
+// the stand-ins and a key to seal with, so the built copy of the config lists them too.
 const builtConfig = resolve(root, "dist/server/wrangler.json");
 const config = JSON.parse(readFileSync(builtConfig, "utf8"));
-config.secrets = { required: ["BETTER_AUTH_SECRET", "DNS_RESOLVER_URL"] };
+config.secrets = {
+	required: ["BETTER_AUTH_SECRET", "DNS_RESOLVER_URL", "SECRETS_KEY", "RESEND_API_URL"],
+};
 writeFileSync(builtConfig, JSON.stringify(config));
 
 // Run the tools with this Node, not through a shell: Playwright stops the server by killing this
@@ -65,5 +72,6 @@ const server = spawn(
 for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => server.kill(signal));
 server.on("exit", (code) => {
 	dns.close();
+	resend.close();
 	process.exit(code ?? 0);
 });

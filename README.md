@@ -55,6 +55,9 @@ tools that run on Cloudflare, next to [Gateweave Track](https://github.com/gatew
   its addresses, in plain text, through Cloudflare Email Service. The copy shows in its thread at
   once, with who wrote it and whether it went; one that wasn't sent can be sent again or
   discarded, and one that may have gone is never sent twice by itself.
+- **Resend for domains elsewhere.** A domain whose DNS isn't on your Cloudflare account can send
+  through Resend instead, with the workspace's own key, which Mail keeps encrypted and never shows
+  again.
 - **Agents.** An admin makes an agent for an AI agent and gives it a key. It reads, through the
   API, only the mailboxes it is given; opening a mailbox to everyone doesn't open it to agents.
   A mailbox can let an agent send too. Mail to the addresses and domains its settings name goes

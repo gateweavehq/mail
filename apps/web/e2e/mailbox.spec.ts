@@ -2,8 +2,12 @@ import type { APIRequestContext, Page } from "@playwright/test";
 import { expect, newBrowserContext, test } from "./fixtures";
 import { newPerson, signUp, startWorkspace, unique, waitForHydration } from "./helpers";
 
-// The app reads this resolver from `DNS_RESOLVER_URL`, which `server.mjs` sets to the same port.
+// The app reads this resolver from `DNS_RESOLVER_URL`, which `server.mjs` sets to the same port,
+// and Resend's API from `RESEND_API_URL`, the port after.
 const dnsStandIn = `http://localhost:${(Number(process.env.MAIL_E2E_PORT) || 4752) + 20}`;
+const resendStandIn = `http://localhost:${(Number(process.env.MAIL_E2E_PORT) || 4752) + 21}`;
+/** A key the Resend stand-in takes, as one that may only send. */
+const RESEND_STAND_IN_KEY = "re_e2eSendingOnly_0123456789";
 
 /** A new workspace with a proved domain and a mailbox, "Support", that has an address there. */
 async function supportMailbox(page: Page, request: APIRequestContext, baseURL: string | undefined) {
@@ -51,7 +55,7 @@ async function supportMailbox(page: Page, request: APIRequestContext, baseURL: s
 		);
 		expect(answer.status()).toBe(200);
 	};
-	return { slug, person, mailboxId: box?.id ?? "", to, deliver };
+	return { slug, person, mailboxId: box?.id ?? "", to, domain, deliver };
 }
 
 test("mail that arrives at an address shows in its mailbox, and opens as text", async ({
@@ -618,8 +622,10 @@ test("an agent's mail to someone its settings don't name waits until a person ap
 		copy.getByText(`Written in this mailbox by Sorter, approved by ${person.name}.`),
 	).toBeVisible();
 
+	// The page may first show what it had, waiting list and all, while it asks again; the thread's
+	// row is there either way, and the waiting list goes once the new answer is in.
 	await page.getByRole("link", { name: "Support" }).click();
-	await expect(page.getByRole("link", { name: /Your parcel/ })).toBeVisible();
+	await expect(page.getByRole("link", { name: /^Support Your parcel/ })).toBeVisible();
 	await expect(
 		page.getByRole("region", { name: /wait for approval|waits for approval/ }),
 	).toHaveCount(0);
@@ -628,3 +634,61 @@ test("an agent's mail to someone its settings don't name waits until a person ap
 /** A one-pixel PNG. */
 const PIXEL =
 	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+test("an admin adds the workspace's Resend key, and a domain set to Resend sends through it", async ({
+	page,
+	request,
+	baseURL,
+}) => {
+	const { slug, mailboxId, domain } = await supportMailbox(page, request, baseURL);
+	await page.goto(`/${slug}/settings/domains`);
+	await waitForHydration(page);
+	const row = page.getByRole("listitem").filter({ hasText: domain });
+	const sendsWith = row.getByLabel("Sends with");
+	await expect(sendsWith).toHaveValue("cloudflare");
+	await expect(sendsWith.getByRole("option", { name: "Resend (add a key first)" })).toBeDisabled();
+
+	await page.getByLabel("Resend key").fill("re_notOneResendKnows_1234");
+	await page.getByRole("button", { name: "Add key" }).click();
+	await expect(page.getByRole("alert")).toContainText("Resend doesn't take this key");
+	await page.getByLabel("Resend key").fill(RESEND_STAND_IN_KEY);
+	await page.getByRole("button", { name: "Add key" }).click();
+	await expect(page.getByRole("status")).toContainText("It can only send");
+	await expect(page.getByText(`re_…${RESEND_STAND_IN_KEY.slice(-4)}`)).toBeVisible();
+	await expect(page.getByLabel("Resend key")).toHaveCount(0);
+
+	await sendsWith.selectOption("resend");
+	await expect(sendsWith).toHaveValue("resend");
+	await page.reload();
+	await waitForHydration(page);
+	await expect(row.getByLabel("Sends with")).toHaveValue("resend");
+
+	const subject = `Through Resend ${unique("note")}`;
+	await page.goto(`/${slug}/mailboxes/${mailboxId}`);
+	await waitForHydration(page);
+	await page.getByRole("button", { name: "Write" }).click();
+	const dialog = page.getByRole("dialog", { name: "New message" });
+	await dialog.getByLabel("To").fill("someone@example.net");
+	await dialog.getByLabel("Subject").fill(subject);
+	await dialog.getByLabel("Message").fill("Sent by Resend.");
+	await dialog.getByRole("button", { name: "Send" }).click();
+	await expect(page.getByRole("heading", { level: 1, name: subject })).toBeVisible();
+	const thread = page.getByRole("list", { name: "Messages in this thread" });
+	await expect(
+		thread.getByRole("article", { name: /Support/ }).getByText("Sent", { exact: true }),
+	).toBeVisible();
+
+	const sent = (await (await request.get(`${resendStandIn}/sent`)).json()) as {
+		from: string;
+		to: string[];
+		subject: string;
+		text: string;
+	}[];
+	expect(sent.filter((one) => one.subject === subject)).toEqual([
+		expect.objectContaining({
+			from: `Support <help@${domain}>`,
+			to: ["someone@example.net"],
+			text: "Sent by Resend.",
+		}),
+	]);
+});

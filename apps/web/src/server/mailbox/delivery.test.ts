@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { errorCode, outcomeOf, WAITS_MS } from "./delivery";
+import type { ResendFailure } from "../providers/resend";
+import { errorCode, outcomeOf, resendOutcome, WAITS_MS } from "./delivery";
 
 const coded = (code: string) => Object.assign(new Error("Refused"), { code });
 
@@ -59,6 +60,51 @@ describe("outcomeOf", () => {
 			state: "waiting",
 			code: "E_DAILY_LIMIT_EXCEEDED",
 			nextAt: now + 60 * 60 * 1000,
+		});
+	});
+});
+
+describe("resendOutcome", () => {
+	const now = 1_000_000;
+	const failure = (kind: ResendFailure["kind"], code = `resend:${kind}`): ResendFailure => ({
+		kind,
+		code,
+		detail: null,
+		answered: kind === "refused",
+	});
+
+	it("refuses what Resend refused, at once", () => {
+		expect(resendOutcome(failure("refused", "resend:validation_error"), 1, now)).toEqual({
+			state: "refused",
+			code: "resend:validation_error",
+		});
+	});
+
+	it("tries again what may have gone, since Resend knows it by its key", () => {
+		expect(resendOutcome(failure("unsure", "resend:unreachable"), 1, now)).toEqual({
+			state: "waiting",
+			code: "resend:unreachable",
+			nextAt: now + (WAITS_MS.busy[0] ?? 0),
+		});
+	});
+
+	it("leaves what may have gone uncertain once the tries run out", () => {
+		const last = WAITS_MS.busy.length + 1;
+		expect(resendOutcome(failure("unsure", "resend:application_error"), last, now)).toEqual({
+			state: "uncertain",
+			code: "resend:application_error",
+		});
+	});
+
+	it("waits hours over a daily quota, and refuses busy mail once the tries run out", () => {
+		expect(resendOutcome(failure("daily"), 2, now)).toEqual({
+			state: "waiting",
+			code: "resend:daily",
+			nextAt: now + (WAITS_MS.daily[1] ?? 0),
+		});
+		expect(resendOutcome(failure("busy"), WAITS_MS.busy.length + 1, now)).toEqual({
+			state: "refused",
+			code: "resend:busy",
 		});
 	});
 });
