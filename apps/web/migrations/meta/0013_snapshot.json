@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "6bc1626b-5d94-44ad-b899-695ad1dc1dd0",
+  "id": "a9b1ffed-d713-45f9-93a2-e1810b565021",
   "prevId": "d9fcd59e-46a9-4aaf-878d-dbe3bbd119c6",
   "tables": {
     "account": {
@@ -1110,6 +1110,13 @@
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false
+        },
+        "removed_at": {
+          "name": "removed_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
         }
       },
       "indexes": {
@@ -1133,6 +1140,13 @@
           "name": "mail_suppression_expires_at_idx",
           "columns": [
             "expires_at"
+          ],
+          "isUnique": false
+        },
+        "mail_suppression_removed_at_idx": {
+          "name": "mail_suppression_removed_at_idx",
+          "columns": [
+            "removed_at"
           ],
           "isUnique": false
         }

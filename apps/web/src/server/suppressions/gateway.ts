@@ -55,7 +55,8 @@ export async function changeSuppressions(request: Request, slug: string): Promis
 	if ("refused" in caller) return caller.refused;
 	const parsed = Action.safeParse(await request.json().catch(() => null));
 	if (!parsed.success) return answer({ ok: false, error: "That isn't a change we know." }, 400);
-	return (await removeSuppression(db, caller.workspaceId, parsed.data.id))
+	// `gone` tells the page that the entry is off the list, as it would be had this removed it.
+	return (await removeSuppression(db, caller.workspaceId, parsed.data.id, Date.now()))
 		? answer({ ok: true })
-		: answer({ ok: false, error: "It isn't on the list any more." }, 404);
+		: answer({ ok: false, error: "It isn't on the list any more.", gone: true }, 404);
 }

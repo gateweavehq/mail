@@ -72,14 +72,22 @@ export function suppressionMeaning(reason: SuppressionReason): string {
 
 /**
  * Why a message can't go, naming the addresses: what a person or an agent sees when a send, an
- * approval or a new try is refused.
+ * approval or a new try is refused. The reasons are for those who may see the list, owners and
+ * admins; anyone else learns only what they need to put the message right.
  */
-export function suppressedRefusal(found: Pick<Suppression, "address" | "reason">[]): string {
+export function suppressedRefusal(
+	found: Pick<Suppression, "address" | "reason">[],
+	withReasons: boolean,
+): string {
 	const named = found
-		.map(({ address, reason }) => `${address} (${suppressionLabel(reason).toLowerCase()})`)
+		.map(({ address, reason }) =>
+			withReasons ? `${address} (${suppressionLabel(reason).toLowerCase()})` : address,
+		)
 		.join(", ");
-	const them = found.length === 1 ? "it" : "them";
-	return `Mail won't send to ${named}, as earlier mail ${found.length === 1 ? "to it" : "to them"} didn't get through. Take ${them} out, or an owner or admin can remove ${them} in Settings, under Suppressions.`;
+	const one = found.length === 1;
+	const them = one ? "it" : "them";
+	const why = withReasons ? "didn't get through" : "didn't get through or was marked as spam";
+	return `Mail won't send to ${named}, as earlier mail to ${them} ${why}. Take ${them} out, or an owner or admin can remove ${them} in Settings, under Suppressions.`;
 }
 
 /** Where a workspace's suppressions are listed and removed. */

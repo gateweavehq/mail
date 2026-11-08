@@ -82,10 +82,17 @@ function answer(body: unknown, status = 200): Response {
 
 const refuse = (error: string, status: number) => answer({ ok: false, error }, status);
 
-/** A send refused for addresses on the workspace's suppression list, which it names. */
-const refuseSuppressed = (found: Suppression[]) =>
+/**
+ * A send refused for addresses on the workspace's suppression list, which it names, saying why only
+ * to owners and admins, who may see the list.
+ */
+const refuseSuppressed = (found: Suppression[], withReasons: boolean) =>
 	answer(
-		{ ok: false, error: suppressedRefusal(found), suppressed: found.map(({ address }) => address) },
+		{
+			ok: false,
+			error: suppressedRefusal(found, withReasons),
+			suppressed: found.map(({ address }) => address),
+		},
 		409,
 	);
 
@@ -149,7 +156,7 @@ export async function outboxAnswer(
 		if (!row || !isHeld(row)) return refuse("It isn't waiting for approval any more.", 409);
 		// An address may have come onto the list while it waited.
 		const suppressed = await suppressedAmong(db, workspaceId, recipientsOf(row), Date.now());
-		if (suppressed.length > 0) return refuseSuppressed(suppressed);
+		if (suppressed.length > 0) return refuseSuppressed(suppressed, isAdminRole(role));
 		const allowed = await allowSend(workspaceId);
 		if (!allowed.allowed) return tooMany(allowed.retryAfter);
 		const status = await box.stub.approve(action.message, memberId);
@@ -162,7 +169,7 @@ export async function outboxAnswer(
 		const row = await box.stub.get(action.message);
 		if (row) {
 			const suppressed = await suppressedAmong(db, workspaceId, recipientsOf(row), Date.now());
-			if (suppressed.length > 0) return refuseSuppressed(suppressed);
+			if (suppressed.length > 0) return refuseSuppressed(suppressed, isAdminRole(role));
 		}
 		// Counted before it is known to go, as only the object can say, at once.
 		const allowed = await allowSend(workspaceId);
@@ -196,9 +203,17 @@ export async function outboxAnswer(
 	// A draft sent before, as when its answer was lost, is what became of it, and counts once.
 	const earlier = await box.stub.drafted(action.draft);
 	if (earlier) return sentAnswer(earlier);
-	// Before anything is stored or counted, so the draft stays as it is to be put right.
-	const suppressed = await suppressedAmong(db, workspaceId, lower, Date.now());
-	if (suppressed.length > 0) return refuseSuppressed(suppressed);
+	// Before anything is stored, so the draft stays as it is to be put right. A person's is asked
+	// before anything is counted; an agent's once its own day has counted it, below, so that a key
+	// can't learn who is on the list for free.
+	const checkList = async () => {
+		const suppressed = await suppressedAmong(db, workspaceId, lower, Date.now());
+		return suppressed.length > 0 ? refuseSuppressed(suppressed, isAdminRole(role)) : null;
+	};
+	if (!agent) {
+		const refused = await checkList();
+		if (refused) return refused;
+	}
 	// Its domain says how it goes. Asked before anything is counted, as a mistake shouldn't use up
 	// the day's allowance.
 	const way = await sendingWith(db, workspaceId, sender);
@@ -220,6 +235,8 @@ export async function outboxAnswer(
 		hold = !goesWithoutApproval(recipients, policy.allowed);
 		const counted = await allowAgentSend(memberId, policy.sendPerDay);
 		if (!counted.allowed) return tooMany(counted.retryAfter, "This agent has written");
+		const refused = await checkList();
+		if (refused) return refused;
 	}
 	// Counted once the message could go, so a mistake doesn't use up the day's allowance. One that
 	// waits is counted when it is approved.

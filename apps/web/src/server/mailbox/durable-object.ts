@@ -1,9 +1,10 @@
 import { DurableObject } from "cloudflare:workers";
-import type { SendStatus } from "../../lib/outbox";
+import { type SendStatus, SUPPRESSED_CODE } from "../../lib/outbox";
 import { KEY_CHANGED, RESEND_CODE, type SendsWith } from "../../lib/providers";
 import { createDb } from "../db";
 import { openProviderKey } from "../providers/keys";
 import { RESEND_API, type ResendFailure, sendWithResend } from "../providers/resend";
+import { suppressedAmong } from "../suppressions";
 import { bodyHash } from "./body";
 import { DELIVERIES_JSON, type DeliveryEvent, RECIPIENT_COUNT, recordDelivery } from "./deliveries";
 import { type Outcome, outcomeOf, resendOutcome, STALE_SENDING_MS, WAITS_MS } from "./delivery";
@@ -126,6 +127,19 @@ type Trying = {
 	/** Which saving of the workspace's Resend key the last try used. */
 	keyVersion: string | null;
 };
+
+/** Who a message goes to, To and Cc, as its request names them. */
+function addressesOf(request: EmailMessageBuilder): string[] {
+	const named = (value: unknown): string[] => {
+		if (Array.isArray(value)) return value.flatMap(named);
+		if (typeof value === "string") return [value];
+		if (value && typeof value === "object" && "email" in value && typeof value.email === "string") {
+			return [value.email];
+		}
+		return [];
+	};
+	return [...named(request.to), ...named(request.cc)];
+}
 
 /** How handing a message over went. */
 type Delivered =
@@ -605,7 +619,9 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			.toArray()[0];
 		if (!row) return null;
 		await this.#alarmBy(now + STALE_SENDING_MS);
-		const result = await this.#deliver(id, row);
+		// The gateway asked the suppression list before every other try; one that waited asks again.
+		const result =
+			(from === "due" ? await this.#suppressed(row) : null) ?? (await this.#deliver(id, row));
 		if (result.ok) {
 			sql.exec(
 				`UPDATE outgoing SET state = 'sent', code = NULL, detail = NULL, provider_id = ?, sent_at = ?
@@ -636,6 +652,37 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			if (outcome.state === "waiting") await this.#alarmBy(outcome.nextAt);
 		}
 		return this.#status(id);
+	}
+
+	/**
+	 * Stops a try when an address the message goes to came onto the workspace's suppression list
+	 * since it was written, before any provider is asked. Null to go on: none did, or D1 didn't
+	 * answer, when the provider's own list still stands. Never throws.
+	 */
+	async #suppressed(row: Trying): Promise<Delivered | null> {
+		// Written before the object kept its workspace, and so checked as it was written.
+		if (!row.workspaceId) return null;
+		const request = JSON.parse(row.request) as EmailMessageBuilder;
+		let found: unknown[];
+		try {
+			found = await suppressedAmong(
+				createDb(this.env.DB),
+				row.workspaceId,
+				addressesOf(request),
+				Date.now(),
+			);
+		} catch {
+			return null;
+		}
+		if (found.length === 0) return null;
+		return {
+			ok: false,
+			// One that may have gone through Resend stays uncertain, as a refusal would say it didn't.
+			outcome: { state: row.maybeSent === 1 ? "uncertain" : "refused", code: SUPPRESSED_CODE },
+			detail: null,
+			answered: false,
+			maybeSent: false,
+		};
 	}
 
 	/** Hands a message to Email Service or Resend once, and says how that went. Never throws. */

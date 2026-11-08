@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createWorkspace, signUp } from "./accounts";
-import { type QueuedMessage, startMail } from "./mail-worker";
+import { type QueuedMessage, type SentEmail, startMail } from "./mail-worker";
 
 // Each workspace's suppression list: what Email Service's delivery events add to it through the
 // queue, sending refusing what it holds, and owners and admins listing and removing entries.
@@ -34,6 +34,12 @@ interface Entry {
 	firstAt: number;
 	lastAt: number;
 	expiresAt: number | null;
+}
+
+interface Refusal {
+	ok: false;
+	error: string;
+	suppressed: string[];
 }
 
 async function directory(slug: string, action?: unknown) {
@@ -96,15 +102,33 @@ const writing = (to: string[], draft: string = crypto.randomUUID()) => ({
 	text: "Hello there.",
 });
 
+/** Sends from the mailbox as its owner, and gives the id Email Service gave the message. */
+async function sent(box: Box, to: string[]) {
+	const body = writing(to);
+	const response = await outbox(box, body);
+	expect(response.status).toBe(200);
+	const answer = (await response.json()) as { id: string; threadId: string; state: string };
+	expect(answer.state).toBe("sent");
+	const handed = (await mail.emails()).find((email: SentEmail) => email.subject === body.subject);
+	if (!handed) throw new Error("expected the message at Email Service");
+	return { ...answer, messageId: handed.messageId };
+}
+
 let queued = 0;
 
-/** An Email Sending event on the queue, from the mailbox's address unless said otherwise. */
+/**
+ * An Email Sending event on the queue, from the mailbox's address. Without a message id, it is about
+ * a message the mailbox doesn't have, as for a send Email Service refused, which gets none.
+ */
 function event(
 	box: Box,
 	type: string,
 	recipient: string,
-	payload: Record<string, unknown> = {},
-	at = Date.now(),
+	{
+		payload = {},
+		at = Date.now(),
+		messageId = `<not-sent-${queued}@outbox.test>`,
+	}: { payload?: Record<string, unknown>; at?: number; messageId?: string } = {},
 ): QueuedMessage {
 	return {
 		id: `queued-${++queued}`,
@@ -116,8 +140,7 @@ function event(
 			metadata: { eventTimestamp: new Date(at).toISOString() },
 			payload: {
 				eventId: crypto.randomUUID(),
-				// Not a message the mailbox has, as for a send Email Service refused.
-				messageId: `<not-sent-${queued}@outbox.test>`,
+				messageId,
 				sender: box.address,
 				recipient,
 				subject: "Hello",
@@ -131,20 +154,27 @@ function event(
 
 const hardBounce = (reason = "550 5.1.1 User unknown") => ({ bounce: { type: "hard", reason } });
 const complaint = { complaint: { type: "abuse" } };
-const listRefusal = {
-	rejection: { reason: "suppressed", party: "recipient", detail: "Recipient is suppressed" },
-};
+const listRefusal = (detail = "Recipient is suppressed") => ({
+	rejection: { reason: "suppressed", party: "recipient", detail },
+});
 
-async function list(slug: string, query = "", headers: Record<string, string> = owner.headers) {
-	const response = await mail.fetch(
-		`${origin}/api/suppressions/${slug}${query ? `?q=${encodeURIComponent(query)}` : ""}`,
-		{ headers },
-	);
-	return { status: response.status, body: (await response.json()) as { suppressions?: Entry[] } };
+async function list(
+	slug: string,
+	{ q = "", before = "" }: { q?: string; before?: string } = {},
+	headers: Record<string, string> = owner.headers,
+) {
+	const params = new URLSearchParams();
+	if (q) params.set("q", q);
+	if (before) params.set("before", before);
+	const response = await mail.fetch(`${origin}/api/suppressions/${slug}?${params}`, { headers });
+	return {
+		status: response.status,
+		body: (await response.json()) as { suppressions?: Entry[]; next?: string | null },
+	};
 }
 
-async function entries(slug: string) {
-	const { status, body } = await list(slug);
+async function entries(slug: string, q = "") {
+	const { status, body } = await list(slug, { q });
 	expect(status).toBe(200);
 	return body.suppressions ?? [];
 }
@@ -170,6 +200,50 @@ async function join(workspaceId: string, role = "member") {
 	return { ...who, memberId };
 }
 
+/** An agent of the workspace that may send from the mailbox, read by `reader` too. */
+async function sendingAgent(box: Box, reader: { memberId: string }) {
+	const made = await mail.fetch(`${origin}/api/auth/agents/create`, {
+		method: "POST",
+		headers: { ...owner.headers, origin, "content-type": "application/json" },
+		body: JSON.stringify({ organizationId: box.workspaceId, name: "Sorter" }),
+	});
+	expect(made.status).toBe(200);
+	const { agent, key } = (await made.json()) as {
+		agent: { id: string; memberId: string };
+		key: string;
+	};
+	await directory(box.slug, {
+		action: "set-mailbox-access",
+		mailboxId: box.mailboxId,
+		everyone: false,
+		memberIds: [agent.memberId, reader.memberId],
+		senderIds: [agent.memberId],
+	});
+	const policy = async (sendPerDay: number) => {
+		const set = await mail.fetch(`${origin}/api/auth/agents/set-policy`, {
+			method: "POST",
+			headers: { ...owner.headers, origin, "content-type": "application/json" },
+			body: JSON.stringify({ agentId: agent.id, sendPerDay, allowed: [] }),
+		});
+		expect(set.status).toBe(200);
+	};
+	const send = (to: string[]) =>
+		mail.fetch(`${origin}/api/mail/${box.slug}/${box.mailboxId}/outbox`, {
+			method: "POST",
+			headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+			body: JSON.stringify(writing(to)),
+		});
+	return { policy, send };
+}
+
+async function rows(workspaceId: string) {
+	const { results } = await mail.db
+		.prepare("SELECT address FROM mail_suppression WHERE organization_id = ? ORDER BY address")
+		.bind(workspaceId)
+		.all();
+	return results.map((row: Record<string, unknown>) => String(row.address));
+}
+
 beforeAll(async () => {
 	mail = await startMail(origin, {
 		hosts: { "dns.test": dns },
@@ -180,19 +254,38 @@ beforeAll(async () => {
 
 afterAll(() => mail.dispose());
 
-describe("a workspace's suppression list", () => {
-	it("takes a complaint, a hard bounce and the provider's refusal, and nothing milder", async () => {
+describe("what goes on a workspace's suppression list", () => {
+	it("a complaint or a hard bounce about its mail, and the provider's refusal, nothing milder", async () => {
 		const box = await mailboxWithAddress();
+		const message = await sent(box, [
+			"Ada@Example.org",
+			"bob@example.org",
+			"grace@example.org",
+			"zoe@example.org",
+		]);
+		const about = (at: number) => ({ at, messageId: message.messageId });
 		const at = Date.now() - 1000;
 		const outcome = await mail.runQueue(QUEUE, [
-			event(box, "bounced", "Ada@Example.org", hardBounce(), at),
-			event(box, "bounced", "bob@example.org", hardBounce("554 5.7.1 Policy"), at),
-			event(box, "complained", "grace@example.org", complaint, at),
-			event(box, "rejected", "lin@example.org", listRefusal, at),
-			event(box, "bounced", "zoe@example.org", { bounce: { type: "soft", reason: "452" } }, at),
-			event(box, "deferred", "zoe@example.org", {}, at),
-			event(box, "failed", "zoe@example.org", { failure: { reason: "delivery_failed" } }, at),
-			event(box, "rejected", "zoe@example.org", { rejection: { reason: "validation" } }, at),
+			event(box, "bounced", "ada@example.org", { ...about(at), payload: hardBounce() }),
+			event(box, "bounced", "bob@example.org", {
+				...about(at),
+				payload: hardBounce("554 5.7.1 Policy"),
+			}),
+			event(box, "complained", "grace@example.org", { ...about(at), payload: complaint }),
+			event(box, "rejected", "lin@example.org", { at, payload: listRefusal() }),
+			event(box, "bounced", "zoe@example.org", {
+				...about(at),
+				payload: { bounce: { type: "soft", reason: "452 4.2.2 Mailbox full" } },
+			}),
+			event(box, "deferred", "zoe@example.org", about(at)),
+			event(box, "failed", "zoe@example.org", {
+				...about(at),
+				payload: { failure: { reason: "delivery_failed" } },
+			}),
+			event(box, "rejected", "zoe@example.org", {
+				at,
+				payload: { rejection: { reason: "validation" } },
+			}),
 		]);
 		expect(outcome.retryMessages.every(({ delaySeconds }) => delaySeconds === 60)).toBe(true);
 		const found = await entries(box.slug);
@@ -217,129 +310,92 @@ describe("a workspace's suppression list", () => {
 			detail: "Recipient is suppressed",
 			expiresAt: at + 7 * DAY,
 		});
-		expect((await list(box.slug, "GRACE")).body.suppressions?.map((e) => e.address)).toEqual([
-			"grace@example.org",
-		]);
-		expect((await list(box.slug, "%")).body.suppressions).toEqual([]);
 	});
 
-	it("keeps the stronger reason and the later end, whatever order events come in", async () => {
+	it("not a bounce or a complaint about mail the mailbox has no record of sending", async () => {
 		const box = await mailboxWithAddress();
-		const at = Date.now() - 10_000;
-		await mail.runQueue(QUEUE, [event(box, "rejected", "ada@example.org", listRefusal, at)]);
-		await mail.runQueue(QUEUE, [event(box, "complained", "ada@example.org", complaint, at + 1000)]);
-		// Late and weaker: the complaint stays, for good.
 		await mail.runQueue(QUEUE, [
-			event(box, "bounced", "ada@example.org", hardBounce("554 5.7.1 Policy"), at + 500),
+			event(box, "complained", "ada@example.org", { payload: complaint }),
+			event(box, "bounced", "bob@example.org", { payload: hardBounce() }),
 		]);
-		expect(await entries(box.slug)).toEqual([
-			expect.objectContaining({
-				address: "ada@example.org",
+		expect(await rows(box.workspaceId)).toEqual([]);
+	});
+
+	it("keeps the stronger reason, the later end and the newer words, in any order", async () => {
+		const box = await mailboxWithAddress();
+		const { messageId } = await sent(box, ["ada@example.org", "bob@example.org"]);
+		const at = Date.now() - 10_000;
+		// Weaker, then stronger, then a late weaker one: the complaint stays, for good.
+		await mail.runQueue(QUEUE, [
+			event(box, "rejected", "ada@example.org", { at, payload: listRefusal() }),
+		]);
+		await mail.runQueue(QUEUE, [
+			event(box, "complained", "ada@example.org", { at: at + 1000, messageId, payload: complaint }),
+		]);
+		await mail.runQueue(QUEUE, [
+			event(box, "bounced", "ada@example.org", {
+				at: at + 500,
+				messageId,
+				payload: hardBounce("554 5.7.1 Policy"),
+			}),
+		]);
+		// The other way round: the stronger one first.
+		await mail.runQueue(QUEUE, [
+			event(box, "complained", "bob@example.org", { at: at + 1000, messageId, payload: complaint }),
+		]);
+		await mail.runQueue(QUEUE, [
+			event(box, "rejected", "bob@example.org", { at, payload: listRefusal() }),
+		]);
+		// Of the same reason, the newer event's words, whichever comes last.
+		await mail.runQueue(QUEUE, [
+			event(box, "rejected", "lin@example.org", { at: at + 2000, payload: listRefusal("newer") }),
+		]);
+		await mail.runQueue(QUEUE, [
+			event(box, "rejected", "lin@example.org", { at: at + 1000, payload: listRefusal("older") }),
+		]);
+		const found = await entries(box.slug);
+		const by = (address: string) => found.find((entry) => entry.address === address);
+		for (const address of ["ada@example.org", "bob@example.org"]) {
+			expect(by(address)).toMatchObject({
 				reason: "complained",
 				firstAt: at,
 				lastAt: at + 1000,
 				expiresAt: null,
+			});
+		}
+		expect(by("lin@example.org")).toMatchObject({
+			detail: "newer",
+			firstAt: at + 1000,
+			lastAt: at + 2000,
+			expiresAt: at + 2000 + 7 * DAY,
+		});
+	});
+
+	it("nothing from an event whose entry has already ended", async () => {
+		const box = await mailboxWithAddress();
+		const { messageId } = await sent(box, ["ada@example.org"]);
+		await mail.runQueue(QUEUE, [
+			event(box, "bounced", "ada@example.org", {
+				at: Date.now() - 8 * DAY,
+				messageId,
+				payload: hardBounce("554 5.7.1 Policy"),
 			}),
 		]);
-	});
-
-	it("forgets an entry once it has ended", async () => {
-		const box = await mailboxWithAddress();
-		const long = Date.now() - 8 * DAY;
-		await mail.runQueue(QUEUE, [
-			event(box, "bounced", "ada@example.org", hardBounce("554 5.7.1 Policy"), long),
-		]);
-		expect(await entries(box.slug)).toEqual([]);
+		expect(await rows(box.workspaceId)).toEqual([]);
 		expect((await outbox(box, writing(["ada@example.org"]))).status).toBe(200);
-	});
-
-	it("refuses to send to an address on it, naming it, until an admin removes it", async () => {
-		const box = await mailboxWithAddress();
-		await mail.runQueue(QUEUE, [event(box, "bounced", "ada@example.org", hardBounce())]);
-		const before = (await mail.emails()).length;
-		const draft = crypto.randomUUID();
-		const refused = await outbox(box, writing(["Ada@Example.org", "grace@example.org"], draft));
-		expect(refused.status).toBe(409);
-		const said = (await refused.json()) as { ok: boolean; error: string; suppressed: string[] };
-		expect(said.suppressed).toEqual(["ada@example.org"]);
-		expect(said.error).toContain("ada@example.org (bounced)");
-		expect(said.error).toContain("Settings, under Suppressions");
-		expect(await mail.emails()).toHaveLength(before);
-
-		const [entry] = await entries(box.slug);
-		if (!entry) throw new Error("expected an entry");
-		expect((await remove(box.slug, entry.id)).status).toBe(200);
-		expect(await entries(box.slug)).toEqual([]);
-		expect((await remove(box.slug, entry.id)).status).toBe(404);
-		// The same draft goes now: nothing of it was kept.
-		const sent = await outbox(box, writing(["ada@example.org", "grace@example.org"], draft));
-		expect(sent.status).toBe(200);
-		expect(((await sent.json()) as { state: string }).state).toBe("sent");
-	});
-
-	it("refuses to try again a message whose address came onto it since", async () => {
-		const box = await mailboxWithAddress();
-		const blocked = "refuse-E_RECIPIENT_SUPPRESSED@example.org";
-		const first = await outbox(box, writing([blocked]));
-		const sent = (await first.json()) as { id: string; state: string; code: string };
-		expect(sent).toMatchObject({ state: "refused", code: "E_RECIPIENT_SUPPRESSED" });
-		// Email Service tells of the refusal as an event, which names the address.
-		await mail.runQueue(QUEUE, [event(box, "rejected", blocked, listRefusal)]);
-		const again = await outbox(box, { action: "send-again", message: sent.id });
-		expect(again.status).toBe(409);
-		expect(((await again.json()) as { suppressed: string[] }).suppressed).toEqual([
-			blocked.toLowerCase(),
-		]);
-	});
-
-	it("refuses an agent's message to an address on it, and its approval once one comes", async () => {
-		const box = await mailboxWithAddress();
-		const made = await mail.fetch(`${origin}/api/auth/agents/create`, {
-			method: "POST",
-			headers: { ...owner.headers, origin, "content-type": "application/json" },
-			body: JSON.stringify({ organizationId: box.workspaceId, name: "Sorter" }),
-		});
-		const { agent, key } = (await made.json()) as { agent: { memberId: string }; key: string };
-		const reader = await join(box.workspaceId);
-		await directory(box.slug, {
-			action: "set-mailbox-access",
-			mailboxId: box.mailboxId,
-			everyone: false,
-			memberIds: [agent.memberId, reader.memberId],
-			senderIds: [agent.memberId],
-		});
-		const keyed = { authorization: `Bearer ${key}` };
-		await mail.runQueue(QUEUE, [event(box, "complained", "ada@example.org", complaint)]);
-		const refused = await mail.fetch(`${origin}/api/mail/${box.slug}/${box.mailboxId}/outbox`, {
-			method: "POST",
-			headers: { ...keyed, "content-type": "application/json" },
-			body: JSON.stringify(writing(["ada@example.org"])),
-		});
-		expect(refused.status).toBe(409);
-		expect(((await refused.json()) as { error: string }).error).toContain(
-			"ada@example.org (marked as spam)",
-		);
-
-		// Held for approval, then its address bounces before anyone approves it.
-		const held = await mail.fetch(`${origin}/api/mail/${box.slug}/${box.mailboxId}/outbox`, {
-			method: "POST",
-			headers: { ...keyed, "content-type": "application/json" },
-			body: JSON.stringify(writing(["grace@example.org"])),
-		});
-		const waiting = (await held.json()) as { id: string; state: string };
-		expect(waiting.state).toBe("held");
-		await mail.runQueue(QUEUE, [event(box, "bounced", "grace@example.org", hardBounce())]);
-		const approve = await outbox(box, { action: "approve", message: waiting.id }, reader.headers);
-		expect(approve.status).toBe(409);
-		expect(((await approve.json()) as { suppressed: string[] }).suppressed).toEqual([
-			"grace@example.org",
-		]);
 	});
 
 	it("is the workspace's own", async () => {
 		const box = await mailboxWithAddress();
 		const other = await mailboxWithAddress();
-		await mail.runQueue(QUEUE, [event(box, "complained", "ada@example.org", complaint)]);
+		const { messageId } = await sent(box, [
+			"ada@example.org",
+			"bob@example.org",
+			"lin@example.org",
+		]);
+		await mail.runQueue(QUEUE, [
+			event(box, "complained", "ada@example.org", { messageId, payload: complaint }),
+		]);
 		expect(await entries(other.slug)).toEqual([]);
 		expect((await outbox(other, writing(["ada@example.org"]))).status).toBe(200);
 		const [entry] = await entries(box.slug);
@@ -347,39 +403,196 @@ describe("a workspace's suppression list", () => {
 		// Another workspace's admin can't remove it by its id.
 		expect((await remove(other.slug, entry.id)).status).toBe(404);
 		expect(await entries(box.slug)).toHaveLength(1);
-		// Events for another domain's subscription, or from an address that isn't a mailbox's, add
+		// Events from another domain's subscription, or from an address that isn't a mailbox's, add
 		// nothing.
+		const elsewhere = event(box, "complained", "bob@example.org", {
+			messageId,
+			payload: complaint,
+		});
 		await mail.runQueue(QUEUE, [
 			{
-				...event(box, "complained", "bob@example.org", complaint),
+				...elsewhere,
 				body: {
-					...(event(box, "complained", "bob@example.org", complaint).body as object),
+					...(elsewhere.body as object),
 					source: { type: "email.sending", domain: other.domain },
 				},
 			},
-			event(
-				{ ...box, address: `notifications@${box.domain}` },
-				"complained",
-				"lin@example.org",
-				complaint,
-			),
+			event({ ...box, address: `notifications@${box.domain}` }, "complained", "lin@example.org", {
+				messageId,
+				payload: complaint,
+			}),
 		]);
 		expect((await entries(box.slug)).map(({ address }) => address)).toEqual(["ada@example.org"]);
 		expect(await entries(other.slug)).toEqual([]);
 	});
 
+	it("is logged as how many, never who", async () => {
+		const box = await mailboxWithAddress();
+		const { messageId } = await sent(box, ["private.person@example.org"]);
+		await mail.runQueue(QUEUE, [
+			event(box, "complained", "private.person@example.org", { messageId, payload: complaint }),
+		]);
+		const lines = mail.logs.filter(({ message }) => message.startsWith("delivery events:"));
+		expect(lines.at(-1)?.message).toContain('"suppressed":1');
+		expect(mail.logs.map(({ message }) => message).join("\n")).not.toContain("private.person");
+	});
+});
+
+describe("sending to an address on the list", () => {
+	it("is refused, naming it, until an admin removes it, and a draft already sent still answers", async () => {
+		const box = await mailboxWithAddress();
+		const first = writing(["grace@example.org"]);
+		const graceSent = await outbox(box, first);
+		const graceAnswer = (await graceSent.json()) as { id: string; state: string };
+		const handed = (await mail.emails()).find((email) => email.subject === first.subject);
+		const { messageId } = await sent(box, ["ada@example.org"]);
+		const bouncedAt = Date.now() - 1000;
+		await mail.runQueue(QUEUE, [
+			event(box, "bounced", "ada@example.org", { at: bouncedAt, messageId, payload: hardBounce() }),
+			event(box, "complained", "grace@example.org", {
+				messageId: handed?.messageId,
+				payload: complaint,
+			}),
+		]);
+		// The draft that went before is what became of it, whatever came since.
+		const repeated = await outbox(box, first);
+		expect(repeated.status).toBe(200);
+		expect(await repeated.json()).toMatchObject({ id: graceAnswer.id, state: "sent" });
+
+		const before = (await mail.emails()).length;
+		const draft = crypto.randomUUID();
+		const refused = await outbox(box, writing(["Ada@Example.org", "lin@example.org"], draft));
+		expect(refused.status).toBe(409);
+		const said = (await refused.json()) as Refusal;
+		expect(said.suppressed).toEqual(["ada@example.org"]);
+		expect(said.error).toContain("ada@example.org (bounced)");
+		expect(said.error).toContain("Settings, under Suppressions");
+		expect(await mail.emails()).toHaveLength(before);
+
+		const ada = (await entries(box.slug)).find((entry) => entry.address === "ada@example.org");
+		if (!ada) throw new Error("expected an entry");
+		expect((await remove(box.slug, ada.id)).status).toBe(200);
+		expect((await entries(box.slug)).map(({ address }) => address)).toEqual(["grace@example.org"]);
+		const again = await remove(box.slug, ada.id);
+		expect(again.status).toBe(404);
+		expect(await again.json()).toMatchObject({ gone: true });
+		// The same draft goes now: nothing of it was kept.
+		const went = await outbox(box, writing(["ada@example.org", "lin@example.org"], draft));
+		expect(went.status).toBe(200);
+		expect(((await went.json()) as { state: string }).state).toBe("sent");
+
+		// The bounce again, as a queue may hand it over again, doesn't put it back; a new one does.
+		await mail.runQueue(QUEUE, [
+			event(box, "bounced", "ada@example.org", { at: bouncedAt, messageId, payload: hardBounce() }),
+		]);
+		expect((await entries(box.slug)).map(({ address }) => address)).toEqual(["grace@example.org"]);
+		await mail.runQueue(QUEUE, [
+			event(box, "bounced", "ada@example.org", {
+				messageId,
+				payload: hardBounce("550 5.1.1 Gone"),
+			}),
+		]);
+		expect(
+			(await entries(box.slug)).find((entry) => entry.address === "ada@example.org"),
+		).toMatchObject({ reason: "bounced", detail: "550 5.1.1 Gone" });
+	});
+
+	it("refuses to try again a message whose address came onto it since", async () => {
+		const box = await mailboxWithAddress();
+		const blocked = "refuse-E_RECIPIENT_SUPPRESSED@example.org";
+		const first = await outbox(box, writing([blocked]));
+		const answer = (await first.json()) as { id: string; state: string; code: string };
+		expect(answer).toMatchObject({ state: "refused", code: "E_RECIPIENT_SUPPRESSED" });
+		// Email Service tells of the refusal as an event, which names the address.
+		await mail.runQueue(QUEUE, [event(box, "rejected", blocked, { payload: listRefusal() })]);
+		const again = await outbox(box, { action: "send-again", message: answer.id });
+		expect(again.status).toBe(409);
+		expect(((await again.json()) as Refusal).suppressed).toEqual([blocked.toLowerCase()]);
+	});
+
+	it("stops a message that waited, when its address came onto it meanwhile", {
+		timeout: 60_000,
+	}, async () => {
+		const box = await mailboxWithAddress();
+		const busy = `busy-1@${box.slug}.example.org`;
+		const body = writing([busy]);
+		const waiting = (await (await outbox(box, body)).json()) as {
+			id: string;
+			threadId: string;
+			state: string;
+		};
+		expect(waiting.state).toBe("waiting");
+		await mail.runQueue(QUEUE, [event(box, "rejected", busy, { payload: listRefusal() })]);
+		let status: { state: string; code: string | null } | undefined;
+		for (let waited = 0; status?.state !== "refused" && waited < 45_000; waited += 1_000) {
+			await new Promise((resolve) => setTimeout(resolve, 1_000));
+			const response = await mail.fetch(
+				`${origin}/api/mail/${box.slug}/${box.mailboxId}/threads/${waiting.threadId}`,
+				{ headers: owner.headers },
+			);
+			const page = (await response.json()) as {
+				messages: { sent: { status: { state: string; code: string | null } } }[];
+			};
+			status = page.messages[0]?.sent.status;
+		}
+		expect(status).toMatchObject({ state: "refused", code: "mail:suppressed" });
+		expect((await mail.emails()).filter((email) => email.subject === body.subject)).toEqual([]);
+	});
+
+	it("is refused for an agent once its own day has counted it, and its approval without reasons", async () => {
+		const box = await mailboxWithAddress();
+		const reader = await join(box.workspaceId);
+		const agent = await sendingAgent(box, reader);
+		const { messageId } = await sent(box, ["ada@example.org"]);
+		await mail.runQueue(QUEUE, [
+			event(box, "complained", "ada@example.org", { messageId, payload: complaint }),
+		]);
+
+		// An agent not let send learns nothing of the list.
+		await agent.policy(0);
+		expect((await agent.send(["ada@example.org"])).status).toBe(403);
+		await agent.policy(2);
+
+		// Held for approval, then its address comes onto the list before anyone approves it.
+		const written = await agent.send(["grace@example.org"]);
+		const held = (await written.json()) as { id: string; state: string };
+		expect(held.state).toBe("held");
+		await mail.runQueue(QUEUE, [
+			event(box, "rejected", "grace@example.org", { payload: listRefusal() }),
+		]);
+		const approve = await outbox(box, { action: "approve", message: held.id }, reader.headers);
+		expect(approve.status).toBe(409);
+		const told = (await approve.json()) as Refusal;
+		expect(told.suppressed).toEqual(["grace@example.org"]);
+		// A member who may not see the list isn't told why.
+		expect(told.error).not.toContain("(on the provider's list)");
+
+		// Its own day counts a refusal, the second of two, so a key can't test addresses for free,
+		// and it isn't told why either.
+		const refused = await agent.send(["ada@example.org"]);
+		expect(refused.status).toBe(409);
+		const said = (await refused.json()) as Refusal;
+		expect(said.suppressed).toEqual(["ada@example.org"]);
+		expect(said.error).not.toContain("spam)");
+		expect((await agent.send(["lin@example.org"])).status).toBe(429);
+	});
+});
+
+describe("the list's page", () => {
 	it("shows only to owners and admins, and changes only from the app", async () => {
 		const box = await mailboxWithAddress();
-		await mail.runQueue(QUEUE, [event(box, "complained", "ada@example.org", complaint)]);
+		await mail.runQueue(QUEUE, [
+			event(box, "rejected", "ada@example.org", { payload: listRefusal() }),
+		]);
 		const [entry] = await entries(box.slug);
 		if (!entry) throw new Error("expected an entry");
 		const member = await join(box.workspaceId);
-		expect((await list(box.slug, "", member.headers)).status).toBe(403);
+		expect((await list(box.slug, {}, member.headers)).status).toBe(403);
 		expect((await remove(box.slug, entry.id, member.headers)).status).toBe(403);
 		const admin = await join(box.workspaceId, "admin");
-		expect((await list(box.slug, "", admin.headers)).status).toBe(200);
+		expect((await list(box.slug, {}, admin.headers)).status).toBe(200);
 		const stranger = await signUp(mail, origin, "Stranger");
-		expect((await list(box.slug, "", stranger.headers)).status).toBe(404);
+		expect((await list(box.slug, {}, stranger.headers)).status).toBe(404);
 		// The session cookie, sent from another site or from none.
 		for (const from of [{ origin: "https://elsewhere.test" }, {}] as Record<string, string>[]) {
 			const elsewhere = await mail.fetch(`${origin}/api/suppressions/${box.slug}`, {
@@ -392,11 +605,67 @@ describe("a workspace's suppression list", () => {
 		expect(await entries(box.slug)).toHaveLength(1);
 	});
 
-	it("logs how many, never who", async () => {
+	it("searches any part of an address, however long, taking every character as it is", async () => {
 		const box = await mailboxWithAddress();
-		await mail.runQueue(QUEUE, [event(box, "complained", "private.person@example.org", complaint)]);
-		const lines = mail.logs.filter(({ message }) => message.startsWith("delivery events:"));
-		expect(lines.at(-1)?.message).toContain('"suppressed":1');
-		expect(mail.logs.map(({ message }) => message).join("\n")).not.toContain("private.person");
+		const long = `${"a.very.long.name".repeat(4)}_x@example.org`;
+		await mail.runQueue(QUEUE, [
+			event(box, "rejected", long, { payload: listRefusal() }),
+			event(box, "rejected", "grace@example.org", { payload: listRefusal() }),
+		]);
+		expect((await entries(box.slug, long.toUpperCase())).map((e) => e.address)).toEqual([long]);
+		expect((await entries(box.slug, "_x@")).map((e) => e.address)).toEqual([long]);
+		expect((await entries(box.slug, "GRACE")).map((e) => e.address)).toEqual(["grace@example.org"]);
+		expect(await entries(box.slug, "%")).toEqual([]);
+	});
+
+	it("lists the most recent first, a page at a time, each entry once", async () => {
+		const box = await mailboxWithAddress();
+		const base = Date.now() - 60_000;
+		// Five to a time, so that pages break among entries of the same time.
+		await mail.runQueue(
+			QUEUE,
+			Array.from({ length: 55 }, (_, i) =>
+				event(box, "rejected", `p${i}@example.org`, {
+					at: base + Math.floor(i / 5) * 1000,
+					payload: listRefusal(),
+				}),
+			),
+		);
+		const first = await list(box.slug);
+		expect(first.body.suppressions).toHaveLength(50);
+		expect(first.body.next).toEqual(expect.any(String));
+		const second = await list(box.slug, { before: first.body.next ?? "" });
+		expect(second.body.next).toBeNull();
+		const all = [...(first.body.suppressions ?? []), ...(second.body.suppressions ?? [])];
+		expect(new Set(all.map(({ address }) => address)).size).toBe(55);
+		const ordered = [...all].sort((a, b) => b.lastAt - a.lastAt || (b.id < a.id ? -1 : 1));
+		expect(all.map(({ id }) => id)).toEqual(ordered.map(({ id }) => id));
+	});
+
+	it("is pruned of ended entries, and of removed ones once no older event can come", async () => {
+		const box = await mailboxWithAddress();
+		await mail.runQueue(
+			QUEUE,
+			["ended", "removed-long-ago", "removed-now", "live"].map((name) =>
+				event(box, "rejected", `${name}@example.org`, { payload: listRefusal() }),
+			),
+		);
+		for (const entry of await entries(box.slug)) {
+			if (entry.address.startsWith("removed")) {
+				expect((await remove(box.slug, entry.id)).status).toBe(200);
+			}
+		}
+		await mail.db
+			.prepare("UPDATE mail_suppression SET expires_at = ? WHERE address = 'ended@example.org'")
+			.bind(Date.now() - 1000)
+			.run();
+		await mail.db
+			.prepare(
+				"UPDATE mail_suppression SET removed_at = ? WHERE address = 'removed-long-ago@example.org'",
+			)
+			.bind(Date.now() - 16 * DAY)
+			.run();
+		await mail.runScheduled();
+		expect(await rows(box.workspaceId)).toEqual(["live@example.org", "removed-now@example.org"]);
 	});
 });

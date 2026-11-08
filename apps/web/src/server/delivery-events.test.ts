@@ -158,7 +158,6 @@ function batchOf(...messages: Message<unknown>[]): MessageBatch<unknown> {
 	};
 }
 
-/** A directory where help@ and sales@ example.com are two mailboxes' addresses. */
 /**
  * A directory where help@ and sales@ example.com are two mailboxes' addresses, of two workspaces.
  * `fails` makes the lookups fail, `suppressFails` adding to a list.
@@ -362,8 +361,30 @@ describe("what an event says about writing to its recipient again", () => {
 			}),
 		).toEqual({ reason: "bounced", forever: true });
 		expect(
+			suppression("bounced", {
+				bounce: { type: "hard", reason: "550-5.1.1 The email account that you tried to reach" },
+			}),
+		).toEqual({ reason: "bounced", forever: true });
+		expect(
 			suppression("bounced", { bounce: { type: "hard", reason: "554 5.7.1 Policy rejection" } }),
 		).toEqual({ reason: "bounced", forever: false });
+	});
+
+	it("doesn't take a code about the sender, or one that only looks like it, for good", () => {
+		const hard = (reason: string, delivery: Record<string, unknown> = {}) =>
+			suppression("bounced", { bounce: { type: "hard", reason }, delivery });
+		// About the sender's address, as when its bounce domain stops resolving.
+		expect(hard("553 5.1.8 Sender address rejected: Domain not found")?.forever).toBe(false);
+		// An IP address in a blocklist's words.
+		expect(hard("554 5.7.1 Service unavailable; Client host [5.1.83.12] blocked")?.forever).toBe(
+			false,
+		);
+		expect(hard("Delivery failed: 5.1.1 somewhere in the words")?.forever).toBe(false);
+		// The event's own code comes first.
+		expect(hard("550 5.1.1 User unknown", { smtpEnhancedStatusCode: "5.7.1" })?.forever).toBe(
+			false,
+		);
+		expect(hard("550 rejected", { smtpEnhancedStatusCode: " 5.1.2 " })?.forever).toBe(true);
 	});
 
 	it("doesn't stop mail after a soft bounce, a delay, a failure or a delivery", () => {
@@ -387,17 +408,29 @@ describe("what an event says about writing to its recipient again", () => {
 });
 
 describe("adding to suppression lists from a batch", () => {
-	const recordNothing = () => ({
-		recordDeliveries: (events: unknown[]) => events.map(() => false),
-	});
+	/** A mailbox that has sent the messages of these ids, and only those. */
+	const sent =
+		(...ids: string[]) =>
+		() => ({
+			recordDeliveries: (events: { messageId: string }[]) =>
+				events.map(({ messageId }) => ids.includes(messageId)),
+		});
 
-	it("adds each recipient to the list of the workspace that sent, found or not", async () => {
+	it("adds a bounce or a complaint only for mail the mailbox sent, and a refusal for the provider's list either way", async () => {
 		const known = directory();
 		const bounced = queued(
-			event("bounced", { bounce: { type: "hard", reason: "550 5.1.1 User unknown" } }),
+			event("bounced", {
+				messageId: "<sent@example.com>",
+				bounce: { type: "hard", reason: "550 5.1.1 User unknown" },
+			}),
+		);
+		// About mail this mailbox has no record of sending, such as before its domain was proved here.
+		const complained = queued(
+			event("complained", { messageId: "<earlier@example.com>", complaint: { type: "abuse" } }),
 		);
 		const refused = queued(
 			event("rejected", {
+				messageId: "<never-sent@example.com>",
 				sender: "sales@example.com",
 				rejection: { reason: "suppressed", detail: "Recipient is suppressed" },
 			}),
@@ -406,9 +439,9 @@ describe("adding to suppression lists from a batch", () => {
 			event("complained", { sender: "notifications@example.com", complaint: { type: "abuse" } }),
 		);
 		const handled = await receiveDeliveryEvents(
-			batchOf(bounced.message, refused.message, otherApp.message),
+			batchOf(bounced.message, complained.message, refused.message, otherApp.message),
 			known,
-			recordNothing,
+			sent("<sent@example.com>"),
 			at,
 		);
 		expect(known.suppressed).toEqual([
@@ -431,25 +464,40 @@ describe("adding to suppression lists from a batch", () => {
 				expiresAt: at + SUPPRESSION_DAYS * 24 * 60 * 60 * 1000,
 			},
 		]);
-		expect(handled).toMatchObject({ suppressed: 2, notOurs: 1, waiting: 2 });
+		expect(bounced.done).toEqual({ acked: true, delay: null });
+		expect(complained.done).toEqual({ acked: false, delay: RETRY_DELAY_SECONDS });
+		expect(handled).toMatchObject({ suppressed: 2, recorded: 1, waiting: 2, notOurs: 1 });
 	});
 
-	it("lets the events come again when the list can't be written, before any mailbox", async () => {
-		const bounced = queued(event("bounced", { bounce: { type: "hard", reason: "550" } }), 2);
+	it("lets the events that add to a list come again when it can't be written, once recorded", async () => {
+		const recorded: string[] = [];
+		const bounced = queued(
+			event("bounced", {
+				messageId: "<sent@example.com>",
+				bounce: { type: "hard", reason: "550" },
+			}),
+			2,
+		);
 		const other = queued(event("delivered", { sender: "sales@example.com" }));
 		const handled = await receiveDeliveryEvents(
 			batchOf(bounced.message, other.message),
 			directory(undefined, new Error("D1_ERROR: database is locked")),
-			() => {
-				throw new Error("not expected");
-			},
+			(mailboxId) => ({
+				recordDeliveries: (events) => {
+					recorded.push(mailboxId);
+					return events.map(() => true);
+				},
+			}),
 			at,
 		);
+		// Recording only moves forward, so recording it again when it comes back changes nothing.
+		expect(recorded.sort()).toEqual(["box-help", "box-sales"]);
 		expect(bounced.done).toEqual({ acked: false, delay: 120 });
-		expect(other.done).toEqual({ acked: false, delay: 60 });
+		expect(other.done).toEqual({ acked: true, delay: null });
 		expect(handled).toMatchObject({
 			suppressed: 0,
-			failed: 2,
+			recorded: 1,
+			failed: 1,
 			failures: ["suppressions: Error: D1_ERROR: database is locked"],
 		});
 	});

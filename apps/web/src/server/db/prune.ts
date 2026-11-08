@@ -1,5 +1,6 @@
 import { type Column, inArray, lt } from "drizzle-orm";
 import { ENDED_ADDRESS_KEPT_DAYS } from "../directory";
+import { REMOVED_KEPT_DAYS } from "../suppressions";
 import type { Database } from "./index";
 import { schema } from "./index";
 
@@ -32,7 +33,7 @@ async function pruneOlder(
  * these, so a change here is a change to it. An address that has ended waits a while first, so that
  * its name doesn't pass to someone else while what it signed up for still writes to it. A
  * suppression that has ended goes at once: it names someone the workspace wrote to, and no longer
- * stops anything.
+ * stops anything. One someone removed goes once no event from before then can still come.
  */
 export async function pruneExpired(db: Database): Promise<void> {
 	const now = new Date();
@@ -46,4 +47,10 @@ export async function pruneExpired(db: Database): Promise<void> {
 		new Date(now.getTime() - ENDED_ADDRESS_KEPT_DAYS * 24 * 60 * 60 * 1000),
 	);
 	await pruneOlder(db, schema.mailSuppression, schema.mailSuppression.expiresAt, now);
+	await pruneOlder(
+		db,
+		schema.mailSuppression,
+		schema.mailSuppression.removedAt,
+		new Date(now.getTime() - REMOVED_KEPT_DAYS * 24 * 60 * 60 * 1000),
+	);
 }

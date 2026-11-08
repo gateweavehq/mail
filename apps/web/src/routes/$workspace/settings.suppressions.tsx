@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { CircleAlert } from "lucide-react";
-import { type FormEvent, useCallback, useEffect, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "#/components/ui/button";
 import { Input } from "#/components/ui/input";
 import { Label } from "#/components/ui/label";
@@ -72,6 +72,7 @@ function SuppressionList() {
 	}>({ query: "", entries: [], next: null });
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState<string | null>(null);
+	const searchField = useRef<HTMLInputElement>(null);
 
 	const search = useCallback(
 		async (text: string, before: string | null = null) => {
@@ -103,6 +104,15 @@ function SuppressionList() {
 		void search(query.trim());
 	}
 
+	function removed(id: string) {
+		const left = shown.entries.filter((one) => one.id !== id);
+		setShown({ ...shown, entries: left });
+		// The page shown is used up while more are listed: show the next.
+		if (left.length === 0 && shown.next) void search(shown.query);
+		// The row and its button are gone, so the search box takes the focus.
+		searchField.current?.focus();
+	}
+
 	return (
 		<div className="space-y-4">
 			<form
@@ -113,6 +123,7 @@ function SuppressionList() {
 				<div className="min-w-0 flex-1 space-y-1.5">
 					<Label htmlFor="suppression-search">Address</Label>
 					<Input
+						ref={searchField}
 						id="suppression-search"
 						type="search"
 						value={query}
@@ -134,16 +145,7 @@ function SuppressionList() {
 			{shown.entries.length > 0 ? (
 				<ul aria-label="Suppressions" className="space-y-3">
 					{shown.entries.map((entry) => (
-						<SuppressionRow
-							key={entry.id}
-							entry={entry}
-							onRemoved={() =>
-								setShown((now) => ({
-									...now,
-									entries: now.entries.filter((one) => one.id !== entry.id),
-								}))
-							}
-						/>
+						<SuppressionRow key={entry.id} entry={entry} onRemoved={() => removed(entry.id)} />
 					))}
 				</ul>
 			) : (
@@ -154,7 +156,11 @@ function SuppressionList() {
 					</p>
 				)
 			)}
-			{loading && <p className="text-sm text-muted-foreground">Loading…</p>}
+			{loading && (
+				<p role="status" className="text-sm text-muted-foreground">
+					Loading…
+				</p>
+			)}
 			{shown.next && !loading && (
 				<Button variant="outline" size="sm" onClick={() => void search(shown.query, shown.next)}>
 					Show more
@@ -177,10 +183,12 @@ function SuppressionRow({ entry, onRemoved }: { entry: Suppression; onRemoved: (
 				headers: { "content-type": "application/json" },
 				body: JSON.stringify({ action: "remove", id: entry.id }),
 			});
-			const body = (await response.json()) as { ok: true } | { ok: false; error: string };
+			const body = (await response.json()) as
+				| { ok: true }
+				| { ok: false; error: string; gone?: boolean };
 			setAsking(false);
 			// Gone either way: removed now, or by someone else before.
-			if (body.ok || response.status === 404) onRemoved();
+			if (body.ok || body.gone) onRemoved();
 			else setError(body.error);
 		} catch {
 			setAsking(false);
@@ -202,7 +210,12 @@ function SuppressionRow({ entry, onRemoved }: { entry: Suppression; onRemoved: (
 						<span className="text-muted-foreground">· {suppressionMeaning(entry.reason)}</span>
 					</p>
 				</div>
-				<Button size="sm" variant="ghost" onClick={() => setAsking(true)}>
+				<Button
+					size="sm"
+					variant="ghost"
+					aria-label={`Remove ${entry.address}`}
+					onClick={() => setAsking(true)}
+				>
 					Remove
 				</Button>
 			</div>

@@ -65,13 +65,20 @@ test("an owner sees which addresses mailboxes won't send to, and removes one", a
 	await expect(list.getByRole("listitem")).toHaveCount(1);
 	await expect(grace).toBeVisible();
 
-	// The server no longer has it (it never had, here), which the page takes as removed too.
-	await grace.getByRole("button", { name: "Remove" }).click();
+	// The server says it isn't on the list (it never was, here), which the page takes as removed.
+	await grace.getByRole("button", { name: "Remove grace@example.org" }).click();
 	const dialog = page.getByRole("dialog", { name: "Remove grace@example.org?" });
 	await expect(dialog).toContainText("Email Service keeps a list of its own");
+	const posted = page.waitForRequest(
+		(request) =>
+			request.method() === "POST" &&
+			new URL(request.url()).pathname === `/api/suppressions/${slug}`,
+	);
 	await dialog.getByRole("button", { name: "Remove" }).click();
+	expect((await posted).postDataJSON()).toEqual({ action: "remove", id: second.id });
 	await expect(dialog).toBeHidden();
 	await expect(page.getByText("No suppressed address matches.")).toBeVisible();
+	await expect(page.getByLabel("Address")).toBeFocused();
 });
 
 test("the list fits a phone", async ({ page }) => {

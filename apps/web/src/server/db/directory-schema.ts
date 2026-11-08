@@ -234,6 +234,11 @@ export const mailSuppression = sqliteTable(
 		lastAt: integer("last_at", { mode: "timestamp_ms" }).notNull(),
 		/** Null for one that lasts until someone removes it. */
 		expiresAt: integer("expires_at", { mode: "timestamp_ms" }),
+		/**
+		 * When someone removed it. The row stays a while, so that an event from before then, which a
+		 * queue may hand over again, doesn't put it back.
+		 */
+		removedAt: integer("removed_at", { mode: "timestamp_ms" }),
 	},
 	(table) => [
 		uniqueIndex("mail_suppression_organization_address_unique").on(
@@ -242,5 +247,6 @@ export const mailSuppression = sqliteTable(
 		),
 		index("mail_suppression_organization_last_at_idx").on(table.organizationId, table.lastAt),
 		index("mail_suppression_expires_at_idx").on(table.expiresAt),
+		index("mail_suppression_removed_at_idx").on(table.removedAt),
 	],
 );

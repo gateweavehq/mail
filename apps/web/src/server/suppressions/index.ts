@@ -20,6 +20,12 @@ const { mailSuppression } = schema;
 /** How many entries one page lists. */
 export const SUPPRESSIONS_PAGE = 50;
 
+/**
+ * How long a removed entry is remembered, so that an event from before it was removed doesn't put it
+ * back. Longer than a queue keeps a message (14 days at most), so no such event is still to come.
+ */
+export const REMOVED_KEPT_DAYS = 15;
+
 /** What an event says about sending to an address again, for `suppress`. */
 export interface NewSuppression {
 	workspaceId: string;
@@ -42,21 +48,36 @@ const rank = (column: string) =>
 			.join(" ")} END`,
 	);
 
-/** Whether the entry is still in force at `now`. */
+/** Whether the entry is still in force at `now`: not removed, and not ended. */
 const inForce = (now: number) =>
-	or(isNull(mailSuppression.expiresAt), gt(mailSuppression.expiresAt, new Date(now))) as SQL;
+	and(
+		isNull(mailSuppression.removedAt),
+		or(isNull(mailSuppression.expiresAt), gt(mailSuppression.expiresAt, new Date(now))),
+	) as SQL;
 
 /**
  * Adds addresses to their workspaces' lists, or brings an entry up to date: a stronger reason
- * replaces a weaker one, with its provider and words, and an entry ends at the later of the two
- * times, or not at all when either doesn't. One that had ended starts again. So events that come
- * twice or out of order end the same.
+ * replaces a weaker one, with its provider and words, as a newer event of the same reason does, and
+ * an entry ends at the later of the two times, or not at all when either doesn't. One that had
+ * ended starts again. One that someone removed starts again only for an event after that: one from
+ * before, which a queue may hand over again, changes nothing. So events that come twice or out of
+ * order end the same. An entry that has already ended adds nothing.
  */
 export async function suppress(db: Database, entries: NewSuppression[], now: number) {
-	const [first, ...rest] = entries.map((entry) => {
+	const live = entries.filter(({ expiresAt }) => expiresAt === null || expiresAt > now);
+	const [first, ...rest] = live.map((entry) => {
 		// In an upsert's SET, a bare column is the stored row's, and `excluded.` the new one's.
-		const ended = sql`(expires_at IS NOT NULL AND expires_at <= ${now})`;
-		const takes = sql`(${ended} OR ${rank("excluded.reason")} >= ${rank("reason")})`;
+		const stale = sql`(removed_at IS NOT NULL AND excluded.last_at <= removed_at)`;
+		const fresh = sql`((removed_at IS NOT NULL AND excluded.last_at > removed_at)
+			OR (removed_at IS NULL AND expires_at IS NOT NULL AND expires_at <= ${now}))`;
+		const takes = sql`(${rank("excluded.reason")} > ${rank("reason")}
+			OR (${rank("excluded.reason")} = ${rank("reason")} AND excluded.last_at >= last_at))`;
+		const pick = (column: string) => {
+			const stored = sql.raw(column);
+			const incoming = sql.raw(`excluded.${column}`);
+			return sql`CASE WHEN ${stale} THEN ${stored} WHEN ${fresh} THEN ${incoming}
+				WHEN ${takes} THEN ${incoming} ELSE ${stored} END`;
+		};
 		return db
 			.insert(mailSuppression)
 			.values({
@@ -73,14 +94,17 @@ export async function suppress(db: Database, entries: NewSuppression[], now: num
 			.onConflictDoUpdate({
 				target: [mailSuppression.organizationId, mailSuppression.address],
 				set: {
-					reason: sql`CASE WHEN ${takes} THEN excluded.reason ELSE reason END`,
-					provider: sql`CASE WHEN ${takes} THEN excluded.provider ELSE provider END`,
-					detail: sql`CASE WHEN ${takes} THEN excluded.detail ELSE detail END`,
-					firstAt: sql`CASE WHEN ${ended} THEN excluded.first_at ELSE min(first_at, excluded.first_at) END`,
-					lastAt: sql`CASE WHEN ${ended} THEN excluded.last_at ELSE max(last_at, excluded.last_at) END`,
-					expiresAt: sql`CASE WHEN ${ended} THEN excluded.expires_at
+					reason: pick("reason"),
+					provider: pick("provider"),
+					detail: pick("detail"),
+					firstAt: sql`CASE WHEN ${stale} THEN first_at WHEN ${fresh} THEN excluded.first_at
+						ELSE min(first_at, excluded.first_at) END`,
+					lastAt: sql`CASE WHEN ${stale} THEN last_at WHEN ${fresh} THEN excluded.last_at
+						ELSE max(last_at, excluded.last_at) END`,
+					expiresAt: sql`CASE WHEN ${stale} THEN expires_at WHEN ${fresh} THEN excluded.expires_at
 						WHEN expires_at IS NULL OR excluded.expires_at IS NULL THEN NULL
 						ELSE max(expires_at, excluded.expires_at) END`,
+					removedAt: sql`CASE WHEN ${stale} THEN removed_at ELSE NULL END`,
 				},
 			});
 	});
@@ -144,9 +168,6 @@ export function readCursor(text: string | null): SuppressionCursor | null {
 	return match?.[1] && match[2] ? { lastAt: Number(match[1]), id: match[2] } : null;
 }
 
-/** `LIKE`'s own characters, taken as they are. */
-const literal = (text: string) => text.replace(/[\\%_]/g, (char) => `\\${char}`);
-
 /**
  * A page of the workspace's entries in force, the most recent first, those whose address holds
  * `query` when there is one.
@@ -164,9 +185,8 @@ export async function listSuppressions(
 			and(
 				eq(mailSuppression.organizationId, workspaceId),
 				inForce(now),
-				query
-					? sql`${mailSuppression.address} LIKE ${`%${literal(query.toLowerCase())}%`} ESCAPE '\\'`
-					: undefined,
+				// `instr`, not `LIKE`: D1 refuses a pattern over 50 bytes, and an address may be longer.
+				query ? sql`instr(${mailSuppression.address}, ${query.toLowerCase()}) > 0` : undefined,
 				before
 					? or(
 							lt(mailSuppression.lastAt, new Date(before.lastAt)),
@@ -189,15 +209,26 @@ export async function listSuppressions(
 	};
 }
 
-/** Takes an entry off the workspace's list. False when the workspace has no such entry. */
+/**
+ * Takes an entry off the workspace's list, now. The row stays, removed, for `REMOVED_KEPT_DAYS`, so
+ * that `suppress` knows an event from before then. False when the workspace has no such entry.
+ */
 export async function removeSuppression(
 	db: Database,
 	workspaceId: string,
 	id: string,
+	now: number,
 ): Promise<boolean> {
 	const { meta } = await db
-		.delete(mailSuppression)
-		.where(and(eq(mailSuppression.id, id), eq(mailSuppression.organizationId, workspaceId)))
+		.update(mailSuppression)
+		.set({ removedAt: new Date(now) })
+		.where(
+			and(
+				eq(mailSuppression.id, id),
+				eq(mailSuppression.organizationId, workspaceId),
+				isNull(mailSuppression.removedAt),
+			),
+		)
 		.run();
 	return meta.changes > 0;
 }
