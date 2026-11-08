@@ -27,7 +27,7 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
   `wrangler.jsonc` (`apps/web/src/server/db/prune.ts`). Better Auth removes a session or a
   verification only when something looks it up, so those nobody comes back for would otherwise
   stay, with the address and browser a session holds, and invitations with the address they were
-  sent to.
+  sent to. Suppressions that have ended go then too.
 - **Headers** go on every answer (`apps/web/src/server/security-headers.ts`): `nosniff`, a referrer
   rule and, over HTTPS, `Strict-Transport-Security`. A page also gets `X-Frame-Options`,
   `Cache-Control: private, no-store` and a Content-Security-Policy with a nonce made for that
@@ -333,6 +333,25 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
       the Domains page shows admins, so a missing subscription shows. The handler logs counts and
       what failed, never addresses. A new subscription took a few minutes to start publishing on
       staging.
+    - **Suppressions** (`apps/web/src/server/suppressions/`). Each workspace keeps the addresses its
+      mailboxes won't send to, in D1 (`mail_suppression`, one row per address). The queue adds to
+      it from the same events, for the workspace of the mailbox that sent, whether or not the
+      message is found, so a send Email Service refused for its own list counts too. What goes on
+      follows Email Service's rules (`suppressionOf`): a complaint stays until someone removes it;
+      a hard bounce stays for good when the server said the mailbox or domain doesn't exist (a
+      `5.1.x` code), otherwise seven days (`SUPPRESSION_DAYS`); a refusal because Email Service's
+      list has the address stays seven days. A soft bounce, a delay or another failure adds
+      nothing. Email Service keeps its entries per sending domain; Mail's apply to every domain of
+      the workspace, as a person who complained about one of its mailboxes wants none of them. A
+      second event keeps the stronger reason (`SUPPRESSION_RANK`) and the later end, or starts
+      afresh once the entry has ended, in one upsert, so events in any order end the same. The
+      list is written before any mailbox, and when it can't be, the batch's events come again.
+      The outbox checks it before it stores or counts anything: on a send, after the draft's id is
+      looked up, so a send already made still answers; on an approval; and on Send again. It
+      refuses with 409, naming the addresses, and the page keeps the draft as it was. Only owners
+      and admins see the list, in Settings › Suppressions, as it names people the workspace wrote
+      to, and they can remove an entry there. That doesn't change Email Service's list, whose
+      entries end by themselves or come off in the dashboard.
   - **Removing.** Removing a mailbox, or deleting its workspace, removes its mail and its object's
     data, after the directory has forgotten its addresses, so nothing new arrives. A trigger in D1
     records each mailbox as its row goes, a workspace's by cascade too (`mailbox_removal`). The

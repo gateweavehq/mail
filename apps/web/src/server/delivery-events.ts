@@ -1,8 +1,10 @@
 import { and, eq, inArray, isNotNull } from "drizzle-orm";
 import { z } from "zod";
 import { DELIVERY_STATES, type DeliveryState, MAX_DELIVERY_DETAIL } from "../lib/delivery";
+import { SUPPRESSION_DAYS, type SuppressionReason } from "../lib/suppressions";
 import { type Database, schema } from "./db";
 import type { DeliveryEvent } from "./mailbox/deliveries";
+import { type NewSuppression, suppress } from "./suppressions";
 
 /**
  * Email Service's delivery events, which reach Mail through a Queue: each domain that sends has an
@@ -52,6 +54,13 @@ const EmailSendingEvent = z.object({
 
 type Payload = z.infer<typeof EmailSendingEvent>["payload"];
 
+/** What an event says about writing to its recipient again. */
+export interface SuppressionSaid {
+	reason: SuppressionReason;
+	/** Until someone removes it, rather than for `SUPPRESSION_DAYS`. */
+	forever: boolean;
+}
+
 /** An event Mail can act on: the record, and where it came from. */
 export interface ReadEvent {
 	/** The sending domain its subscription is for, in lower case. */
@@ -59,6 +68,8 @@ export interface ReadEvent {
 	/** The address the message was sent from, in lower case. */
 	sender: string;
 	event: DeliveryEvent;
+	/** Null when the event doesn't stop mail to the recipient. */
+	suppression: SuppressionSaid | null;
 }
 
 const isState = (value: string): value is DeliveryState =>
@@ -92,6 +103,38 @@ function detailOf(state: DeliveryState, payload: Payload): string | null {
 	}
 }
 
+/** An enhanced status code for a mailbox or domain that doesn't exist, such as `5.1.1`. */
+const NO_SUCH_MAILBOX = /\b5\.1\.\d{1,3}\b/;
+
+/**
+ * Whether the event stops mail to its recipient, by Email Service's own rules: every complaint, a
+ * bounce only when it is hard, as a soft one that ran out of tries may pass, and a refusal because
+ * Email Service's list has the address. A hard bounce for a mailbox or domain that doesn't exist
+ * lasts until removed, as Email Service's own does; another may come right, so it lasts a week.
+ */
+function suppressionOf(state: DeliveryState, payload: Payload): SuppressionSaid | null {
+	switch (state) {
+		case "complained":
+			return { reason: "complained", forever: true };
+		case "bounced": {
+			if (payload.bounce?.type !== "hard") return null;
+			const said = [
+				payload.delivery?.smtpEnhancedStatusCode,
+				payload.bounce?.reason,
+				payload.delivery?.smtpResponse,
+			];
+			const missing = said.some((text) => typeof text === "string" && NO_SUCH_MAILBOX.test(text));
+			return { reason: "bounced", forever: missing };
+		}
+		case "rejected":
+			return payload.rejection?.reason === "suppressed"
+				? { reason: "rejected", forever: false }
+				: null;
+		default:
+			return null;
+	}
+}
+
 /**
  * An Email Sending event as Mail records it, or null for anything else: another source, a type Mail
  * doesn't know, or a shape it can't read. `receivedAt` stands in for an event without a time.
@@ -115,6 +158,7 @@ export function readEvent(body: unknown, receivedAt: number): ReadEvent | null {
 			at: Number.isFinite(at) ? at : receivedAt,
 			detail: detailOf(state, payload),
 		},
+		suppression: suppressionOf(state, payload),
 	};
 }
 
@@ -130,10 +174,19 @@ export interface EventDirectory {
 	/** Notes that events came for these domains, where a workspace proved them. */
 	eventsCame(domains: string[], at: number): Promise<void>;
 	/**
-	 * The mailbox of each of these addresses, on domains a workspace proved. A temporary address
-	 * that has ended still counts: it sent the message, and the mailbox still has it.
+	 * The mailbox of each of these addresses, on domains a workspace proved, and that workspace. A
+	 * temporary address that has ended still counts: it sent the message, and the mailbox still has
+	 * it.
 	 */
-	mailboxesOf(senders: Set<string>): Promise<Map<string, string>>;
+	mailboxesOf(senders: Set<string>): Promise<Map<string, Sender>>;
+	/** Adds addresses to their workspaces' suppression lists. */
+	suppress(entries: NewSuppression[], now: number): Promise<void>;
+}
+
+/** Whose address sent a message. */
+export interface Sender {
+	mailboxId: string;
+	workspaceId: string;
 }
 
 /** The directory in D1. */
@@ -153,11 +206,15 @@ export function directoryIn(db: Database): EventDirectory {
 				if (!parts) continue;
 				byDomain.set(parts.domain, [...(byDomain.get(parts.domain) ?? []), parts.local]);
 			}
-			const found = new Map<string, string>();
+			const found = new Map<string, Sender>();
 			for (const [domain, locals] of byDomain) {
 				for (let start = 0; start < locals.length; start += LOOKUP_CHUNK) {
 					const rows = await db
-						.select({ local: mailAddress.localPart, mailboxId: mailAddress.mailboxId })
+						.select({
+							local: mailAddress.localPart,
+							mailboxId: mailAddress.mailboxId,
+							workspaceId: mailDomain.organizationId,
+						})
 						.from(mailAddress)
 						.innerJoin(mailDomain, eq(mailAddress.domainId, mailDomain.id))
 						.where(
@@ -168,11 +225,14 @@ export function directoryIn(db: Database): EventDirectory {
 							),
 						)
 						.all();
-					for (const row of rows) found.set(`${row.local}@${domain}`, row.mailboxId);
+					for (const { local, mailboxId, workspaceId } of rows) {
+						found.set(`${local}@${domain}`, { mailboxId, workspaceId });
+					}
 				}
 			}
 			return found;
 		},
+		suppress: (entries, now) => suppress(db, entries, now),
 	};
 }
 
@@ -192,6 +252,8 @@ export interface EventsHandled {
 	notFound: number;
 	/** For a message not found yet, to be looked for again. */
 	waiting: number;
+	/** Recipients added to a workspace's suppression list, or kept there. */
+	suppressed: number;
 	/** Not handled because D1 or a mailbox failed, to come again later. */
 	failed: number;
 	/** What failed, without addresses. */
@@ -240,6 +302,7 @@ export async function receiveDeliveryEvents(
 		notOurs: 0,
 		notFound: 0,
 		waiting: 0,
+		suppressed: 0,
 		failed: 0,
 		failures: [],
 	};
@@ -260,7 +323,7 @@ export async function receiveDeliveryEvents(
 	}
 	if (read.length === 0) return handled;
 
-	let mailboxes: Map<string, string>;
+	let mailboxes: Map<string, Sender>;
 	try {
 		await directory.eventsCame([...new Set(read.map(({ event }) => event.domain))], now);
 		mailboxes = await directory.mailboxesOf(new Set(read.map(({ event }) => event.sender)));
@@ -273,15 +336,43 @@ export async function receiveDeliveryEvents(
 	}
 
 	const byMailbox = new Map<string, typeof read>();
+	const suppressions: NewSuppression[] = [];
 	for (const one of read) {
-		const mailboxId = mailboxes.get(one.event.sender);
+		const sender = mailboxes.get(one.event.sender);
 		// The address must be on the domain whose subscription sent the event.
-		if (!mailboxId || split(one.event.sender)?.domain !== one.event.domain) {
+		if (!sender || split(one.event.sender)?.domain !== one.event.domain) {
 			one.message.ack();
 			handled.notOurs++;
 			continue;
 		}
-		byMailbox.set(mailboxId, [...(byMailbox.get(mailboxId) ?? []), one]);
+		byMailbox.set(sender.mailboxId, [...(byMailbox.get(sender.mailboxId) ?? []), one]);
+		// Whether or not the mailbox finds the message: one Email Service refused for its list was
+		// never given an id.
+		const said = one.event.suppression;
+		if (said) {
+			const { recipient, provider, detail, at } = one.event.event;
+			suppressions.push({
+				workspaceId: sender.workspaceId,
+				address: recipient,
+				reason: said.reason,
+				provider,
+				detail,
+				at,
+				expiresAt: said.forever ? null : at + SUPPRESSION_DAYS * 24 * 60 * 60 * 1000,
+			});
+		}
+	}
+	if (suppressions.length > 0) {
+		try {
+			await directory.suppress(suppressions, now);
+			handled.suppressed = suppressions.length;
+		} catch (error) {
+			fail(
+				[...byMailbox.values()].flat().map(({ message }) => message),
+				failureOf("suppressions", error),
+			);
+			return handled;
+		}
 	}
 
 	await Promise.all(

@@ -8,6 +8,7 @@ import {
 	uniqueIndex,
 } from "drizzle-orm/sqlite-core";
 import { KEYED_PROVIDERS, RECEIVES_WITH, SENDS_WITH } from "../../lib/providers";
+import { SUPPRESSION_REASONS } from "../../lib/suppressions";
 import { member, organization, user } from "./auth-schema";
 
 const createdAt = () =>
@@ -209,3 +210,37 @@ export const resendInbound = sqliteTable("resend_inbound", {
 	trouble: text("trouble"),
 	troubleAt: integer("trouble_at", { mode: "timestamp_ms" }),
 });
+
+/**
+ * An address a workspace's mail won't go to, from a provider's delivery events: one per address, so
+ * every mailbox of the workspace stops writing to it. Another workspace's events never reach it.
+ * It goes with the workspace, and the daily run deletes it once it has ended.
+ */
+export const mailSuppression = sqliteTable(
+	"mail_suppression",
+	{
+		id: text("id").primaryKey(),
+		organizationId: text("organization_id")
+			.notNull()
+			.references(() => organization.id, { onDelete: "cascade" }),
+		/** Lower case. */
+		address: text("address").notNull(),
+		reason: text("reason", { enum: SUPPRESSION_REASONS }).notNull(),
+		/** Whose event said so. */
+		provider: text("provider", { enum: SENDS_WITH }).notNull(),
+		/** What the receiving server or the provider said, cut short. */
+		detail: text("detail"),
+		firstAt: integer("first_at", { mode: "timestamp_ms" }).notNull(),
+		lastAt: integer("last_at", { mode: "timestamp_ms" }).notNull(),
+		/** Null for one that lasts until someone removes it. */
+		expiresAt: integer("expires_at", { mode: "timestamp_ms" }),
+	},
+	(table) => [
+		uniqueIndex("mail_suppression_organization_address_unique").on(
+			table.organizationId,
+			table.address,
+		),
+		index("mail_suppression_organization_last_at_idx").on(table.organizationId, table.lastAt),
+		index("mail_suppression_expires_at_idx").on(table.expiresAt),
+	],
+);

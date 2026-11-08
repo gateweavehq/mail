@@ -8,6 +8,7 @@ const TABS = [
 	{ to: "/$workspace/settings/members", label: "Members" },
 	{ to: "/$workspace/settings/agents", label: "Agents" },
 	{ to: "/$workspace/settings/domains", label: "Domains" },
+	{ to: "/$workspace/settings/suppressions", label: "Suppressions" },
 	{ to: "/$workspace/settings/workspace", label: "Workspace" },
 ] as const;
 

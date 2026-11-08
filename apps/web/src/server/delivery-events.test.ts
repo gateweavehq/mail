@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { MAX_DELIVERY_DETAIL } from "../lib/delivery";
+import { SUPPRESSION_DAYS } from "../lib/suppressions";
 import {
 	type EventDirectory,
 	FIND_WINDOW_MS,
@@ -8,7 +9,9 @@ import {
 	RETRY_DELAY_SECONDS,
 	readEvent,
 	receiveDeliveryEvents,
+	type Sender,
 } from "./delivery-events";
+import type { NewSuppression } from "./suppressions";
 
 /** An Email Sending event as the docs and the staging measurement show it. */
 function event(type: string, payload: Record<string, unknown> = {}, extra = {}) {
@@ -55,6 +58,7 @@ describe("reading Email Sending's delivery events", () => {
 				at,
 				detail: null,
 			},
+			suppression: null,
 		});
 	});
 
@@ -155,22 +159,38 @@ function batchOf(...messages: Message<unknown>[]): MessageBatch<unknown> {
 }
 
 /** A directory where help@ and sales@ example.com are two mailboxes' addresses. */
-function directory(fails?: Error): EventDirectory & { came: string[][] } {
+/**
+ * A directory where help@ and sales@ example.com are two mailboxes' addresses, of two workspaces.
+ * `fails` makes the lookups fail, `suppressFails` adding to a list.
+ */
+function directory(
+	fails?: Error,
+	suppressFails?: Error,
+): EventDirectory & { came: string[][]; suppressed: NewSuppression[] } {
 	const came: string[][] = [];
+	const suppressed: NewSuppression[] = [];
+	const known = new Map<string, Sender>([
+		["help@example.com", { mailboxId: "box-help", workspaceId: "ws-help" }],
+		["sales@example.com", { mailboxId: "box-sales", workspaceId: "ws-sales" }],
+	]);
 	return {
 		came,
+		suppressed,
 		async eventsCame(domains) {
 			if (fails) throw fails;
 			came.push(domains);
 		},
 		async mailboxesOf(senders) {
-			const known = new Map([
-				["help@example.com", "box-help"],
-				["sales@example.com", "box-sales"],
-			]);
 			return new Map(
-				[...senders].flatMap((one) => (known.has(one) ? [[one, known.get(one) ?? ""]] : [])),
+				[...senders].flatMap((one) => {
+					const sender = known.get(one);
+					return sender ? [[one, sender] as const] : [];
+				}),
 			);
+		},
+		async suppress(entries) {
+			if (suppressFails) throw suppressFails;
+			suppressed.push(...entries);
 		},
 	};
 }
@@ -212,6 +232,7 @@ describe("receiving a batch of delivery events", () => {
 			notOurs: 2,
 			notFound: 0,
 			waiting: 0,
+			suppressed: 0,
 			failed: 0,
 			failures: [],
 		});
@@ -309,6 +330,127 @@ describe("receiving a batch of delivery events", () => {
 			recorded: 1,
 			failed: 1,
 			failures: ["mailbox: Error: Durable Object reset because its code was updated."],
+		});
+	});
+});
+
+describe("what an event says about writing to its recipient again", () => {
+	const suppression = (type: string, payload: Record<string, unknown> = {}) =>
+		readEvent(event(type, payload), 0)?.suppression;
+
+	it("stops mail after a complaint until someone removes it", () => {
+		expect(suppression("complained", { complaint: { type: "abuse" } })).toEqual({
+			reason: "complained",
+			forever: true,
+		});
+	});
+
+	it("stops mail after a hard bounce, for good when the mailbox or domain doesn't exist", () => {
+		expect(
+			suppression("bounced", {
+				bounce: {
+					type: "hard",
+					classification: "permanent_failure",
+					reason: "550 5.1.1 User unknown",
+				},
+			}),
+		).toEqual({ reason: "bounced", forever: true });
+		expect(
+			suppression("bounced", {
+				bounce: { type: "hard", reason: "550 no" },
+				delivery: { smtpEnhancedStatusCode: "5.1.10" },
+			}),
+		).toEqual({ reason: "bounced", forever: true });
+		expect(
+			suppression("bounced", { bounce: { type: "hard", reason: "554 5.7.1 Policy rejection" } }),
+		).toEqual({ reason: "bounced", forever: false });
+	});
+
+	it("doesn't stop mail after a soft bounce, a delay, a failure or a delivery", () => {
+		expect(
+			suppression("bounced", { bounce: { type: "soft", reason: "452 4.2.2 Mailbox full" } }),
+		).toBeNull();
+		expect(suppression("bounced", { bounce: { reason: "550 5.1.1 User unknown" } })).toBeNull();
+		expect(suppression("deferred")).toBeNull();
+		expect(suppression("failed", { failure: { reason: "delivery_failed" } })).toBeNull();
+		expect(suppression("delivered")).toBeNull();
+	});
+
+	it("notes a refusal only when the provider's list is why", () => {
+		expect(
+			suppression("rejected", {
+				rejection: { reason: "suppressed", party: "recipient", detail: "Recipient is suppressed" },
+			}),
+		).toEqual({ reason: "rejected", forever: false });
+		expect(suppression("rejected", { rejection: { reason: "validation" } })).toBeNull();
+	});
+});
+
+describe("adding to suppression lists from a batch", () => {
+	const recordNothing = () => ({
+		recordDeliveries: (events: unknown[]) => events.map(() => false),
+	});
+
+	it("adds each recipient to the list of the workspace that sent, found or not", async () => {
+		const known = directory();
+		const bounced = queued(
+			event("bounced", { bounce: { type: "hard", reason: "550 5.1.1 User unknown" } }),
+		);
+		const refused = queued(
+			event("rejected", {
+				sender: "sales@example.com",
+				rejection: { reason: "suppressed", detail: "Recipient is suppressed" },
+			}),
+		);
+		const otherApp = queued(
+			event("complained", { sender: "notifications@example.com", complaint: { type: "abuse" } }),
+		);
+		const handled = await receiveDeliveryEvents(
+			batchOf(bounced.message, refused.message, otherApp.message),
+			known,
+			recordNothing,
+			at,
+		);
+		expect(known.suppressed).toEqual([
+			{
+				workspaceId: "ws-help",
+				address: "ada@example.org",
+				reason: "bounced",
+				provider: "cloudflare",
+				detail: "550 5.1.1 User unknown",
+				at,
+				expiresAt: null,
+			},
+			{
+				workspaceId: "ws-sales",
+				address: "ada@example.org",
+				reason: "rejected",
+				provider: "cloudflare",
+				detail: "Recipient is suppressed",
+				at,
+				expiresAt: at + SUPPRESSION_DAYS * 24 * 60 * 60 * 1000,
+			},
+		]);
+		expect(handled).toMatchObject({ suppressed: 2, notOurs: 1, waiting: 2 });
+	});
+
+	it("lets the events come again when the list can't be written, before any mailbox", async () => {
+		const bounced = queued(event("bounced", { bounce: { type: "hard", reason: "550" } }), 2);
+		const other = queued(event("delivered", { sender: "sales@example.com" }));
+		const handled = await receiveDeliveryEvents(
+			batchOf(bounced.message, other.message),
+			directory(undefined, new Error("D1_ERROR: database is locked")),
+			() => {
+				throw new Error("not expected");
+			},
+			at,
+		);
+		expect(bounced.done).toEqual({ acked: false, delay: 120 });
+		expect(other.done).toEqual({ acked: false, delay: 60 });
+		expect(handled).toMatchObject({
+			suppressed: 0,
+			failed: 2,
+			failures: ["suppressions: Error: D1_ERROR: database is locked"],
 		});
 	});
 });

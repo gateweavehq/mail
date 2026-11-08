@@ -90,7 +90,7 @@ export type Sent = { id: string; threadId: string } & SendStatus;
  */
 export type OutboxAnswer<T = object> =
 	| ({ ok: true } & T)
-	| { ok: false; error: string; lost?: boolean };
+	| { ok: false; error: string; lost?: boolean; suppressed?: string[] };
 
 /** Where a mailbox sends from, tries again and discards. */
 export const outboxUrl = (workspace: string, mailbox: string) =>

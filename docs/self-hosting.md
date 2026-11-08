@@ -221,6 +221,16 @@ one shows. Events for mail that other apps send from the same domain reach the q
 drops them. Queue operations past what the plan includes are billed: see
 [Queues pricing](https://developers.cloudflare.com/queues/platform/pricing/).
 
+**Suppressions.** When mail to an address bounces for good, or its person marks it as spam, the
+events also put the address on the workspace's suppression list, and its mailboxes stop sending
+to it: a send to it is refused, naming it. A complaint stays until someone removes it; a bounce,
+or a send Email Service refused for its own list, ends after a week, except a bounce for a
+mailbox or domain that doesn't exist. Owners and admins see the list in Settings › Suppressions
+and can remove an address there. Email Service keeps a list of its own for the account, which
+that doesn't change: see it in the dashboard under **Compute** > **Email Service** >
+**Email Sending** > **Suppressions**, where an entry that isn't read-only can be deleted. Without
+the subscription, Mail's list stays empty and only Email Service's applies.
+
 A domain whose DNS isn't on the Cloudflare account that runs Mail can't be onboarded there, so it
 can send through [Resend](https://resend.com) instead, with each workspace's own key. Set
 `SECRETS_KEY` once, which encrypts those keys:

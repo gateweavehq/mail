@@ -12,7 +12,8 @@ async function pruneOlder(
 		| typeof schema.session
 		| typeof schema.verification
 		| typeof schema.invitation
-		| typeof schema.mailAddress,
+		| typeof schema.mailAddress
+		| typeof schema.mailSuppression,
 	column: Column,
 	before: Date,
 ) {
@@ -29,7 +30,9 @@ async function pruneOlder(
  * address and browser it came from, a verification an abandoned sign-up's code, and an invitation an
  * address that may never have had anything to do with this deployment. The privacy policy states
  * these, so a change here is a change to it. An address that has ended waits a while first, so that
- * its name doesn't pass to someone else while what it signed up for still writes to it.
+ * its name doesn't pass to someone else while what it signed up for still writes to it. A
+ * suppression that has ended goes at once: it names someone the workspace wrote to, and no longer
+ * stops anything.
  */
 export async function pruneExpired(db: Database): Promise<void> {
 	const now = new Date();
@@ -42,4 +45,5 @@ export async function pruneExpired(db: Database): Promise<void> {
 		schema.mailAddress.expiresAt,
 		new Date(now.getTime() - ENDED_ADDRESS_KEPT_DAYS * 24 * 60 * 60 * 1000),
 	);
+	await pruneOlder(db, schema.mailSuppression, schema.mailSuppression.expiresAt, now);
 }
