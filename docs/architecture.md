@@ -344,7 +344,9 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
 
       A soft bounce, a delay or another failure adds nothing. A bounce or a complaint counts only
       for a message the mailbox has, so one about mail from before a domain changed workspaces
-      can't stop the new one's. A refusal counts either way, as Email Service gives a message it
+      can't stop the new one's. So one about a sent message deleted before it came adds nothing;
+      Email Service's own list still refuses the next send, and that refusal puts the address on.
+      A refusal counts either way, as Email Service gives a message it
       refuses no id; measured on staging (2026-11-09), it publishes one event for a refused
       message of two recipients. Email Service keeps its entries per sending domain; Mail's apply
       to every domain of the workspace, as a person who complained about one of its mailboxes wants

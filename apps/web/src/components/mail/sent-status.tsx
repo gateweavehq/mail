@@ -18,6 +18,7 @@ import {
 	isResendCode,
 	refusalReason,
 	type SendStatus,
+	SUPPRESSED_CODE,
 } from "#/lib/outbox";
 import { KEY_CHANGED, resendMaybeWent, resendReason } from "#/lib/providers";
 
@@ -254,6 +255,9 @@ function said(status: SendStatus): string {
 				: `Resend didn't say whether it went, so Mail asks again${when}. Resend knows it by its id, so it can't go twice.`;
 		}
 		case "uncertain":
+			if (status.code === SUPPRESSED_CODE) {
+				return "Resend didn't say whether a try went, and before the next one an address it goes to came onto this workspace's suppression list, so Mail stopped. It may have gone or not. An owner or admin can see the list in Settings, under Suppressions.";
+			}
 			if (status.code === KEY_CHANGED) {
 				return "A try may have gone through the workspace's Resend key before it was replaced, and Resend can only tell a repeat sent with the same account, so Mail stopped. Send it again only if it didn't arrive.";
 			}

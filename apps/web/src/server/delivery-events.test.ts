@@ -469,6 +469,45 @@ describe("adding to suppression lists from a batch", () => {
 		expect(handled).toMatchObject({ suppressed: 2, recorded: 1, waiting: 2, notOurs: 1 });
 	});
 
+	it("adds nothing for an event whose mailbox failed, which comes again", async () => {
+		const known = directory();
+		const bounced = queued(
+			event("bounced", {
+				messageId: "<sent@example.com>",
+				bounce: { type: "hard", reason: "550 5.1.1 User unknown" },
+			}),
+		);
+		const handled = await receiveDeliveryEvents(
+			batchOf(bounced.message),
+			known,
+			() => ({
+				recordDeliveries: () => {
+					throw new Error("the object restarted");
+				},
+			}),
+			at,
+		);
+		expect(known.suppressed).toEqual([]);
+		expect(bounced.done).toEqual({ acked: false, delay: 60 });
+		expect(handled).toMatchObject({ suppressed: 0, failed: 1 });
+	});
+
+	it("adds a refusal for the provider's list when it comes after the message would be found", async () => {
+		const known = directory();
+		const late = queued(
+			event("rejected", { rejection: { reason: "suppressed", detail: "Recipient is suppressed" } }),
+		);
+		const handled = await receiveDeliveryEvents(
+			batchOf(late.message),
+			known,
+			sent(),
+			at + FIND_WINDOW_MS + 1,
+		);
+		expect(known.suppressed).toHaveLength(1);
+		expect(late.done).toEqual({ acked: true, delay: null });
+		expect(handled).toMatchObject({ suppressed: 1, notFound: 1 });
+	});
+
 	it("lets the events that add to a list come again when it can't be written, once recorded", async () => {
 		const recorded: string[] = [];
 		const bounced = queued(

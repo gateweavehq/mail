@@ -438,6 +438,36 @@ describe("what goes on a workspace's suppression list", () => {
 	});
 });
 
+describe("removing from the list", () => {
+	it("is remembered through a newer event, so an older one never brings the entry back", async () => {
+		const box = await mailboxWithAddress();
+		const { messageId } = await sent(box, ["ada@example.org", "bob@example.org"]);
+		const early = Date.now() - 60_000;
+		const complaints = ["ada@example.org", "bob@example.org"].map((address) =>
+			event(box, "complained", address, { at: early, messageId, payload: complaint }),
+		);
+		await mail.runQueue(QUEUE, complaints);
+		for (const entry of await entries(box.slug)) {
+			expect((await remove(box.slug, entry.id)).status).toBe(200);
+		}
+		expect(await entries(box.slug)).toEqual([]);
+		// A send since is refused by the provider's own list, which puts each back as a refusal. The
+		// complaints come again, as a queue may hand them over, before or after it.
+		const refusal = (address: string) =>
+			event(box, "rejected", address, { payload: listRefusal() });
+		await mail.runQueue(QUEUE, [refusal("ada@example.org"), ...complaints.slice(0, 1)]);
+		await mail.runQueue(QUEUE, complaints.slice(1));
+		await mail.runQueue(QUEUE, [refusal("bob@example.org")]);
+		await mail.runQueue(QUEUE, complaints);
+		const found = await entries(box.slug);
+		expect(found.map(({ address, reason }) => [address, reason]).sort()).toEqual([
+			["ada@example.org", "rejected"],
+			["bob@example.org", "rejected"],
+		]);
+		for (const entry of found) expect(entry.expiresAt).not.toBeNull();
+	});
+});
+
 describe("sending to an address on the list", () => {
 	it("is refused, naming it, until an admin removes it, and a draft already sent still answers", async () => {
 		const box = await mailboxWithAddress();
@@ -454,10 +484,13 @@ describe("sending to an address on the list", () => {
 				payload: complaint,
 			}),
 		]);
-		// The draft that went before is what became of it, whatever came since.
+		// The draft that went before is what became of it, whatever came since, and it is sent.
 		const repeated = await outbox(box, first);
 		expect(repeated.status).toBe(200);
 		expect(await repeated.json()).toMatchObject({ id: graceAnswer.id, state: "sent" });
+		const sendAgain = await outbox(box, { action: "send-again", message: graceAnswer.id });
+		expect(sendAgain.status).toBe(409);
+		expect(await sendAgain.json()).toEqual({ ok: false, error: "It is sent, or being sent." });
 
 		const before = (await mail.emails()).length;
 		const draft = crypto.randomUUID();
@@ -646,8 +679,8 @@ describe("the list's page", () => {
 		const box = await mailboxWithAddress();
 		await mail.runQueue(
 			QUEUE,
-			["ended", "removed-long-ago", "removed-now", "live"].map((name) =>
-				event(box, "rejected", `${name}@example.org`, { payload: listRefusal() }),
+			["ended", "removed-long-ago", "removed-now", "removed-ended-now", "relisted", "live"].map(
+				(name) => event(box, "rejected", `${name}@example.org`, { payload: listRefusal() }),
 			),
 		);
 		for (const entry of await entries(box.slug)) {
@@ -655,17 +688,30 @@ describe("the list's page", () => {
 				expect((await remove(box.slug, entry.id)).status).toBe(200);
 			}
 		}
-		await mail.db
-			.prepare("UPDATE mail_suppression SET expires_at = ? WHERE address = 'ended@example.org'")
-			.bind(Date.now() - 1000)
-			.run();
-		await mail.db
-			.prepare(
-				"UPDATE mail_suppression SET removed_at = ? WHERE address = 'removed-long-ago@example.org'",
-			)
-			.bind(Date.now() - 16 * DAY)
-			.run();
+		const set = (sql: string, ...values: number[]) =>
+			mail.db
+				.prepare(`UPDATE mail_suppression SET ${sql}`)
+				.bind(...values)
+				.run();
+		await set(
+			"expires_at = ? WHERE address IN ('ended@example.org', 'removed-ended-now@example.org')",
+			Date.now() - 1000,
+		);
+		// Removed long ago, and nothing said since.
+		await set(
+			"first_at = ?, last_at = ?, removed_at = ? WHERE address = 'removed-long-ago@example.org'",
+			Date.now() - 17 * DAY,
+			Date.now() - 17 * DAY,
+			Date.now() - 16 * DAY,
+		);
+		// Removed long ago, then said again.
+		await set("removed_at = ? WHERE address = 'relisted@example.org'", Date.now() - 16 * DAY);
 		await mail.runScheduled();
-		expect(await rows(box.workspaceId)).toEqual(["live@example.org", "removed-now@example.org"]);
+		expect(await rows(box.workspaceId)).toEqual([
+			"live@example.org",
+			"relisted@example.org",
+			"removed-ended-now@example.org",
+			"removed-now@example.org",
+		]);
 	});
 });

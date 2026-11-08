@@ -1,6 +1,6 @@
 import { type Column, inArray, lt } from "drizzle-orm";
 import { ENDED_ADDRESS_KEPT_DAYS } from "../directory";
-import { REMOVED_KEPT_DAYS } from "../suppressions";
+import { pruneSuppressions } from "../suppressions";
 import type { Database } from "./index";
 import { schema } from "./index";
 
@@ -13,8 +13,7 @@ async function pruneOlder(
 		| typeof schema.session
 		| typeof schema.verification
 		| typeof schema.invitation
-		| typeof schema.mailAddress
-		| typeof schema.mailSuppression,
+		| typeof schema.mailAddress,
 	column: Column,
 	before: Date,
 ) {
@@ -46,11 +45,5 @@ export async function pruneExpired(db: Database): Promise<void> {
 		schema.mailAddress.expiresAt,
 		new Date(now.getTime() - ENDED_ADDRESS_KEPT_DAYS * 24 * 60 * 60 * 1000),
 	);
-	await pruneOlder(db, schema.mailSuppression, schema.mailSuppression.expiresAt, now);
-	await pruneOlder(
-		db,
-		schema.mailSuppression,
-		schema.mailSuppression.removedAt,
-		new Date(now.getTime() - REMOVED_KEPT_DAYS * 24 * 60 * 60 * 1000),
-	);
+	await pruneSuppressions(db, now.getTime(), BATCH);
 }

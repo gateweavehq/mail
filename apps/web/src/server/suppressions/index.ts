@@ -26,6 +26,32 @@ export const SUPPRESSIONS_PAGE = 50;
  */
 export const REMOVED_KEPT_DAYS = 15;
 
+/**
+ * Deletes entries nothing needs any more: ended ones, unless removed less than `REMOVED_KEPT_DAYS`
+ * ago, and removed ones not said again since, once that time has passed. A batch at a time, as D1
+ * runs one query at a time.
+ */
+export async function pruneSuppressions(db: Database, now: number, batch: number) {
+	const kept = new Date(now - REMOVED_KEPT_DAYS * 24 * 60 * 60 * 1000);
+	const removedLongAgo = lt(mailSuppression.removedAt, kept);
+	const unneeded = or(
+		and(
+			lt(mailSuppression.expiresAt, new Date(now)),
+			or(isNull(mailSuppression.removedAt), removedLongAgo),
+		),
+		and(removedLongAgo, sql`${mailSuppression.lastAt} <= ${mailSuppression.removedAt}`),
+	);
+	for (;;) {
+		const ids = db
+			.select({ id: mailSuppression.id })
+			.from(mailSuppression)
+			.where(unneeded)
+			.limit(batch);
+		const { meta } = await db.delete(mailSuppression).where(inArray(mailSuppression.id, ids)).run();
+		if (meta.changes < batch) return;
+	}
+}
+
 /** What an event says about sending to an address again, for `suppress`. */
 export interface NewSuppression {
 	workspaceId: string;
@@ -48,10 +74,16 @@ const rank = (column: string) =>
 			.join(" ")} END`,
 	);
 
-/** Whether the entry is still in force at `now`: not removed, and not ended. */
+/** Whether the entry is on the list: never removed, or said again since it was. */
+const listed = or(
+	isNull(mailSuppression.removedAt),
+	gt(mailSuppression.lastAt, mailSuppression.removedAt),
+) as SQL;
+
+/** Whether the entry is still in force at `now`: on the list, and not ended. */
 const inForce = (now: number) =>
 	and(
-		isNull(mailSuppression.removedAt),
+		listed,
 		or(isNull(mailSuppression.expiresAt), gt(mailSuppression.expiresAt, new Date(now))),
 	) as SQL;
 
@@ -60,16 +92,17 @@ const inForce = (now: number) =>
  * replaces a weaker one, with its provider and words, as a newer event of the same reason does, and
  * an entry ends at the later of the two times, or not at all when either doesn't. One that had
  * ended starts again. One that someone removed starts again only for an event after that: one from
- * before, which a queue may hand over again, changes nothing. So events that come twice or out of
- * order end the same. An entry that has already ended adds nothing.
+ * before, which a queue may hand over again, changes nothing, then or after the entry started
+ * again, as when it was removed is kept. So events that come twice or out of order end the same.
+ * An entry that has already ended adds nothing.
  */
 export async function suppress(db: Database, entries: NewSuppression[], now: number) {
 	const live = entries.filter(({ expiresAt }) => expiresAt === null || expiresAt > now);
 	const [first, ...rest] = live.map((entry) => {
 		// In an upsert's SET, a bare column is the stored row's, and `excluded.` the new one's.
 		const stale = sql`(removed_at IS NOT NULL AND excluded.last_at <= removed_at)`;
-		const fresh = sql`((removed_at IS NOT NULL AND excluded.last_at > removed_at)
-			OR (removed_at IS NULL AND expires_at IS NOT NULL AND expires_at <= ${now}))`;
+		const removed = sql`(removed_at IS NOT NULL AND last_at <= removed_at)`;
+		const fresh = sql`(${removed} OR (expires_at IS NOT NULL AND expires_at <= ${now}))`;
 		const takes = sql`(${rank("excluded.reason")} > ${rank("reason")}
 			OR (${rank("excluded.reason")} = ${rank("reason")} AND excluded.last_at >= last_at))`;
 		const pick = (column: string) => {
@@ -104,7 +137,6 @@ export async function suppress(db: Database, entries: NewSuppression[], now: num
 					expiresAt: sql`CASE WHEN ${stale} THEN expires_at WHEN ${fresh} THEN excluded.expires_at
 						WHEN expires_at IS NULL OR excluded.expires_at IS NULL THEN NULL
 						ELSE max(expires_at, excluded.expires_at) END`,
-					removedAt: sql`CASE WHEN ${stale} THEN removed_at ELSE NULL END`,
 				},
 			});
 	});
@@ -211,7 +243,8 @@ export async function listSuppressions(
 
 /**
  * Takes an entry off the workspace's list, now. The row stays, removed, for `REMOVED_KEPT_DAYS`, so
- * that `suppress` knows an event from before then. False when the workspace has no such entry.
+ * that `suppress` knows an event from before then. Never before its last event, even one whose
+ * clock ran ahead, so that event can't count as newer. False when the list has no such entry.
  */
 export async function removeSuppression(
 	db: Database,
@@ -221,14 +254,8 @@ export async function removeSuppression(
 ): Promise<boolean> {
 	const { meta } = await db
 		.update(mailSuppression)
-		.set({ removedAt: new Date(now) })
-		.where(
-			and(
-				eq(mailSuppression.id, id),
-				eq(mailSuppression.organizationId, workspaceId),
-				isNull(mailSuppression.removedAt),
-			),
-		)
+		.set({ removedAt: sql`max(${now}, ${mailSuppression.lastAt})` })
+		.where(and(eq(mailSuppression.id, id), eq(mailSuppression.organizationId, workspaceId), listed))
 		.run();
 	return meta.changes > 0;
 }

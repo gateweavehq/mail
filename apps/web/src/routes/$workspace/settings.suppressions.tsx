@@ -105,13 +105,17 @@ function SuppressionList() {
 	}
 
 	function removed(id: string) {
-		const left = shown.entries.filter((one) => one.id !== id);
-		setShown({ ...shown, entries: left });
-		// The page shown is used up while more are listed: show the next.
-		if (left.length === 0 && shown.next) void search(shown.query);
+		// As the list is now: a search may have come back while the removal was on its way.
+		setShown((now) => ({ ...now, entries: now.entries.filter((one) => one.id !== id) }));
 		// The row and its button are gone, so the search box takes the focus.
 		searchField.current?.focus();
 	}
+
+	// The entries shown are all removed while more are listed: show the next ones.
+	const usedUp = !loading && shown.entries.length === 0 && shown.next !== null;
+	useEffect(() => {
+		if (usedUp) void search(shown.query);
+	}, [usedUp, search, shown.query]);
 
 	return (
 		<div className="space-y-4">
@@ -156,11 +160,10 @@ function SuppressionList() {
 					</p>
 				)
 			)}
-			{loading && (
-				<p role="status" className="text-sm text-muted-foreground">
-					Loading…
-				</p>
-			)}
+			{/* Always there, so that a screen reader hears it when the words change. */}
+			<p role="status" className={loading ? "text-sm text-muted-foreground" : "sr-only"}>
+				{loading ? "Loading…" : ""}
+			</p>
 			{shown.next && !loading && (
 				<Button variant="outline" size="sm" onClick={() => void search(shown.query, shown.next)}>
 					Show more

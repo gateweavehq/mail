@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { z } from "zod";
 import { goesWithoutApproval } from "../../lib/agent-policy";
 import {
+	canSendAgain,
 	isAddress,
 	MAX_RECIPIENTS,
 	MAX_SUBJECT,
@@ -167,7 +168,7 @@ export async function outboxAnswer(
 
 	if (action.action === "send-again") {
 		const row = await box.stub.get(action.message);
-		if (row) {
+		if (row && canSendAgain(statusOf(row))) {
 			const suppressed = await suppressedAmong(db, workspaceId, recipientsOf(row), Date.now());
 			if (suppressed.length > 0) return refuseSuppressed(suppressed, isAdminRole(role));
 		}
@@ -287,9 +288,12 @@ function sentAnswer(sent: Sent): Response {
 		: refuse("It is still being saved. Look in the thread in a moment.", 409);
 }
 
+/** How a message the mailbox keeps is being sent, or null for one that came in. */
+const statusOf = (row: { sending: string | null } | null) =>
+	row?.sending ? (JSON.parse(row.sending) as SendStatus) : null;
+
 /** Whether a message waits for a person to approve it. */
-const isHeld = (row: { sending: string | null } | null) =>
-	row?.sending ? (JSON.parse(row.sending) as SendStatus).state === "held" : false;
+const isHeld = (row: { sending: string | null } | null) => statusOf(row)?.state === "held";
 
 function tooMany(retryAfter: number | null | undefined, who = "This workspace has sent"): Response {
 	const hours = Math.max(1, Math.round((retryAfter ?? 0) / 3600));
