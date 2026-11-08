@@ -236,6 +236,9 @@ importers:
       lucide-react:
         specifier: 1.68.0
         version: 1.68.0(@types/react@19.3.0)(react@19.3.1)
+      postal-mime:
+        specifier: 4.1.4
+        version: 4.1.4
       radix-ui:
         specifier: 1.8.1
         version: 1.8.1(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
@@ -3184,6 +3187,10 @@ packages:
     engines: {node: '>=20'}
     hasBin: true
 
+  postal-mime@4.1.4:
+    resolution: {integrity: sha512-+6Qsn7Q2TSLMScfN4X2VQIclPRKgDAtKhytQex3fVSV/+HgVaawtsQGzKYDQLQIBR7b4Vfg+88WRGvuF/kwLSw==}
+    engines: {node: '>=20'}
+
   postcss@8.5.32:
     resolution: {integrity: sha512-LJlKCCAUFKOuZxipUdYw1NzIITEsPcgyOG9LkvRJvuKj/bRzbuRY0ARXvL0pWGpsZvn8jku+LMep2eU0seHp8g==}
     engines: {node: ^10 || ^12 || >=14}
@@ -6093,6 +6100,8 @@ snapshots:
   playwright@1.64.1:
     dependencies:
       playwright-core: 1.64.1
+
+  postal-mime@4.1.4: {}
 
   postcss@8.5.32:
     dependencies:

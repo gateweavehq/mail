@@ -25,13 +25,20 @@
 			"migrations_dir": "apps/web/migrations"
 		}
 	],
+	// Mail as it arrived, one object per message under <workspace>/<mailbox>/. The bucket is
+	// provisioned on first deploy, like the database.
+	"r2_buckets": [{ "binding": "RAW_MAIL", "bucket_name": "gateweave-mail" }],
 	// Rate limits on sign-in, password reset and email are counted in one Durable Object per client
-	// address or recipient.
+	// address or recipient. Each mailbox has one too, which holds the index of its messages.
 	"durable_objects": {
-		"bindings": [{ "name": "RATE_LIMITER", "class_name": "RateLimiter" }]
+		"bindings": [
+			{ "name": "RATE_LIMITER", "class_name": "RateLimiter" },
+			{ "name": "MAILBOX", "class_name": "Mailbox" }
+		]
 	},
 	"exports": {
-		"RateLimiter": { "type": "durable-object", "storage": "sqlite" }
+		"RateLimiter": { "type": "durable-object", "storage": "sqlite" },
+		"Mailbox": { "type": "durable-object", "storage": "sqlite" }
 	},
 	// Email through Cloudflare Email Service. Nothing is sent until EMAIL_FROM names a sender on a
 	// domain onboarded to Email Sending; without it, Mail runs with email off.
@@ -54,8 +61,12 @@
 					"migrations_dir": "apps/web/migrations"
 				}
 			],
+			"r2_buckets": [{ "binding": "RAW_MAIL", "bucket_name": "gateweave-mail-staging" }],
 			"durable_objects": {
-				"bindings": [{ "name": "RATE_LIMITER", "class_name": "RateLimiter" }]
+				"bindings": [
+					{ "name": "RATE_LIMITER", "class_name": "RateLimiter" },
+					{ "name": "MAILBOX", "class_name": "Mailbox" }
+				]
 			},
 			"send_email": [{ "name": "EMAIL" }],
 			"secrets": { "required": ["BETTER_AUTH_SECRET"] }

@@ -2,14 +2,14 @@
  * Incoming mail, from Cloudflare Email Routing.
  *
  * Each message is looked up in the directory. An address that doesn't exist gets a permanent
- * refusal, which tells the sender's server the mailbox is not there (a 555 over SMTP). Mailboxes
- * can't store mail yet, so a message to an address that does exist throws, and the sender tries
- * again later. Accepting it would lose it. This is where it gets stored and handed off instead.
+ * refusal, which tells the sender's server the mailbox is not there (a 555 over SMTP). Mail for an
+ * address that does exist is stored in its mailbox (see `mailbox/`), and when that fails it throws,
+ * so the sender tries again later.
  *
  * The rules this handler keeps, which the next version must keep too (see AGENTS.md):
  *
- * - It has about 2 seconds of CPU. It looks up and refuses, or stores and hands off. It never
- *   parses a message; that happens elsewhere.
+ * - It has about 2 seconds of CPU. It looks up and refuses, or stores. It reads no more than the
+ *   header block and streams the rest to R2; parsing a message happens when someone opens it.
  * - Delivery is at least once. A slow handler is cancelled after about 5 minutes and run again, and
  *   a sender retries after a temporary refusal, so the same mail twice must change nothing.
  * - A failure of ours is not the sender's fault: let it throw, which tells the sender to try again
@@ -27,22 +27,35 @@ export interface IncomingMessage {
 	setReject(reason: string): void;
 }
 
-export async function receiveMail(
+export async function receiveMail<Found>(
 	message: IncomingMessage,
-	find: (recipient: string) => Promise<unknown>,
+	find: (recipient: string) => Promise<Found | null | undefined>,
+	store: (found: Found) => Promise<void>,
 ): Promise<void> {
-	if (!(await lookUp(message.to, find))) {
+	const found = await lookUp(message.to, find);
+	if (!found) {
 		message.setReject(NO_SUCH_ADDRESS);
 		return;
 	}
-	throw new Error("Mail for a known address can't be stored yet");
+	try {
+		await store(found);
+	} catch (error) {
+		// Like a failed lookup, a failed write can quote what it was given.
+		console.error("email: storing the message failed", {
+			name: error instanceof Error ? error.name : "unknown",
+		});
+		throw new Error("Storing the message failed");
+	}
 }
 
 /**
  * A failed query's error quotes its parameters, which here are the recipient, and Workers Logs keeps
  * what `email()` throws. So only the error's name is logged, and a plain error goes on up.
  */
-async function lookUp(recipient: string, find: (recipient: string) => Promise<unknown>) {
+async function lookUp<Found>(
+	recipient: string,
+	find: (recipient: string) => Promise<Found | null | undefined>,
+) {
 	try {
 		return await find(recipient);
 	} catch (error) {

@@ -26,6 +26,12 @@ export interface SentEmail {
 	html: string;
 }
 
+/** What tests do with the bucket raw mail goes to. */
+interface TestBucket {
+	list(options: { prefix: string }): Promise<{ objects: { key: string }[] }>;
+	put(key: string, value: string): Promise<unknown>;
+}
+
 /** The address Mail sends from in tests. */
 export const EMAIL_FROM = { name: "Gateweave Mail", email: "mail@mail.test" };
 
@@ -141,9 +147,11 @@ export async function startMail(
 					},
 					serviceBindings: { EMAIL: "outbox" },
 					d1Databases: { [withoutDatabase ? "UNBOUND_DB" : "DB"]: "mail-test" },
+					r2Buckets: { RAW_MAIL: "mail-test" },
 					// Every copy uses the first one's Durable Objects.
 					durableObjects: {
 						RATE_LIMITER: { className: "RateLimiter", useSQLite: true, scriptName: names[0] },
+						MAILBOX: { className: "Mailbox", useSQLite: true, scriptName: names[0] },
 					},
 					outboundService: (request: Request) => {
 						outbound.push(request.url);
@@ -173,6 +181,8 @@ export async function startMail(
 	);
 
 	const db = await mf.getD1Database(withoutDatabase ? "UNBOUND_DB" : "DB");
+	// Miniflare's types for the bucket don't come through, so this names the part tests use.
+	const bucket = (await mf.getR2Bucket("RAW_MAIL")) as unknown as TestBucket;
 	const migrations = join(app, "migrations");
 	for (const file of readdirSync(migrations)
 		.filter((name) => name.endsWith(".sql"))
@@ -247,6 +257,8 @@ export async function startMail(
 		},
 		/** The D1 database, for setting up state the app has no endpoint for. */
 		db,
+		/** The bucket raw mail goes to, to see what is kept. */
+		bucket,
 		/** Runs the Worker's Cron Trigger once, as Cloudflare would. */
 		async runScheduled() {
 			// Miniflare's Fetcher type leaves out the scheduled() workerd adds to every Worker stub.

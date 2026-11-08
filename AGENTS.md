@@ -14,9 +14,9 @@ is part of [Gateweave](https://gateweave.com), next to
 It is early. Today it has accounts (sign-up, sign-in, password reset, an account page, sign-in
 through an OpenID Connect provider), workspaces with members and invitations, a directory of
 proved domains, mailboxes and addresses, and an `email()` handler that refuses an address that
-doesn't exist and tells the sender to try again for one that does, because mail can't be stored
-yet. Storing and reading mail, addresses an agent can make for itself, aliases and transactional
-sending are planned, not built.
+doesn't exist and stores mail for one that does, in a Durable Object per mailbox and R2. Members
+read a mailbox's messages as text. Sending and replying, HTML mail, addresses an agent can make for
+itself, aliases and transactional sending are planned, not built.
 
 Read [docs/architecture.md](docs/architecture.md) before changing auth or the `email()` handler.
 
@@ -82,17 +82,23 @@ These are load-bearing. Breaking one breaks users' data or security, usually sil
    migration that has been merged. Follow `.claude/skills/schema-change/SKILL.md`.
 7. **Secrets stay local.** Never commit `.dev.vars` or print its contents.
 8. **The `email()` handler has about 2 seconds of CPU**, measured on 2026-11-07, and
-   `limits.cpu_ms` does not change that. It looks up and refuses, or stores and hands off.
-   Parsing a message happens elsewhere.
+   `limits.cpu_ms` does not change that. It looks up and refuses, or stores: it reads the header
+   block and streams the rest to R2. Parsing a message happens when someone opens it.
 9. **Delivery is at least once.** A slow handler is cancelled after about 5 minutes and run
    again, and a sender retries after a temporary refusal. Handling the same mail twice must
    change nothing.
 10. **On an internal failure, let the handler throw.** That tells the sender to try again (`421`).
     `message.setReject` is permanent (`555`): use it only for a real refusal, such as an address
     that does not exist, never for our own trouble.
-11. **Mail is untrusted input.** Only `dmarc=pass` in `Authentication-Results` is proof of who
-    sent a message: a forged one can arrive marked `dmarc=none`. `message.from` is the envelope
-    sender, not the person the reader will see, so show the `From` header.
+11. **Mail is untrusted input.** Only `dmarc=pass` in Cloudflare's own `Authentication-Results`,
+    among the headers it adds at the top, is proof of who sent a message: a forged one can arrive
+    marked `dmarc=none`, or bring an `Authentication-Results` of its own. `message.from` is the
+    envelope sender, not the person the reader will see, so show the `From` header. Never show a
+    message's HTML in a page, and serve the original only as a download.
+12. **A mailbox's Durable Object has no public route.** Only `email()`, after looking the address
+    up, and server code, after checking membership and that the mailbox is in the caller's
+    workspace, reach it. Every R2 object is named by the mailbox's object, as pending, before it is
+    written, so R2 never holds mail a mailbox doesn't know about.
 
 ## Code style
 

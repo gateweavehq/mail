@@ -54,10 +54,39 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
   answer a non-member as a missing workspace, and only an owner or admin can change anything.
 - **The `email()` handler** (`apps/web/src/server/inbound.ts`) looks up each message's address on
   the primary, never a replica, so a new address works at once. No such address gets
-  `setReject("No such address")`, for good. A known address gets a throw, which tells the sender
-  to try again, until mailboxes can store mail: accepting a message we can't keep would lose it.
-  So does a failure of the database. The Worker tests deliver to it through Miniflare
-  (`test/inbound.test.ts`, `test/directory.test.ts`).
+  `setReject("No such address")`, for good. Mail for a known address is stored in its mailbox. When
+  storing fails, or the database does, the handler throws, which tells the sender to try again:
+  accepting a message we didn't keep would lose it. The Worker tests deliver to it through
+  Miniflare (`test/inbound.test.ts`, `test/directory.test.ts`, `test/mailbox.test.ts`).
+- **Mailboxes** (`apps/web/src/server/mailbox/`). Each mailbox has a `Mailbox` Durable Object,
+  named by the mailbox's id, that holds the index of its messages in SQLite. The raw mail is in R2,
+  one object per message under `<workspace>/<mailbox>/`. `email()` reads the header block and
+  streams the whole message into R2 without holding it, which fits in its CPU. Nothing is parsed
+  on arrival.
+  - **R2 holds nothing the mailbox doesn't know about.** The object names each message before it
+    is written, as pending, and an alarm removes a delivery that hasn't finished 15 minutes later,
+    with whatever part of it reached R2. So removing a mailbox's prefix removes all of its mail.
+  - **The same message twice is kept once.** A delivery's key is a hash of the mailbox and the
+    message's `Message-ID`, `From`, `Date` and `Subject`. When one finishes and a stored message
+    has the same key, their bodies are compared, and the copy goes only if they match: someone who
+    guessed a message's headers can't get it dropped. A message without a `Message-ID` is always
+    kept.
+  - **A mailbox holds up to 1 GiB.** Past that, a message gets a temporary refusal, so it arrives if
+    room is made before the sender gives up.
+  - **Reading.** A page parses a message with postal-mime when someone opens it, and shows its text
+    only: HTML waits until it can be shown without running what it holds. The original downloads
+    from `/api/mail/<workspace>/<mailbox>/<message>/original`, as a file, never as a page. Every
+    member of a workspace can read its mailboxes for now. A non-member, or a mailbox of another
+    workspace, gets the same "not found" as a missing one, and the mailbox is checked against the
+    caller's workspace in D1 before its object is asked anything.
+  - **Who sent it.** A message shows as from its sender only when Cloudflare's own
+    `Authentication-Results` says `dmarc=pass`. Cloudflare adds its headers at the top, below its
+    own `Received` line, so only a verdict among them counts; one lower down came with the message.
+  - **Removing.** Removing a mailbox, or deleting its workspace, removes its mail and its object's
+    data, after the directory has forgotten its addresses, so nothing new arrives. When that stops
+    part way, the daily run finds the mailbox's prefix in R2 with no mailbox in D1 and removes it.
+    Each run looks at up to 500 mailboxes, from a random place, so every one is looked at over a few
+    days.
 
 ### Workspaces
 
@@ -150,12 +179,13 @@ People change both on `/settings/account`, through Better Auth's `/update-user` 
 Not built. This is where it is going, and it may change.
 
 - **One Worker.** The UI, the API, auth and `email()` stay together.
-- **One Durable Object per mailbox**, which orders what arrives, holds the mailbox's index and
-  makes handling the same message twice change nothing.
-- **R2 for raw mail.** `email()` stores the raw message and hands off; parsing happens elsewhere,
-  because the handler has about 2 seconds of CPU.
-- **D1 for accounts and the address directory.** The directory says which address belongs to which
-  mailbox, so `email()` can look an address up and refuse the ones that do not exist.
+- **D1 for accounts and the address directory**, a Durable Object per mailbox and R2 for raw mail,
+  as above.
+- **Who may read a mailbox**, decided per mailbox, rather than every member of the workspace.
+- **HTML mail**, shown in a sandbox that runs nothing in it and loads nothing from outside unless
+  the reader asks.
+- **Sending and replying**, through Cloudflare Email Service, and addresses and aliases an agent
+  can make for itself.
 
 ## What Cloudflare does with mail
 
@@ -176,3 +206,10 @@ Measured on 2026-11-07. These shape the design above, and Cloudflare may change 
   permanent.
 - **`dmarc=pass` is the only proof of a sender.** A forged message can arrive with
   `Authentication-Results` saying `dmarc=none`.
+- **Cloudflare adds its headers at the top,** in this order: `Received` (`by cloudflare-email.net`),
+  `ARC-Seal`, `ARC-Message-Signature`, `ARC-Authentication-Results`, `Received-SPF`,
+  `Authentication-Results` (`mx.cloudflare.net`), then `X-CF-SpamH-Score`. The sender's own headers
+  follow, and they can include an `Authentication-Results` of their own.
+- **`message.headers.get()` joins a repeated header with ", "**, so it can't tell Cloudflare's
+  `Authentication-Results` from a sender's. Mail reads the header block from the raw message
+  instead.

@@ -37,6 +37,8 @@ export interface AuthConfig {
 	allowPasswordTry?: ((userId: string) => Promise<boolean>) | undefined;
 	/** Whether this person may be emailed about those tries running out. Never without it. */
 	allowSpentTriesEmail?: ((userId: string) => Promise<boolean>) | undefined;
+	/** Removes the mail of a deleted workspace's mailboxes. Left for the daily sweep without it. */
+	removeMailboxes?: ((workspaceId: string, mailboxIds: string[]) => Promise<void>) | undefined;
 }
 
 /**
@@ -248,11 +250,24 @@ export function createAuth(config: AuthConfig) {
 					},
 					// The plugin deletes the members first, which the owner trigger would refuse. With the
 					// workspace gone they follow by cascade, and the plugin finds nothing left to delete.
+					// So do its mailboxes, whose mail is removed after: no more can arrive by then.
 					beforeDeleteOrganization: async ({ organization }) => {
+						const mailboxes = await config.db
+							.select({ id: schema.mailbox.id })
+							.from(schema.mailbox)
+							.where(eq(schema.mailbox.organizationId, organization.id))
+							.all();
 						await config.db
 							.delete(schema.organization)
 							.where(eq(schema.organization.id, organization.id))
 							.run();
+						if (!config.removeMailboxes || mailboxes.length === 0) return;
+						const removing = config.removeMailboxes(
+							organization.id,
+							mailboxes.map((one) => one.id),
+						);
+						if (config.runInBackground) config.runInBackground(removing);
+						else await removing;
 					},
 				},
 			}),
