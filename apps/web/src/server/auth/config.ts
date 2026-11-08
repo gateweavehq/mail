@@ -11,6 +11,7 @@ import { schema } from "../db";
 import type { Mailer } from "../email/mailer";
 import { invitationEmail, passwordResetEmail, verificationEmail } from "../email/templates";
 import { tellOfChangedPassword, validName, validRename } from "./account-changes";
+import { agentMembers } from "./agents";
 import { deleteAccount } from "./delete-account";
 import { type OidcProvider, oidcDatabaseHooks, oidcSignIn } from "./oidc-sign-in";
 import { passwordTries, tellOfSpentTries } from "./password-tries";
@@ -276,6 +277,7 @@ export function createAuth(config: AuthConfig) {
 				mailer,
 			}),
 			...(config.oidc ? oidcSignIn(config.db, config.oidc) : []),
+			agentMembers({ db: config.db }),
 			// Must stay last: forwards Set-Cookie headers from server-side auth calls.
 			tanstackStartCookies(),
 		],

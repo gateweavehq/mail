@@ -12,24 +12,43 @@ import {
 } from "#/components/ui/dialog";
 import { Label } from "#/components/ui/label";
 import { useWorkspace } from "#/components/workspace/context";
+import { getWorkspaceAgents } from "#/lib/agents";
 import { changeDirectory, type DirectoryMailbox } from "#/lib/directory";
-import { getWorkspaceMembers, type WorkspaceMember } from "#/lib/members";
-import { isAdminRole } from "#/lib/roles";
+import { getWorkspaceMembers } from "#/lib/members";
+import { isAdminRole, isPersonRole } from "#/lib/roles";
 
 type Access = NonNullable<DirectoryMailbox["access"]>;
 
+/** Someone the dialog can give the mailbox to. */
+interface Reader {
+	memberId: string;
+	name: string;
+	detail: string | null;
+}
+
+const counted = (n: number, one: string, many: string) => (n === 1 ? `1 ${one}` : `${n} ${many}`);
+
 /** Who can read a mailbox, in a sentence. */
 export function accessSummary(access: Access): string {
-	if (access.everyone) return "Everyone in the workspace can read it.";
-	const people = access.memberIds.length;
-	if (people === 0) return "Only owners and admins can read it.";
-	return `Owners, admins and ${people === 1 ? "1 other person" : `${people} other people`} can read it.`;
+	const agents = access.agentIds.length ? counted(access.agentIds.length, "agent", "agents") : null;
+	if (access.everyone) {
+		return agents
+			? `Everyone in the workspace can read it, and ${agents}.`
+			: "Everyone in the workspace can read it.";
+	}
+	const people = access.memberIds.length
+		? counted(access.memberIds.length, "other person", "other people")
+		: null;
+	if (people && agents) return `Owners, admins, ${people} and ${agents} can read it.`;
+	if (people || agents) return `Owners, admins and ${people ?? agents} can read it.`;
+	return "Only owners and admins can read it.";
 }
 
 /**
  * Chooses who may read a mailbox. Owners and admins read every one, so only the others are listed.
- * What is saved is what the dialog shows: with everyone ticked, nobody needs a grant of their own,
- * so none are kept, and a grant to someone since made an admin goes.
+ * Agents are apart: "everyone" means people, so an agent reads a mailbox only when it is ticked
+ * here. What is saved is what the dialog shows: with everyone ticked, no person needs a grant of
+ * their own, so none are kept, and a grant to someone since made an admin goes.
  */
 export function MailboxAccessDialog({
 	box,
@@ -42,17 +61,31 @@ export function MailboxAccessDialog({
 }) {
 	const { slug } = useWorkspace();
 	const router = useRouter();
-	const [people, setPeople] = useState<WorkspaceMember[] | null>(null);
+	const [readers, setReaders] = useState<{ people: Reader[]; agents: Reader[] } | null>(null);
 	const [everyone, setEveryone] = useState(access.everyone);
-	const [chosen, setChosen] = useState(() => new Set(access.memberIds));
+	const [chosen, setChosen] = useState(() => new Set([...access.memberIds, ...access.agentIds]));
 	const [error, setError] = useState<string | null>(null);
 	const [pending, setPending] = useState(false);
 
 	useEffect(() => {
 		let live = true;
-		getWorkspaceMembers({ data: slug }).then(
-			(result) => {
-				if (live) setPeople((result?.members ?? []).filter((m) => !isAdminRole(m.role)));
+		Promise.all([getWorkspaceMembers({ data: slug }), getWorkspaceAgents({ data: slug })]).then(
+			([members, agents]) => {
+				if (!live) return;
+				setReaders({
+					people: (members?.members ?? [])
+						.filter((member) => isPersonRole(member.role) && !isAdminRole(member.role))
+						.map((member) => ({
+							memberId: member.memberId,
+							name: member.name,
+							detail: member.email,
+						})),
+					agents: (agents?.agents ?? []).map((agent) => ({
+						memberId: agent.memberId,
+						name: agent.name,
+						detail: null,
+					})),
+				});
 			},
 			() => {
 				if (live) setError("The workspace's people didn't load. Close this and try again.");
@@ -73,16 +106,16 @@ export function MailboxAccessDialog({
 	}
 
 	async function save() {
-		if (!people) return;
+		if (!readers) return;
 		setPending(true);
 		setError(null);
+		const picked = (list: Reader[]) =>
+			list.filter((reader) => chosen.has(reader.memberId)).map((reader) => reader.memberId);
 		const result = await changeDirectory(slug, {
 			action: "set-mailbox-access",
 			mailboxId: box.id,
 			everyone,
-			memberIds: everyone
-				? []
-				: people.filter((person) => chosen.has(person.memberId)).map((p) => p.memberId),
+			memberIds: [...(everyone ? [] : picked(readers.people)), ...picked(readers.agents)],
 		});
 		if (result.ok) {
 			await router.invalidate();
@@ -93,6 +126,29 @@ export function MailboxAccessDialog({
 			setPending(false);
 		}
 	}
+
+	const list = (kind: string, rows: Reader[], ticked: (reader: Reader) => boolean) => (
+		<ul className="max-h-48 space-y-2 overflow-y-auto">
+			{rows.map((reader) => {
+				const id = `${kind}-${box.id}-${reader.memberId}`;
+				return (
+					<li key={reader.memberId} className="flex items-center gap-2">
+						<Checkbox
+							id={id}
+							checked={ticked(reader)}
+							onCheckedChange={(checked) => toggle(reader.memberId, checked === true)}
+						/>
+						<Label htmlFor={id} className="min-w-0 break-words font-normal">
+							{reader.name}
+							{reader.detail && (
+								<span className="break-all text-muted-foreground"> {reader.detail}</span>
+							)}
+						</Label>
+					</li>
+				);
+			})}
+		</ul>
+	);
 
 	return (
 		<Dialog open onOpenChange={(open) => !open && !pending && onClose()}>
@@ -115,37 +171,36 @@ export function MailboxAccessDialog({
 						<Label htmlFor={`everyone-${box.id}`}>Everyone in the workspace</Label>
 					</div>
 
-					<fieldset className="space-y-2" disabled={everyone || pending}>
-						<legend className="text-sm text-muted-foreground">
-							{everyone ? "Everyone below can read it." : "Or only these people:"}
-						</legend>
-						{people === null ? (
-							!error && <p className="text-sm text-muted-foreground">Loading people…</p>
-						) : people.length === 0 ? (
-							<p className="text-sm text-muted-foreground">
-								Everyone here is an owner or admin, so there is nobody else to choose yet.
-							</p>
-						) : (
-							<ul className="max-h-64 space-y-2 overflow-y-auto">
-								{people.map((person) => (
-									<li key={person.memberId} className="flex items-center gap-2">
-										<Checkbox
-											id={`reader-${box.id}-${person.memberId}`}
-											checked={everyone || chosen.has(person.memberId)}
-											onCheckedChange={(checked) => toggle(person.memberId, checked === true)}
-										/>
-										<Label
-											htmlFor={`reader-${box.id}-${person.memberId}`}
-											className="min-w-0 break-words font-normal"
-										>
-											{person.name}{" "}
-											<span className="break-all text-muted-foreground">{person.email}</span>
-										</Label>
-									</li>
-								))}
-							</ul>
-						)}
-					</fieldset>
+					{readers === null ? (
+						!error && <p className="text-sm text-muted-foreground">Loading people…</p>
+					) : (
+						<>
+							<fieldset className="space-y-2" disabled={everyone || pending}>
+								<legend className="text-sm text-muted-foreground">
+									{everyone ? "Everyone below can read it." : "Or only these people:"}
+								</legend>
+								{readers.people.length === 0 ? (
+									<p className="text-sm text-muted-foreground">
+										Everyone here is an owner or admin, so there is nobody else to choose yet.
+									</p>
+								) : (
+									list(
+										"reader",
+										readers.people,
+										(reader) => everyone || chosen.has(reader.memberId),
+									)
+								)}
+							</fieldset>
+							{readers.agents.length > 0 && (
+								<fieldset className="space-y-2" disabled={pending}>
+									<legend className="text-sm text-muted-foreground">
+										Agents, which read it only when ticked here:
+									</legend>
+									{list("agent", readers.agents, (reader) => chosen.has(reader.memberId))}
+								</fieldset>
+							)}
+						</>
+					)}
 
 					{error && (
 						<p role="alert" className="text-sm text-destructive">
@@ -158,7 +213,7 @@ export function MailboxAccessDialog({
 					<Button variant="outline" onClick={onClose} disabled={pending}>
 						Cancel
 					</Button>
-					<Button onClick={save} disabled={pending || people === null}>
+					<Button onClick={save} disabled={pending || readers === null}>
 						{pending ? "Saving…" : "Save"}
 					</Button>
 				</DialogFooter>

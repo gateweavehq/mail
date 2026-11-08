@@ -29,7 +29,7 @@ interface Listed {
 	mailboxes: {
 		id: string;
 		name: string;
-		access: { everyone: boolean; memberIds: string[] } | null;
+		access: { everyone: boolean; memberIds: string[]; agentIds: string[] } | null;
 	}[];
 }
 
@@ -167,7 +167,10 @@ function readMailbox(slug: string, mailboxId: string, headers?: Record<string, s
 	return mail.fetch(`${origin}/api/mail/${slug}/${mailboxId}`, { headers });
 }
 
-async function messages(slug: string, mailboxId: string, person = owner) {
+/** Whoever asks: a person with their cookie, or an agent with its key. */
+type Asker = { headers: Record<string, string> };
+
+async function messages(slug: string, mailboxId: string, person: Asker = owner) {
 	const response = await readMailbox(slug, mailboxId, person.headers);
 	expect(response.status).toBe(200);
 	return (await response.json()) as Page;
@@ -441,7 +444,7 @@ async function giveAccess(
 }
 
 /** The status of every way into a mailbox and its one message, for this person. */
-async function reach(box: { slug: string; mailboxId: string }, person: typeof owner) {
+async function reach(box: { slug: string; mailboxId: string }, person: Asker) {
 	const [listed] = (await messages(box.slug, box.mailboxId)).messages;
 	const id = listed?.id ?? "";
 	const base = `${origin}/api/mail/${box.slug}/${box.mailboxId}`;
@@ -480,7 +483,7 @@ describe("who can read a mailbox", () => {
 		expect((await directory(box.slug, owner.headers)).mailboxes).toEqual([
 			expect.objectContaining({
 				id: box.mailboxId,
-				access: { everyone: false, memberIds: [] },
+				access: { everyone: false, memberIds: [], agentIds: [] },
 			}),
 		]);
 	});
@@ -499,7 +502,7 @@ describe("who can read a mailbox", () => {
 		// Who else reads it is for those who can change it.
 		expect(theirs[0]?.access).toBeNull();
 		const [seen] = (await directory(box.slug, owner.headers)).mailboxes;
-		expect(seen?.access).toEqual({ everyone: false, memberIds: [reader.memberId] });
+		expect(seen?.access).toEqual({ everyone: false, memberIds: [reader.memberId], agentIds: [] });
 
 		await giveAccess(box, { memberIds: [other.memberId] });
 		expect(await reach(box, reader)).toEqual(hidden);
@@ -511,7 +514,7 @@ describe("who can read a mailbox", () => {
 			.bind(other.memberId)
 			.run();
 		const [after] = (await directory(box.slug, owner.headers)).mailboxes;
-		expect(after?.access).toEqual({ everyone: false, memberIds: [] });
+		expect(after?.access).toEqual({ everyone: false, memberIds: [], agentIds: [] });
 		expect(await reach(box, other)).toEqual(opened);
 	});
 
@@ -597,7 +600,7 @@ describe("who can read a mailbox", () => {
 			expect(refused.status).toBe(409);
 		}
 		const [seen] = (await directory(box.slug, owner.headers)).mailboxes;
-		expect(seen?.access).toEqual({ everyone: false, memberIds: [] });
+		expect(seen?.access).toEqual({ everyone: false, memberIds: [], agentIds: [] });
 
 		// However a grant comes to be written, the database holds to it too.
 		await expect(
@@ -669,6 +672,199 @@ describe("who can read a mailbox", () => {
 			headers: owner.headers,
 		});
 		expect(response.status).toBe(404);
+	});
+});
+
+function auth(path: string, person: Asker, body?: unknown) {
+	return mail.fetch(
+		`${origin}/api/auth${path}`,
+		body === undefined
+			? { headers: person.headers }
+			: { method: "POST", headers: person.headers, body: JSON.stringify(body) },
+	);
+}
+
+/** An agent in the workspace, made by its owner, and the key it was given. */
+async function makeAgent(workspaceId: string, name = "Sorter") {
+	const response = await auth("/agents/create", owner, { organizationId: workspaceId, name });
+	expect(response.status).toBe(200);
+	const { agent, key } = (await response.json()) as {
+		agent: { id: string; memberId: string };
+		key: string;
+	};
+	expect(key).toMatch(/^gwm_[A-Za-z0-9_-]{43}$/);
+	return { ...agent, key, headers: { authorization: `Bearer ${key}` } };
+}
+
+describe("an agent", () => {
+	it("reads with its key only the mailboxes it is given, never through everyone", async () => {
+		const box = await mailboxWithAddress();
+		await kept(box.address, message(box.address, { extra: ["Content-Type: text/html"] }));
+		const other = await addMailbox(box.slug, owner, box.domainId, `other@${box.domain}`, true);
+		const agent = await makeAgent(box.workspaceId);
+
+		expect(await reach(box, agent)).toEqual(hidden);
+		await giveAccess(box, { everyone: true });
+		expect(await reach(box, agent)).toEqual(hidden);
+		expect((await directory(box.slug, agent.headers)).mailboxes).toEqual([]);
+
+		await giveAccess(box, { everyone: true, memberIds: [agent.memberId] });
+		expect(await reach(box, agent)).toEqual(opened);
+		const theirs = (await directory(box.slug, agent.headers)).mailboxes;
+		expect(theirs.map((m) => m.id)).toEqual([box.mailboxId]);
+		expect(theirs[0]?.access).toBeNull();
+		expect((await readMailbox(box.slug, other, agent.headers)).status).toBe(404);
+
+		// Admins see it among the agents, apart from the people.
+		const seen = (await directory(box.slug, owner.headers)).mailboxes.find(
+			(m) => m.id === box.mailboxId,
+		);
+		expect(seen?.access).toEqual({ everyone: true, memberIds: [], agentIds: [agent.memberId] });
+	});
+
+	it("is turned away with a key that doesn't work, whatever cookies come with it", async () => {
+		const box = await mailboxWithAddress();
+		await kept(box.address, message(box.address));
+		const agent = await makeAgent(box.workspaceId);
+		await giveAccess(box, { memberIds: [agent.memberId] });
+		const elsewhere = await mailboxWithAddress();
+		const strangers = await makeAgent(elsewhere.workspaceId);
+
+		const turnedAway = [
+			`Bearer ${agent.key}x`,
+			`Bearer gwm_${"A".repeat(43)}`,
+			`Bearer ${strangers.key}`,
+			"Basic b3duZXI6cGFzc3dvcmQ=",
+			"Bearer",
+		];
+		for (const authorization of turnedAway) {
+			// The owner's cookie would open it, but a request with a key is the key's alone.
+			const headers = { ...owner.headers, authorization };
+			expect((await readMailbox(box.slug, box.mailboxId, headers)).status).toBe(404);
+		}
+		expect((await readMailbox(box.slug, box.mailboxId, agent.headers)).status).toBe(200);
+		// Its key works only in its own workspace.
+		const across = { headers: agent.headers };
+		expect((await readMailbox(elsewhere.slug, elsewhere.mailboxId, across.headers)).status).toBe(
+			404,
+		);
+	});
+
+	it("loses access when its key is revoked or it is deleted", async () => {
+		const box = await mailboxWithAddress();
+		await kept(box.address, message(box.address));
+		const agent = await makeAgent(box.workspaceId);
+		await giveAccess(box, { memberIds: [agent.memberId] });
+		const made = await auth("/agents/create-key", owner, { agentId: agent.id });
+		const { key: second, secret } = (await made.json()) as { key: { id: string }; secret: string };
+		const spare = { headers: { authorization: `Bearer ${secret}` } };
+		expect((await messages(box.slug, box.mailboxId, spare)).messages).toHaveLength(1);
+
+		expect((await auth("/agents/revoke-key", owner, { keyId: second.id })).status).toBe(200);
+		expect((await readMailbox(box.slug, box.mailboxId, spare.headers)).status).toBe(404);
+		expect((await readMailbox(box.slug, box.mailboxId, agent.headers)).status).toBe(200);
+
+		expect((await auth("/agents/delete", owner, { agentId: agent.id })).status).toBe(200);
+		expect((await readMailbox(box.slug, box.mailboxId, agent.headers)).status).toBe(404);
+		const grants = await mail.db
+			.prepare("SELECT count(*) AS total FROM mailbox_access WHERE member_id = ?")
+			.bind(agent.memberId)
+			.first<{ total: number }>();
+		expect(grants?.total).toBe(0);
+	});
+
+	it("changes nothing: no directory change, no deletion", async () => {
+		const box = await mailboxWithAddress();
+		await kept(box.address, message(box.address));
+		const agent = await makeAgent(box.workspaceId);
+		await giveAccess(box, { memberIds: [agent.memberId] });
+		const [listed] = (await messages(box.slug, box.mailboxId, agent)).messages;
+		const headers = { ...agent.headers, origin, "content-type": "application/json" };
+
+		const change = await mail.fetch(`${origin}/api/directory/${box.slug}`, {
+			method: "POST",
+			headers,
+			body: JSON.stringify({ action: "add-mailbox", name: "Theirs" }),
+		});
+		expect(change.status).toBe(404);
+		const removal = await mail.fetch(
+			`${origin}/api/mail/${box.slug}/${box.mailboxId}/${listed?.id}`,
+			{ method: "DELETE", headers },
+		);
+		expect(removal.status).toBe(403);
+		expect((await messages(box.slug, box.mailboxId)).messages).toHaveLength(1);
+		// Better Auth's endpoints need a session, which a key never is.
+		const made = await auth(
+			"/agents/create",
+			{ headers },
+			{
+				organizationId: box.workspaceId,
+				name: "Another",
+			},
+		);
+		expect(made.status).toBe(401);
+	});
+
+	it("is made, keyed and managed only by owners and admins", async () => {
+		const box = await mailboxWithAddress();
+		const agent = await makeAgent(box.workspaceId);
+		const member = await join(box.workspaceId);
+		const asMember = [
+			auth(`/agents/list?organizationId=${box.workspaceId}`, member),
+			auth("/agents/create", member, { organizationId: box.workspaceId, name: "Mine" }),
+			auth("/agents/create-key", member, { agentId: agent.id }),
+			auth("/agents/delete", member, { agentId: agent.id }),
+		];
+		for (const response of await Promise.all(asMember)) expect(response.status).toBe(403);
+		// Nor through the endpoints for people: an agent's role never changes, and it is
+		// deleted, keys and all, from its own settings.
+		const asPerson = [
+			auth("/organization/update-member-role", owner, {
+				memberId: agent.memberId,
+				role: "admin",
+				organizationId: box.workspaceId,
+			}),
+			auth("/organization/remove-member", owner, {
+				memberIdOrEmail: agent.memberId,
+				organizationId: box.workspaceId,
+			}),
+		];
+		for (const response of await Promise.all(asPerson)) expect(response.status).toBe(403);
+		const listed = await auth(`/agents/list?organizationId=${box.workspaceId}`, owner);
+		expect(((await listed.json()) as { id: string }[]).map((a) => a.id)).toEqual([agent.id]);
+	});
+
+	it("has an address nobody can sign up, sign in or be invited under", async () => {
+		const box = await mailboxWithAddress();
+		const agent = await makeAgent(box.workspaceId);
+		const address = `${agent.id}@agents.invalid`;
+		const signUp = await mail.fetch(`${origin}/api/auth/sign-up/email`, {
+			method: "POST",
+			headers: { ...owner.headers, cookie: "", "cf-connecting-ip": "203.0.113.250" },
+			body: JSON.stringify({ name: "Not an agent", email: address, password: "a-long-password" }),
+		});
+		expect(signUp.status).toBe(400);
+		const invite = await auth("/organization/invite-member", owner, {
+			email: address,
+			role: "member",
+			organizationId: box.workspaceId,
+		});
+		expect(invite.status).toBe(400);
+	});
+
+	it("goes with its workspace", async () => {
+		const box = await mailboxWithAddress();
+		await kept(box.address, message(box.address));
+		const agent = await makeAgent(box.workspaceId);
+		await giveAccess(box, { memberIds: [agent.memberId] });
+		const deleted = await auth("/organization/delete", owner, { organizationId: box.workspaceId });
+		expect(deleted.status).toBe(200);
+		const left = await mail.db
+			.prepare("SELECT count(*) AS total FROM user WHERE id = ?")
+			.bind(agent.id)
+			.first<{ total: number }>();
+		expect(left?.total).toBe(0);
+		expect((await readMailbox(box.slug, box.mailboxId, agent.headers)).status).toBe(404);
 	});
 });
 

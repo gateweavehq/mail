@@ -57,6 +57,13 @@
       "when": 1794149103581,
       "tag": "0007_mailbox_access_rules",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1794151472695,
+      "tag": "0008_agent_keys",
+      "breakpoints": true
     }
   ]
 }

@@ -19,6 +19,7 @@ import { Route as WorkspaceSettingsRouteImport } from './routes/$workspace/setti
 import { Route as InviteInvitationIdRouteImport } from './routes/invite.$invitationId'
 import { Route as SettingsAccountRouteImport } from './routes/settings.account'
 import { Route as WorkspaceSettingsIndexRouteImport } from './routes/$workspace/settings.index'
+import { Route as WorkspaceSettingsAgentsRouteImport } from './routes/$workspace/settings.agents'
 import { Route as WorkspaceSettingsDomainsRouteImport } from './routes/$workspace/settings.domains'
 import { Route as WorkspaceSettingsMembersRouteImport } from './routes/$workspace/settings.members'
 import { Route as WorkspaceSettingsWorkspaceRouteImport } from './routes/$workspace/settings.workspace'
@@ -82,6 +83,11 @@ const SettingsAccountRoute = SettingsAccountRouteImport.update({
 const WorkspaceSettingsIndexRoute = WorkspaceSettingsIndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => WorkspaceSettingsRoute,
+} as any)
+const WorkspaceSettingsAgentsRoute = WorkspaceSettingsAgentsRouteImport.update({
+  id: '/agents',
+  path: '/agents',
   getParentRoute: () => WorkspaceSettingsRoute,
 } as any)
 const WorkspaceSettingsDomainsRoute =
@@ -177,6 +183,7 @@ export interface FileRoutesByFullPath {
   '/invite/$invitationId': typeof InviteInvitationIdRoute
   '/settings/account': typeof SettingsAccountRoute
   '/$workspace/': typeof WorkspaceIndexRoute
+  '/$workspace/settings/agents': typeof WorkspaceSettingsAgentsRoute
   '/$workspace/settings/domains': typeof WorkspaceSettingsDomainsRoute
   '/$workspace/settings/members': typeof WorkspaceSettingsMembersRoute
   '/$workspace/settings/workspace': typeof WorkspaceSettingsWorkspaceRoute
@@ -201,6 +208,7 @@ export interface FileRoutesByTo {
   '/invite/$invitationId': typeof InviteInvitationIdRoute
   '/settings/account': typeof SettingsAccountRoute
   '/$workspace': typeof WorkspaceIndexRoute
+  '/$workspace/settings/agents': typeof WorkspaceSettingsAgentsRoute
   '/$workspace/settings/domains': typeof WorkspaceSettingsDomainsRoute
   '/$workspace/settings/members': typeof WorkspaceSettingsMembersRoute
   '/$workspace/settings/workspace': typeof WorkspaceSettingsWorkspaceRoute
@@ -228,6 +236,7 @@ export interface FileRoutesById {
   '/invite/$invitationId': typeof InviteInvitationIdRoute
   '/settings/account': typeof SettingsAccountRoute
   '/$workspace/': typeof WorkspaceIndexRoute
+  '/$workspace/settings/agents': typeof WorkspaceSettingsAgentsRoute
   '/$workspace/settings/domains': typeof WorkspaceSettingsDomainsRoute
   '/$workspace/settings/members': typeof WorkspaceSettingsMembersRoute
   '/$workspace/settings/workspace': typeof WorkspaceSettingsWorkspaceRoute
@@ -256,6 +265,7 @@ export interface FileRouteTypes {
     | '/invite/$invitationId'
     | '/settings/account'
     | '/$workspace/'
+    | '/$workspace/settings/agents'
     | '/$workspace/settings/domains'
     | '/$workspace/settings/members'
     | '/$workspace/settings/workspace'
@@ -280,6 +290,7 @@ export interface FileRouteTypes {
     | '/invite/$invitationId'
     | '/settings/account'
     | '/$workspace'
+    | '/$workspace/settings/agents'
     | '/$workspace/settings/domains'
     | '/$workspace/settings/members'
     | '/$workspace/settings/workspace'
@@ -306,6 +317,7 @@ export interface FileRouteTypes {
     | '/invite/$invitationId'
     | '/settings/account'
     | '/$workspace/'
+    | '/$workspace/settings/agents'
     | '/$workspace/settings/domains'
     | '/$workspace/settings/members'
     | '/$workspace/settings/workspace'
@@ -413,6 +425,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof WorkspaceSettingsIndexRouteImport
       parentRoute: typeof WorkspaceSettingsRoute
     }
+    '/$workspace/settings/agents': {
+      id: '/$workspace/settings/agents'
+      path: '/agents'
+      fullPath: '/$workspace/settings/agents'
+      preLoaderRoute: typeof WorkspaceSettingsAgentsRouteImport
+      parentRoute: typeof WorkspaceSettingsRoute
+    }
     '/$workspace/settings/domains': {
       id: '/$workspace/settings/domains'
       path: '/domains'
@@ -515,6 +534,7 @@ declare module '@tanstack/react-router' {
 }
 
 interface WorkspaceSettingsRouteChildren {
+  WorkspaceSettingsAgentsRoute: typeof WorkspaceSettingsAgentsRoute
   WorkspaceSettingsDomainsRoute: typeof WorkspaceSettingsDomainsRoute
   WorkspaceSettingsMembersRoute: typeof WorkspaceSettingsMembersRoute
   WorkspaceSettingsWorkspaceRoute: typeof WorkspaceSettingsWorkspaceRoute
@@ -522,6 +542,7 @@ interface WorkspaceSettingsRouteChildren {
 }
 
 const WorkspaceSettingsRouteChildren: WorkspaceSettingsRouteChildren = {
+  WorkspaceSettingsAgentsRoute: WorkspaceSettingsAgentsRoute,
   WorkspaceSettingsDomainsRoute: WorkspaceSettingsDomainsRoute,
   WorkspaceSettingsMembersRoute: WorkspaceSettingsMembersRoute,
   WorkspaceSettingsWorkspaceRoute: WorkspaceSettingsWorkspaceRoute,

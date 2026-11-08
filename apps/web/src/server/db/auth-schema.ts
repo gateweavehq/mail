@@ -142,11 +142,33 @@ export const invitation = sqliteTable(
 	],
 );
 
+export const agentKey = sqliteTable(
+	"agent_key",
+	{
+		id: text("id").primaryKey(),
+		userId: text("user_id")
+			.notNull()
+			.references(() => user.id, { onDelete: "cascade" }),
+		organizationId: text("organization_id")
+			.notNull()
+			.references(() => organization.id, { onDelete: "cascade" }),
+		start: text("start").notNull(),
+		hash: text("hash").notNull().unique(),
+		createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+		lastUsedAt: integer("last_used_at", { mode: "timestamp_ms" }),
+	},
+	(table) => [
+		index("agentKey_userId_idx").on(table.userId),
+		index("agentKey_organizationId_idx").on(table.organizationId),
+	],
+);
+
 export const userRelations = relations(user, ({ many }) => ({
 	sessions: many(session),
 	accounts: many(account),
 	members: many(member),
 	invitations: many(invitation),
+	agentKeys: many(agentKey),
 }));
 
 export const sessionRelations = relations(session, ({ one }) => ({
@@ -166,6 +188,7 @@ export const accountRelations = relations(account, ({ one }) => ({
 export const organizationRelations = relations(organization, ({ many }) => ({
 	members: many(member),
 	invitations: many(invitation),
+	agentKeys: many(agentKey),
 }));
 
 export const memberRelations = relations(member, ({ one }) => ({
@@ -187,5 +210,16 @@ export const invitationRelations = relations(invitation, ({ one }) => ({
 	user: one(user, {
 		fields: [invitation.inviterId],
 		references: [user.id],
+	}),
+}));
+
+export const agentKeyRelations = relations(agentKey, ({ one }) => ({
+	user: one(user, {
+		fields: [agentKey.userId],
+		references: [user.id],
+	}),
+	organization: one(organization, {
+		fields: [agentKey.organizationId],
+		references: [organization.id],
 	}),
 }));

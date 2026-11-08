@@ -26,10 +26,10 @@ export interface DirectoryMailbox {
 	name: string;
 	addresses: DirectoryAddress[];
 	/**
-	 * Who else may read it, besides owners and admins: everyone, and these memberships. Only for
-	 * owners and admins, who can change it.
+	 * Who else may read it, besides owners and admins: everyone (people, not agents), and these
+	 * people's and agents' memberships. Only for owners and admins, who can change it.
 	 */
-	access: { everyone: boolean; memberIds: string[] } | null;
+	access: { everyone: boolean; memberIds: string[]; agentIds: string[] } | null;
 }
 
 export interface Directory {

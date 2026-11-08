@@ -77,6 +77,13 @@ export async function findAddress(db: Database, recipient: string, now: Date) {
 	return found ?? null;
 }
 
+/** Who reads a mailbox besides owners and admins: people and agents apart, as they are chosen. */
+function accessOf(everyone: boolean, grants: { memberId: string; role: MemberRole }[]) {
+	const ids = (agents: boolean) =>
+		grants.filter((grant) => (grant.role === "agent") === agents).map((grant) => grant.memberId);
+	return { everyone, memberIds: ids(false), agentIds: ids(true) };
+}
+
 /** Who is asking, for what they may see. */
 export interface Viewer {
 	memberId: string;
@@ -141,7 +148,9 @@ export async function listDirectory(
 					.innerJoin(member, eq(member.id, mailboxAccess.memberId))
 					.where(eq(mailbox.organizationId, workspaceId))
 					.orderBy(asc(mailboxAccess.memberId))
-			).filter((grant) => !isAdminRole(toRole(grant.role)))
+			)
+				.map((grant) => ({ ...grant, role: toRole(grant.role) }))
+				.filter((grant) => !isAdminRole(grant.role))
 		: [];
 	const byMailbox = Map.groupBy(addresses, (address) => address.mailboxId);
 	const readers = Map.groupBy(grants, (grant) => grant.mailboxId);
@@ -167,12 +176,7 @@ export async function listDirectory(
 				expiresAt: address.expiresAt?.getTime() ?? null,
 				domainProved: address.domainVerifiedAt !== null,
 			})),
-			access: admin
-				? {
-						everyone: box.everyone,
-						memberIds: (readers.get(box.id) ?? []).map((grant) => grant.memberId),
-					}
-				: null,
+			access: admin ? accessOf(box.everyone, readers.get(box.id) ?? []) : null,
 		})),
 	};
 }

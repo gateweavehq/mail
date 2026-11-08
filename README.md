@@ -50,12 +50,14 @@ tools that run on Cloudflare, next to [Gateweave Track](https://github.com/gatew
   can delete a message.
 - **Search.** Find a mailbox's threads by the words in their messages: subject, sender, text and
   attachment names.
+- **Agents.** An admin makes an agent for an AI agent and gives it a key. It reads, through the
+  API, only the mailboxes it is given; opening a mailbox to everyone doesn't open it to agents.
 
 ## What it is planned to become
 
 None of this exists yet; it is the direction, and it may change.
 
-- AI agents as members of a workspace, each reading the mailboxes it is given.
+- Agents that act on mail as well as read it.
 - Sending and replying.
 - Addresses an agent can make for itself.
 - Aliases that point at a mailbox.

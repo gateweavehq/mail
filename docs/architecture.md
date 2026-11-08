@@ -108,13 +108,26 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
   - **Who reads a mailbox.** Owners and admins read every one. Anyone else reads one they were
     given (`mailbox_access`, a row per membership and mailbox), or one open to everyone
     (`mailbox.everyone`) when they are a person: an agent counts only with a grant of its own, and
-    so does a role this version doesn't know, which `toRole` reads as an agent's. `canReadMailbox` in `lib/roles.ts` is the rule and `openMailbox` in
+    so does a role this version doesn't know, which `toRole` reads as an agent's. `canReadMailbox`
+    in `lib/roles.ts` is the rule and `openMailbox` in
     `read.ts`, which every route to mail goes through, the one place it is applied; the directory
     lists only the mailboxes the caller can read. A grant belongs to the membership, not the
     person, so it goes when they leave and doesn't come back if they join again. Triggers refuse
     one whose member and mailbox are in different workspaces (`0007_mailbox_access_rules.sql`).
     A new mailbox is for owners and admins until one of them opens it to everyone or gives it to
     people; the mailboxes there were before this rule stayed open to everyone.
+  - **Agents** (`server/auth/agents.ts`, ported from Track). An admin makes an agent on the
+    workspace's Agents page: a user with the `agent` role in that one workspace, an address under
+    `agents.invalid` that nobody can sign up, sign in or be invited with, and no password or
+    session. It reads with a key, `gwm_` and 256 random bits, of which only a SHA-256 hash and the
+    first characters are kept, sent as `Authorization: Bearer`. `currentCaller` in `access.ts`
+    takes a request with that header as the agent's alone: a key that doesn't work, or works for
+    another workspace, gets "not found", and the cookies that came with it are never tried
+    instead. Only reading takes a caller (`openMailbox`, and listing the directory, which shows an
+    agent the mailboxes it was given); every change takes `currentMember`, a person signed in.
+    Agents are kept off the members page and out of Better Auth's role and removal endpoints;
+    deleting one, from its own page, takes its keys and grants, and a deleted workspace takes its
+    agents.
   - **HTML.** A message's HTML is a page of its own, at `…/<message>/html`, which the message's
     page shows in a frame; its text, or the text made from its HTML, is a click away. What makes
     it safe is the policy it is served with (`framePolicy` in `html.ts`): `sandbox` without

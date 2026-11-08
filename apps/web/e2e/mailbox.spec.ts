@@ -1,6 +1,6 @@
 import type { APIRequestContext, Page } from "@playwright/test";
 import { expect, newBrowserContext, test } from "./fixtures";
-import { newPerson, signUp, startWorkspace, waitForHydration } from "./helpers";
+import { newPerson, signUp, startWorkspace, unique, waitForHydration } from "./helpers";
 
 // The app reads this resolver from `DNS_RESOLVER_URL`, which `server.mjs` sets to the same port.
 const dnsStandIn = `http://localhost:${(Number(process.env.MAIL_E2E_PORT) || 4752) + 20}`;
@@ -8,7 +8,9 @@ const dnsStandIn = `http://localhost:${(Number(process.env.MAIL_E2E_PORT) || 475
 /** A new workspace with a proved domain and a mailbox, "Support", that has an address there. */
 async function supportMailbox(page: Page, request: APIRequestContext, baseURL: string | undefined) {
 	const { slug } = await startWorkspace(page);
-	const domain = `inbox-${Date.now().toString(36)}.example.com`;
+	// Unique even for tests that start in the same millisecond: a domain two workspaces prove is
+	// the later one's, and the first test would find it gone.
+	const domain = `${unique("inbox")}.example.com`;
 
 	// The directory is set up through its API, which `directory.spec.ts` covers through the page.
 	const change = async (action: object) => {
@@ -408,6 +410,72 @@ test("an owner chooses who reads a mailbox, and only they find it", async ({
 	await theirs.reload();
 	await expect(theirs.getByText("Where is my parcel")).toHaveCount(0);
 	await context.close();
+});
+
+test("an admin makes an agent, gives it a mailbox, and its key reads the mail until revoked", async ({
+	page,
+	request,
+	baseURL,
+}) => {
+	const { slug, mailboxId, to, deliver } = await supportMailbox(page, request, baseURL);
+	await deliver("customer@example.org", [
+		"From: A Customer <customer@example.org>",
+		`To: ${to}`,
+		"Subject: Sort me",
+		"Date: Sun, 08 Nov 2026 09:00:00 +0000",
+		`Message-ID: <${Date.now()}.agent@example.org>`,
+		"",
+		"Which queue am I in?",
+		"",
+	]);
+
+	await page.goto(`/${slug}/settings/agents`);
+	await waitForHydration(page);
+	await page.getByLabel("Agent name").fill("Sorter");
+	await page.getByRole("button", { name: "Create agent" }).click();
+	const key = await page.getByLabel("Agent key").inputValue();
+	expect(key).toMatch(/^gwm_/);
+	await page.getByRole("button", { name: "Done" }).click();
+	// The API, as the agent calls it: its key and nothing else, no cookie.
+	const api = () =>
+		request.get(`/api/mail/${slug}/${mailboxId}`, { headers: { authorization: `Bearer ${key}` } });
+	expect((await api()).status()).toBe(404);
+
+	// It has a page of its own, not a place among the people.
+	await page.goto(`/${slug}/settings/members`);
+	await waitForHydration(page);
+	await expect(page.getByText("Sorter")).toHaveCount(0);
+
+	// Opening the mailbox to everyone doesn't open it to the agent; ticking the agent does.
+	await page.goto(`/${slug}`);
+	await waitForHydration(page);
+	const card = page
+		.getByRole("listitem")
+		.filter({ has: page.getByRole("heading", { name: "Support" }) });
+	await card.getByRole("button", { name: "Choose who can read Support" }).click();
+	const dialog = page.getByRole("dialog", { name: "Who can read Support" });
+	await dialog.getByLabel("Everyone in the workspace").check();
+	await dialog.getByRole("button", { name: "Save" }).click();
+	await expect(card.getByText("Everyone in the workspace can read it.")).toBeVisible();
+	expect((await api()).status()).toBe(404);
+
+	await card.getByRole("button", { name: "Choose who can read Support" }).click();
+	await expect(dialog.getByLabel("Sorter")).toBeEnabled();
+	await dialog.getByLabel("Sorter").check();
+	await dialog.getByRole("button", { name: "Save" }).click();
+	await expect(card.getByText("Everyone in the workspace can read it, and 1 agent.")).toBeVisible();
+	const listed = await api();
+	expect(listed.status()).toBe(200);
+	const page1 = (await listed.json()) as { messages: { subject: string }[] };
+	expect(page1.messages.map((message) => message.subject)).toEqual(["Sort me"]);
+
+	// Revoked, its key reads nothing.
+	await page.goto(`/${slug}/settings/agents`);
+	await waitForHydration(page);
+	await page.getByRole("button", { name: /^Revoke key / }).click();
+	await page.getByRole("dialog").getByRole("button", { name: "Revoke" }).click();
+	await expect(page.getByText("No keys. It can't read anything until you make one.")).toBeVisible();
+	expect((await api()).status()).toBe(404);
 });
 
 /** A one-pixel PNG. */
