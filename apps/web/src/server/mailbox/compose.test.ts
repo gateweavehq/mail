@@ -1,0 +1,174 @@
+import PostalMime, { decodeWords } from "postal-mime";
+import { describe, expect, it } from "vitest";
+import {
+	addressHeader,
+	headerText,
+	MAX_HEADER_VALUE,
+	newOwnId,
+	type Outgoing,
+	rawCopy,
+	referencesValue,
+	replySubject,
+	sendRequest,
+} from "./compose";
+import { parseHeaders } from "./headers";
+import { ownId, referencedIds } from "./thread";
+
+const reply: Outgoing = {
+	from: { name: "Support", email: "support@acme.test" },
+	to: ["ada@example.com"],
+	cc: ["grace@example.com", "alan@example.com"],
+	subject: "Re: Invoice 42",
+	text: "Thanks, it's paid.\n\nOn Monday, Ada wrote:\n> Is it paid?",
+	inReplyTo: "b@example.com",
+	references: ["a@example.com", "b@example.com"],
+	ownId: "mine@acme.test",
+};
+
+describe("rawCopy", () => {
+	it("is mail that reads back as what was written", async () => {
+		const email = await PostalMime.parse(rawCopy(reply, new Date(Date.UTC(2026, 10, 8, 9, 30))));
+		expect(email.from).toEqual({ name: "Support", address: "support@acme.test" });
+		expect(email.to).toEqual([{ name: "", address: "ada@example.com" }]);
+		expect(email.cc?.map((person) => person.address)).toEqual([
+			"grace@example.com",
+			"alan@example.com",
+		]);
+		expect(email.subject).toBe("Re: Invoice 42");
+		expect(email.text?.replace(/\r\n/g, "\n").trimEnd()).toBe(reply.text);
+		expect(email.date).toBe("2026-11-08T09:30:00.000Z");
+		expect(email.messageId).toBe("<mine@acme.test>");
+		expect(email.inReplyTo).toBe("<b@example.com>");
+	});
+
+	it("threads as the message it names, following what it answers", () => {
+		const raw = rawCopy(reply, new Date());
+		const headers = parseHeaders(raw.slice(0, raw.indexOf("\r\n\r\n")));
+		expect(ownId(headers)).toBe("mine@acme.test");
+		// Its own id is in its References too, so a reply that carries them on finds it.
+		expect(referencedIds(headers)).toEqual(["a@example.com", "b@example.com", "mine@acme.test"]);
+	});
+
+	it("writes any language, and keeps every line short", async () => {
+		const written: Outgoing = {
+			...reply,
+			from: { name: "Destek Ekibi — İstanbul", email: "destek@acme.test" },
+			subject: "Faturanız hazır 🧾 ".repeat(8).trim(),
+			text: "Merhaba Ayşe,\nödemeniz alındı. ".repeat(40),
+			cc: [],
+			inReplyTo: null,
+			references: [],
+		};
+		const raw = rawCopy(written, new Date());
+		for (const line of raw.split("\r\n")) expect(line.length).toBeLessThanOrEqual(78);
+		const email = await PostalMime.parse(raw);
+		expect(email.from?.name).toBe("Destek Ekibi — İstanbul");
+		expect(email.subject).toBe(written.subject);
+		expect(email.text?.replace(/\r\n/g, "\n")).toBe(written.text);
+		expect(email.cc).toBeUndefined();
+		expect(email.inReplyTo).toBeUndefined();
+	});
+
+	it("keeps every line short however long an ASCII subject or name", async () => {
+		const written: Outgoing = {
+			...reply,
+			from: { name: "The Customer Support Team of Acme, Inc., Worldwide", email: "s@acme.test" },
+			subject: `Invoice${" and another word".repeat(60)}`,
+		};
+		const raw = rawCopy(written, new Date());
+		for (const line of raw.split("\r\n")) expect(line.length).toBeLessThanOrEqual(78);
+		const email = await PostalMime.parse(raw);
+		expect(email.from).toEqual({ name: written.from.name, address: "s@acme.test" });
+		expect(email.subject).toBe(written.subject);
+	});
+});
+
+describe("headerText", () => {
+	it("leaves ASCII alone and puts the rest in words that decode back", () => {
+		expect(headerText("Invoice 42")).toBe("Invoice 42");
+		const encoded = headerText("Sipariş 🎉 hazır");
+		expect(encoded).toMatch(/^=\?UTF-8\?B\?/);
+		expect(decodeWords(encoded.replace(/\r\n /g, " "))).toBe("Sipariş 🎉 hazır");
+	});
+
+	it("never splits a character between words, nor lets a line break into the header", () => {
+		const encoded = headerText("🎉".repeat(30));
+		for (const word of encoded.split("\r\n ")) {
+			expect(word.length).toBeLessThanOrEqual(75);
+			expect(decodeWords(word)).toMatch(/^(🎉)+$/u);
+		}
+		expect(headerText("one\r\nBcc: someone@example.com")).toBe("one Bcc: someone@example.com");
+	});
+});
+
+describe("addressHeader", () => {
+	it("quotes a name that would read as more than one address", () => {
+		expect(addressHeader({ name: "Support", email: "s@acme.test" })).toBe("Support <s@acme.test>");
+		expect(addressHeader({ name: 'Acme, "Inc."', email: "s@acme.test" })).toBe(
+			'"Acme, \\"Inc.\\"" <s@acme.test>',
+		);
+		expect(addressHeader({ name: "", email: "s@acme.test" })).toBe("s@acme.test");
+	});
+
+	it("makes control characters spaces", () => {
+		expect(addressHeader({ name: "Sup\tport\u0000\r\nBcc: x", email: "s@acme.test" })).toBe(
+			'"Sup port Bcc: x" <s@acme.test>',
+		);
+	});
+});
+
+describe("referencesValue", () => {
+	it("names every id it follows, then its own", () => {
+		expect(referencesValue(["a@x", "b@x"], "me@x")).toBe("<a@x> <b@x> <me@x>");
+		expect(referencesValue([], "me@x")).toBe("<me@x>");
+	});
+
+	it("keeps the first, the newest and its own when they don't all fit", () => {
+		const ids = Array.from({ length: 200 }, (_, i) => `${"x".repeat(20)}-${i}@example.com`);
+		const value = referencesValue(ids, "me@acme.test");
+		expect(new TextEncoder().encode(value).length).toBeLessThanOrEqual(MAX_HEADER_VALUE);
+		const kept = value.split(" ");
+		expect(kept[0]).toBe(`<${ids[0]}>`);
+		expect(kept.at(-1)).toBe("<me@acme.test>");
+		expect(kept.at(-2)).toBe(`<${ids.at(-1)}>`);
+		// What stays of the middle is the newest, in order.
+		const middle = kept.slice(1, -1).map((id) => id.slice(1, -1));
+		expect(middle).toEqual(ids.slice(ids.length - middle.length));
+	});
+});
+
+describe("sendRequest", () => {
+	it("asks Email Service for the message with the headers that thread it", () => {
+		expect(sendRequest(reply)).toEqual({
+			from: { name: "Support", email: "support@acme.test" },
+			to: ["ada@example.com"],
+			cc: ["grace@example.com", "alan@example.com"],
+			subject: "Re: Invoice 42",
+			text: reply.text,
+			headers: {
+				References: "<a@example.com> <b@example.com> <mine@acme.test>",
+				"In-Reply-To": "<b@example.com>",
+			},
+		});
+		// The mailbox's name goes as a name, whatever an admin typed.
+		expect(
+			sendRequest({ ...reply, from: { name: "Support\r\nBcc: x", email: "s@acme.test" } }).from,
+		).toEqual({
+			name: "Support Bcc: x",
+			email: "s@acme.test",
+		});
+		const fresh = sendRequest({ ...reply, cc: [], inReplyTo: null, references: [] });
+		expect(fresh).not.toHaveProperty("cc");
+		expect(fresh.headers).toEqual({ References: "<mine@acme.test>" });
+	});
+});
+
+it("gives a new message an id of its own on the domain it is sent from", () => {
+	expect(newOwnId("support@acme.test")).toMatch(/^[0-9a-f-]{36}@acme\.test$/);
+	expect(newOwnId("support@acme.test")).not.toBe(newOwnId("support@acme.test"));
+});
+
+it("puts Re: before a subject once", () => {
+	expect(replySubject("Invoice 42")).toBe("Re: Invoice 42");
+	expect(replySubject("RE: Invoice 42")).toBe("RE: Invoice 42");
+});

@@ -186,6 +186,51 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     A field whose name only looks like `From`, such as `From :`, counts as a second one. Pages
     show the proved domain beside the mark: the name in front of the address is the sender's to
     write.
+  - **Sending** (`send.ts`, `compose.ts`, `delivery.ts`). A person who may read a mailbox replies
+    to its mail and writes new mail from it, at `POST /api/mail/<workspace>/<mailbox>/outbox`,
+    signed in and from the app's own origin; a key can't send. A message goes from one of the
+    mailbox's addresses on a proved domain that hasn't run out (`senders.ts`): the one chosen, or
+    for a reply the one the answered message came to, or else the oldest. It goes through the
+    `EMAIL` binding of Cloudflare Email Service, which sends only from a domain onboarded for
+    Email Sending. It is plain text for now, to at most 20 people, To and Cc together, with a
+    subject that has no line break. A workspace sends at most 200 messages a day (`SEND_PER_DAY`),
+    counted by the rate-limit object, besides Email Service's own limits.
+    - **Its copy is in the mailbox before it goes.** The object takes the message as Mail wrote it,
+      as an RFC 5322 copy for R2 named pending first as arriving mail is, with an `outgoing` row,
+      in one transaction, and only then calls the binding. So the copy is in its thread at once,
+      says who wrote it (`message.sent_by`, a membership), and counts toward the mailbox's size; a
+      full mailbox doesn't send.
+    - **Its own id keeps the thread.** Email Service makes the `Message-ID` and refuses one from
+      the sender, and nothing says the id it returns is the header's. So Mail gives each message an
+      id of its own, `<uuid@domain>`, puts it last in `References`, and keeps it as the copy's own:
+      a reply to the message names it, and joins the thread, whatever id the message went out
+      with. A reply takes `In-Reply-To` and `References` from the answered message's own headers:
+      its `References`, or failing those its `In-Reply-To`, then its id. A long chain keeps the
+      first id and the newest that fit in Email Service's 2,048 bytes for a header.
+    - **States** (`outgoing.state`). `sending`, then `sent`. `waiting` when Email Service is busy
+      (its rate or daily limit): the object's alarm tries again after 15 seconds, 1, 5 and 30
+      minutes and 2 hours, or 1, 3, 6 and 12 hours for the daily limit, and then takes it as
+      refused. `refused` with Email Service's code, which the page says in words. `uncertain` when
+      the call failed without a code or with Email Service's own failure, which may come after it
+      took the message, or when the alarm finds a try still `sending` 10 minutes on, as when the
+      isolate went away: it may have gone. A message whose first try never began, which the alarm
+      also finds then, sent nothing and waits to be tried. Email Service has no idempotency key,
+      so an uncertain message is never sent again by itself; a person sends a refused or uncertain
+      one again, or discards it, which takes its copy out of the mailbox. Only who wrote it, or an
+      owner or admin, discards it. Each change of state is made only from the state it was found
+      in, in the same statement, so a message discarded or deleted while the alarm works through
+      its list isn't sent. Deleting a message that isn't sent first makes it `discarded`, which no
+      try starts from, before its copy's mail is deleted from R2: neither the alarm nor a Send
+      again in another tab can send it meanwhile. Should that delete fail, the copy stays,
+      discarded, and can be discarded again.
+    - **A draft is sent once.** The page gives each draft an id when it opens, kept in `outgoing`.
+      A send with an id the mailbox has seen answers with that message's state and sends nothing,
+      so a person whose answer was lost, by the network or a deploy, can press Send again. The
+      gateway asks before counting the send against the day's limit, so that doesn't refuse it,
+      and the page keeps the message as it was until then, since a change would not be sent.
+    - **Threading the copy.** Ids that aren't printable ASCII, which some senders use, stay out of
+      the headers sent, as Email Service would refuse them, but the copy is still put in the thread
+      of every id the reply answers.
   - **Removing.** Removing a mailbox, or deleting its workspace, removes its mail and its object's
     data, after the directory has forgotten its addresses, so nothing new arrives. A trigger in D1
     records each mailbox as its row goes, a workspace's by cascade too (`mailbox_removal`). The
@@ -288,8 +333,9 @@ Not built. This is where it is going, and it may change.
   as above.
 - **Remote images per sender**, remembered for those the reader trusts, where now they are asked
   for each time.
-- **Sending and replying**, through Cloudflare Email Service, and addresses and aliases an agent
-  can make for itself.
+- **Agents that send**, with an admin's approval and limits of their own, and addresses and
+  aliases an agent can make for itself.
+- **Writing more than plain text**: formatting, attachments, forwarding and replying to all.
 
 ## What Cloudflare does with mail
 

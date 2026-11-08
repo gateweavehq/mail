@@ -1,5 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
+import type { SendStatus } from "./outbox";
 
 /** Someone named in a message's headers. The name is decoded; either part may be empty. */
 export interface Person {
@@ -20,6 +21,17 @@ export interface ListedMessage {
 	 */
 	verifiedDomain: string | null;
 	size: number;
+	/** For a message this mailbox sent, rather than one it got. */
+	sent: SentInfo | null;
+}
+
+/** Who sent a message from the mailbox, and what became of it. */
+export interface SentInfo {
+	/** Their name, while they are in the workspace. */
+	by: string | null;
+	/** Whether whoever reads it wrote it. */
+	mine: boolean;
+	status: SendStatus | null;
 }
 
 /** Where a listing goes on from. */
@@ -61,6 +73,8 @@ export interface ThreadCursor {
 
 export interface ThreadsPage {
 	name: string;
+	/** The addresses the mailbox may send from, lower case: its own, on a proved domain. */
+	from: string[];
 	threads: ListedThread[];
 	/** Where the next page, of threads with older news, starts, or null when there is none. */
 	next: ThreadCursor | null;
@@ -69,6 +83,8 @@ export interface ThreadsPage {
 export interface ThreadPage {
 	/** The mailbox's name. */
 	mailbox: string;
+	/** As in `ThreadsPage`. */
+	from: string[];
 	/** As in `ListedThread`. */
 	subject: string;
 	/** How many messages the whole thread has. */
@@ -108,6 +124,13 @@ export interface OpenedMessage {
 	/** Its HTML is too long to show in full, so the frame shows the start of it. */
 	htmlCut: boolean;
 	attachments: { name: string | null; type: string; size: number }[];
+	/** As in a listing. */
+	sent: SentInfo | null;
+	/**
+	 * What a reply starts with: who it goes to, its subject, and which of the mailbox's addresses it
+	 * goes from, which is null when the mailbox has none it may send from.
+	 */
+	reply: { to: string[]; cc: string[]; subject: string; from: string | null };
 }
 
 /** The most of a query that is sent. Search itself looks at less. */

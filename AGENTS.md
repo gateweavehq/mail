@@ -15,8 +15,9 @@ It is early. Today it has accounts (sign-up, sign-in, password reset, an account
 through an OpenID Connect provider), workspaces with members and invitations, a directory of
 proved domains, mailboxes and addresses, and an `email()` handler that refuses an address that
 doesn't exist and stores mail for one that does, in a Durable Object per mailbox and R2. Members
-read the mailboxes they are given, with formatted mail in a sandboxed frame, and agents read theirs
-with a key, through the API. Sending and replying, addresses an agent can make for itself, aliases and
+read the mailboxes they are given, with formatted mail in a sandboxed frame, and reply to their
+mail and write new mail from them in plain text, through Cloudflare Email Service. Agents read theirs
+with a key, through the API. Agents that send, addresses an agent can make for itself, aliases and
 transactional sending are planned, not built.
 
 Read [docs/architecture.md](docs/architecture.md) before changing auth or the `email()` handler.
@@ -111,6 +112,13 @@ These are load-bearing. Breaking one breaks users' data or security, usually sil
     key alone (`currentCaller` in `apps/web/src/server/access.ts`), never by the cookies that come
     with it. Only reading takes `currentCaller`; whatever changes something takes
     `currentMember`, a person signed in. Keep only a key's hash, and never log a key.
+14. **A message that may have gone is never sent again by itself.** Email Service has no
+    idempotency key, so a send that failed without a code, with its own failure, or that nothing
+    finished, is `uncertain`, and only a person's "Send again" sends it again. A draft's id makes a
+    second send of it the first. The copy and its `outgoing` row are written in one transaction
+    before the binding is called, each change of state is made only from the state it was found
+    in, and the message's own id goes in its `References`, so its thread doesn't depend on the
+    `Message-ID` Email Service gives it.
 
 ## Code style
 

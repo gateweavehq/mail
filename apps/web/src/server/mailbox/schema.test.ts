@@ -27,6 +27,7 @@ describe("migrate", () => {
 			"message_search_data",
 			"message_search_docsize",
 			"message_search_idx",
+			"outgoing",
 			"schema_migration",
 			"thread",
 		]);
@@ -34,7 +35,26 @@ describe("migrate", () => {
 			{ version: 1 },
 			{ version: 2 },
 			{ version: 3 },
+			{ version: 4 },
 		]);
+	});
+
+	it("lets what the mailbox sends go with its message", () => {
+		const { db, storage: store } = storage();
+		migrate(store);
+		db.prepare(
+			`INSERT INTO message (id, state, delivery_key, object, size, arrived_at, envelope_from,
+				envelope_to, sent_by)
+			VALUES ('sent', 'stored', 'sent:sent', 'w/m/sent.eml', 10, 1, 'a@x', 'b@y', 'member')`,
+		).run();
+		db.prepare(
+			"INSERT INTO outgoing (message, state, request) VALUES ('sent', 'sent', '{}')",
+		).run();
+		expect(() =>
+			db.prepare("INSERT INTO outgoing (message, state, request) VALUES ('x', 'lost', '{}')").run(),
+		).toThrow();
+		db.prepare("DELETE FROM message WHERE id = 'sent'").run();
+		expect(db.prepare("SELECT count(*) AS n FROM outgoing").get()).toEqual({ n: 0 });
 	});
 
 	it("brings an object from before migrations were counted, giving its messages a thread each", () => {

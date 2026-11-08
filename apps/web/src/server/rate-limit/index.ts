@@ -61,6 +61,20 @@ export async function allowSpentTriesEmail(userId: string): Promise<boolean> {
 	return allowed;
 }
 
+/** Messages one workspace sends a day unless `SEND_PER_DAY` says otherwise. */
+export const SEND_PER_DAY = 200;
+
+/**
+ * Whether this workspace may send another message, counting it if so, with how many seconds until
+ * it may when not. A whole day's allowance at once, which comes back over the day: it keeps one
+ * workspace from using up what the account may send, and a stolen session from sending much.
+ */
+export async function allowSend(workspaceId: string): Promise<Decision> {
+	const set = Number(env.SEND_PER_DAY);
+	const max = Number.isSafeInteger(set) && set > 0 ? set : SEND_PER_DAY;
+	return consumeDurably(`send:${workspaceId}`, [{ window: 24 * 60 * 60, max }]);
+}
+
 const local = new LocalLimiter();
 
 /**

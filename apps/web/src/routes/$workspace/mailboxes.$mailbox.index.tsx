@@ -1,8 +1,17 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { Search as SearchIcon, ShieldCheck } from "lucide-react";
+import { PenLine, Search as SearchIcon, ShieldCheck } from "lucide-react";
+import { useState } from "react";
 import { z } from "zod";
+import { Composer } from "#/components/mail/composer";
 import { senderName } from "#/components/mail/message-view";
 import { Button } from "#/components/ui/button";
+import {
+	Dialog,
+	DialogContent,
+	DialogDescription,
+	DialogHeader,
+	DialogTitle,
+} from "#/components/ui/dialog";
 import { Input } from "#/components/ui/input";
 import { useWorkspace } from "#/components/workspace/context";
 import { Notice } from "#/components/workspace/notice";
@@ -79,15 +88,18 @@ function MailboxPage() {
 
 	return (
 		<div className="mx-auto max-w-4xl space-y-6 px-4 py-10 sm:px-6">
-			<header className="space-y-1">
-				<Link
-					to="/$workspace"
-					params={{ workspace: slug }}
-					className="text-sm text-muted-foreground underline-offset-4 hover:underline"
-				>
-					Mailboxes
-				</Link>
-				<h1 className="min-w-0 break-words text-xl font-semibold tracking-tight">{page.name}</h1>
+			<header className="flex flex-wrap items-end justify-between gap-3">
+				<div className="min-w-0 space-y-1">
+					<Link
+						to="/$workspace"
+						params={{ workspace: slug }}
+						className="text-sm text-muted-foreground underline-offset-4 hover:underline"
+					>
+						Mailboxes
+					</Link>
+					<h1 className="min-w-0 break-words text-xl font-semibold tracking-tight">{page.name}</h1>
+				</div>
+				<Write name={page.name} senders={page.from} />
 			</header>
 
 			<search>
@@ -250,4 +262,52 @@ function searchSaid(query: string, shown: number, more: boolean, older: boolean)
 	if (shown === 0) return `No ${kind} matches “${query}”.`;
 	if (shown === 1 && !more) return `1 ${kind} matches “${query}”.`;
 	return `${shown}${more ? " or more" : ""} ${kind}s match “${query}”.`;
+}
+
+/** A new message from the mailbox, written in a dialog. Once sent, its thread opens. */
+function Write({ name, senders }: { name: string; senders: string[] }) {
+	const { slug } = useWorkspace();
+	const { mailbox } = Route.useParams();
+	const navigate = useNavigate();
+	const [open, setOpen] = useState(false);
+	// While a message is being sent the dialog stays, so its answer isn't lost.
+	const [sending, setSending] = useState(false);
+
+	return (
+		<>
+			<Button size="sm" onClick={() => setOpen(true)}>
+				<PenLine aria-hidden />
+				Write
+			</Button>
+			<Dialog open={open} onOpenChange={(next) => (next || !sending) && setOpen(next)}>
+				<DialogContent
+					className="max-w-2xl"
+					// A click beside it shouldn't throw away what's written.
+					onInteractOutside={(event) => event.preventDefault()}
+					// The composer puts the focus on its first address itself.
+					onOpenAutoFocus={(event) => event.preventDefault()}
+				>
+					<DialogHeader>
+						<DialogTitle>New message</DialogTitle>
+						<DialogDescription className="wrap-anywhere">From {name}</DialogDescription>
+					</DialogHeader>
+					<Composer
+						workspace={slug}
+						mailbox={mailbox}
+						senders={senders}
+						draft={{ to: [], cc: [], subject: "", text: "", from: senders[0] ?? "" }}
+						onSent={async (sent) => {
+							setOpen(false);
+							await navigate({
+								to: "/$workspace/mailboxes/$mailbox/threads/$thread",
+								params: { workspace: slug, mailbox, thread: sent.threadId },
+							});
+						}}
+						onCancel={() => setOpen(false)}
+						onPendingChange={setSending}
+					/>
+				</DialogContent>
+			</Dialog>
+		</>
+	);
 }

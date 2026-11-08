@@ -17,6 +17,7 @@ export const OPTIONAL_SECRETS = [
 	"TERMS_URL",
 	"DNS_RESOLVER_URL",
 	"MAILBOX_BYTES",
+	"SEND_PER_DAY",
 ] as const;
 
 /** What local dev loads from .dev.vars: the required secrets, and the optional ones it sets. */

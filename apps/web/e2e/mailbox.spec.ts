@@ -7,7 +7,7 @@ const dnsStandIn = `http://localhost:${(Number(process.env.MAIL_E2E_PORT) || 475
 
 /** A new workspace with a proved domain and a mailbox, "Support", that has an address there. */
 async function supportMailbox(page: Page, request: APIRequestContext, baseURL: string | undefined) {
-	const { slug } = await startWorkspace(page);
+	const { slug, person } = await startWorkspace(page);
 	// Unique even for tests that start in the same millisecond: a domain two workspaces prove is
 	// the later one's, and the first test would find it gone.
 	const domain = `${unique("inbox")}.example.com`;
@@ -51,7 +51,7 @@ async function supportMailbox(page: Page, request: APIRequestContext, baseURL: s
 		);
 		expect(answer.status()).toBe(200);
 	};
-	return { slug, mailboxId: box?.id ?? "", to, deliver };
+	return { slug, person, mailboxId: box?.id ?? "", to, deliver };
 }
 
 test("mail that arrives at an address shows in its mailbox, and opens as text", async ({
@@ -161,6 +161,69 @@ test("mail that arrives at an address shows in its mailbox, and opens as text", 
 	await expect(page).toHaveURL(`/${slug}/mailboxes/${mailboxId}`);
 	await expect(threads.getByRole("link", { name: /Your order has shipped/ })).toBeVisible();
 	await expect(threads.getByRole("link", { name: /My order hasn't come/ })).toHaveCount(0);
+});
+
+test("a reply and a new message go from the mailbox, and their copies show in its threads", async ({
+	page,
+	request,
+	baseURL,
+}) => {
+	const { slug, person, mailboxId, to, deliver } = await supportMailbox(page, request, baseURL);
+	await deliver("customer@example.org", [
+		"From: A Customer <customer@example.org>",
+		`To: ${to}`,
+		"Subject: Where is my parcel?",
+		`Message-ID: <${Date.now()}.parcel@example.org>`,
+		"",
+		"It hasn't come.",
+		"",
+	]);
+
+	await page.goto(`/${slug}/mailboxes/${mailboxId}`);
+	await waitForHydration(page);
+	await page.getByRole("link", { name: /Where is my parcel\?/ }).click();
+	await expect(page.getByRole("heading", { level: 1, name: "Where is my parcel?" })).toBeVisible();
+
+	// A reply starts from the message it answers: to its sender, from the address it came to,
+	// quoting it.
+	await page.getByRole("button", { name: "Reply" }).click();
+	const reply = page.getByRole("region", { name: "Reply" });
+	await expect(reply.getByText(to, { exact: true })).toBeVisible();
+	await expect(reply.getByLabel("To")).toHaveValue("customer@example.org");
+	await expect(reply.getByLabel("Subject")).toHaveValue("Re: Where is my parcel?");
+	const text = reply.getByLabel("Message");
+	await expect(text).toHaveValue(/wrote:\n> It hasn't come\.$/);
+	await text.focus();
+	await text.press("Control+Home");
+	await text.pressSequentially("It left on Monday.");
+	await reply.getByRole("button", { name: "Send" }).click();
+
+	// Its copy is the thread's newest message, open, and says who wrote it. The focus is back on
+	// Reply.
+	await expect(reply.getByRole("status")).toHaveText("Your reply is sent.");
+	await expect(page.getByText("2 messages", { exact: true })).toBeVisible();
+	const thread = page.getByRole("list", { name: "Messages in this thread" });
+	const copy = thread.getByRole("article", { name: /Support/ });
+	await expect(copy.getByText("Sent", { exact: true })).toBeVisible();
+	await expect(copy.getByText(/^It left on Monday\./)).toBeVisible();
+	await expect(copy.getByText(`Written in this mailbox by ${person.name}.`)).toBeVisible();
+	await expect(reply.getByRole("button", { name: "Reply" })).toBeFocused();
+
+	// A new message, written from the mailbox's page, opens its own thread once sent.
+	await page.getByRole("link", { name: "Support" }).click();
+	await page.getByRole("button", { name: "Write" }).click();
+	const dialog = page.getByRole("dialog", { name: "New message" });
+	await dialog.getByLabel("To").fill("someone@example.net");
+	await dialog.getByLabel("Subject").fill("A note from support");
+	await dialog.getByRole("button", { name: "Send" }).click();
+	await expect(dialog.getByRole("alert")).toHaveText("Write something to send.");
+	await dialog.getByLabel("Message").fill("Just saying hello.");
+	await dialog.getByRole("button", { name: "Send" }).click();
+	await expect(page.getByRole("heading", { level: 1, name: "A note from support" })).toBeVisible();
+	await expect(
+		thread.getByRole("article", { name: /Support/ }).getByText("Sent", { exact: true }),
+	).toBeVisible();
+	await expect(thread.getByText("Just saying hello.")).toBeVisible();
 });
 
 test("a long thread pages from its newest messages", async ({ page, request, baseURL }) => {

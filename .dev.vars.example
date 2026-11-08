@@ -23,6 +23,10 @@ BETTER_AUTH_SECRET=
 # In local dev nothing is sent: each email is printed in the terminal and saved to a file.
 # EMAIL_FROM=
 
+# Optional: how many messages one workspace may send from its mailboxes a day. 200 when unset.
+# Mail people write in local dev isn't sent either: it is printed and saved the same way.
+# SEND_PER_DAY=
+
 # Optional: the addresses of your legal pages, linked from the sign-in pages and the workspace menu.
 # Nothing is linked when they are unset.
 # LEGAL_NOTICE_URL=

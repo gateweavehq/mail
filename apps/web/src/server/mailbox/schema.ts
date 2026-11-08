@@ -109,6 +109,33 @@ CREATE TRIGGER message_search_gone AFTER DELETE ON message WHEN old.search_id IS
 END;
 `;
 
+// Sending. What the mailbox sends is a message like any other, stored at once with the member who
+// sent it, and `outgoing` follows it to Email Service: sending, waiting to try again, sent, refused,
+// or uncertain when it may or may not have gone. `request` is what Email Service is given, so a try
+// again sends the same. The row goes with its message.
+const VERSION_4 = `
+ALTER TABLE message ADD COLUMN sent_by TEXT;
+CREATE TABLE outgoing (
+	message TEXT PRIMARY KEY,
+	state TEXT NOT NULL CHECK (
+		state IN ('sending', 'waiting', 'sent', 'refused', 'uncertain', 'discarded')
+	),
+	request TEXT NOT NULL,
+	attempts INTEGER NOT NULL DEFAULT 0,
+	attempted_at INTEGER,
+	next_at INTEGER,
+	code TEXT,
+	provider_id TEXT,
+	sent_at INTEGER,
+	draft TEXT
+) STRICT;
+CREATE INDEX outgoing_due ON outgoing (state, next_at);
+CREATE UNIQUE INDEX outgoing_draft ON outgoing (draft);
+CREATE TRIGGER outgoing_gone AFTER DELETE ON message BEGIN
+	DELETE FROM outgoing WHERE message = old.id;
+END;
+`;
+
 /** Each brings the schema from the version before it. Append only: objects keep what they ran. */
 export const MIGRATIONS: ((sql: SqlStorage) => void)[] = [
 	(sql) => sql.exec(VERSION_1),
@@ -131,6 +158,7 @@ export const MIGRATIONS: ((sql: SqlStorage) => void)[] = [
 		}
 	},
 	(sql) => sql.exec(VERSION_3),
+	(sql) => sql.exec(VERSION_4),
 ];
 
 /** What migrating needs of a Durable Object's storage. */

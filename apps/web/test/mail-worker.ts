@@ -18,12 +18,15 @@ export interface WorkerLog {
 }
 
 /** What Mail handed to its email binding. */
+/** What the `EMAIL` binding was asked to send: account email, or mail from a mailbox. */
 export interface SentEmail {
 	from: string | { name: string; email: string };
-	to: string;
+	to: string | string[];
+	cc?: string[];
 	subject: string;
 	text: string;
-	html: string;
+	html?: string;
+	headers?: Record<string, string>;
 }
 
 /** What tests do with the bucket raw mail goes to. */
@@ -54,12 +57,32 @@ export default {
 `;
 
 // Stands in for Cloudflare Email Service behind the EMAIL binding: `send` keeps each message,
-// and a fetch lists them.
+// and a fetch lists them. A recipient's address can ask for a failure, as Email Service's would:
+// "refuse-E_CODE@" is refused with that code; "busy-N@", "daily-N@" and "lost-N@" fail N times,
+// busy, out of quota or with no code at all, then go.
 const OUTBOX = `
 import { WorkerEntrypoint } from "cloudflare:workers";
 const sent = [];
+const tries = new Map();
+function failure(address) {
+	const local = address.slice(0, address.indexOf("@"));
+	const refused = /^refuse-(E_[A-Z_]+)$/.exec(local);
+	if (refused) return new Error(refused[1] + ": refused for the test");
+	const failing = /^(busy|daily|lost)-(\\d+)$/.exec(local);
+	if (!failing) return null;
+	const count = (tries.get(address) ?? 0) + 1;
+	tries.set(address, count);
+	if (count > Number(failing[2])) return null;
+	if (failing[1] === "lost") return new Error("The connection went away");
+	return new Error((failing[1] === "busy" ? "E_RATE_LIMIT_EXCEEDED" : "E_DAILY_LIMIT_EXCEEDED") + ": try later");
+}
 export default class Outbox extends WorkerEntrypoint {
 	async send(message) {
+		const recipients = [message.to, message.cc ?? []].flat();
+		for (const address of recipients) {
+			const error = failure(address);
+			if (error) throw error;
+		}
 		sent.push(message);
 		return { messageId: crypto.randomUUID() };
 	}
