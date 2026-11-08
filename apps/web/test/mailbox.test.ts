@@ -483,7 +483,7 @@ describe("who can read a mailbox", () => {
 		expect((await directory(box.slug, owner.headers)).mailboxes).toEqual([
 			expect.objectContaining({
 				id: box.mailboxId,
-				access: { everyone: false, memberIds: [], agentIds: [] },
+				access: { everyone: false, memberIds: [], agentIds: [], senderIds: [] },
 			}),
 		]);
 	});
@@ -502,7 +502,12 @@ describe("who can read a mailbox", () => {
 		// Who else reads it is for those who can change it.
 		expect(theirs[0]?.access).toBeNull();
 		const [seen] = (await directory(box.slug, owner.headers)).mailboxes;
-		expect(seen?.access).toEqual({ everyone: false, memberIds: [reader.memberId], agentIds: [] });
+		expect(seen?.access).toEqual({
+			everyone: false,
+			memberIds: [reader.memberId],
+			agentIds: [],
+			senderIds: [],
+		});
 
 		await giveAccess(box, { memberIds: [other.memberId] });
 		expect(await reach(box, reader)).toEqual(hidden);
@@ -514,7 +519,7 @@ describe("who can read a mailbox", () => {
 			.bind(other.memberId)
 			.run();
 		const [after] = (await directory(box.slug, owner.headers)).mailboxes;
-		expect(after?.access).toEqual({ everyone: false, memberIds: [], agentIds: [] });
+		expect(after?.access).toEqual({ everyone: false, memberIds: [], agentIds: [], senderIds: [] });
 		expect(await reach(box, other)).toEqual(opened);
 	});
 
@@ -552,6 +557,7 @@ describe("who can read a mailbox", () => {
 			everyone: true,
 			memberIds: [unknown.memberId],
 			agentIds: [agent.memberId],
+			senderIds: [],
 		});
 	});
 
@@ -610,7 +616,7 @@ describe("who can read a mailbox", () => {
 			expect(refused.status).toBe(409);
 		}
 		const [seen] = (await directory(box.slug, owner.headers)).mailboxes;
-		expect(seen?.access).toEqual({ everyone: false, memberIds: [], agentIds: [] });
+		expect(seen?.access).toEqual({ everyone: false, memberIds: [], agentIds: [], senderIds: [] });
 
 		// However a grant comes to be written, the database holds to it too.
 		await expect(
@@ -736,7 +742,12 @@ describe("an agent", () => {
 		const seen = (await directory(box.slug, owner.headers)).mailboxes.find(
 			(m) => m.id === box.mailboxId,
 		);
-		expect(seen?.access).toEqual({ everyone: true, memberIds: [], agentIds: [agent.memberId] });
+		expect(seen?.access).toEqual({
+			everyone: true,
+			memberIds: [],
+			agentIds: [agent.memberId],
+			senderIds: [],
+		});
 	});
 
 	it("is turned away with a key that doesn't work, whatever cookies come with it", async () => {

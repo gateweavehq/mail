@@ -33,6 +33,26 @@ describe("take", () => {
 		expect(decisions.at(-1)?.allowed).toBe(true);
 	});
 
+	it("keeps a named rule's use when its max changes", () => {
+		let allowance: Allowance = {};
+		const one = (max: number, name?: string) => {
+			const result = take(allowance, [{ window: 10, max, ...(name ? { name } : {}) }], 0);
+			allowance = result.allowance;
+			return result.decision.allowed;
+		};
+		expect([one(3, "day"), one(3, "day"), one(3, "day"), one(3, "day")]).toEqual([
+			true,
+			true,
+			true,
+			false,
+		]);
+		// Set lower, or higher, the window isn't new: what was used still counts.
+		expect(one(1, "day")).toBe(false);
+		expect(one(5, "day")).toBe(false);
+		// A rule without a name is another rule once its numbers change.
+		expect(one(5)).toBe(true);
+	});
+
 	it("refills completely after a quiet window", () => {
 		const decisions = run([threePerTen], [0, 0, 0, 10, 10, 10, 10]);
 		expect(decisions.map((d) => d.allowed)).toEqual([true, true, true, true, true, true, false]);

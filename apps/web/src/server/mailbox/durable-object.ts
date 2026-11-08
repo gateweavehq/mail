@@ -85,10 +85,24 @@ export interface Sending {
 	request: EmailMessageBuilder;
 	/** The draft's own id, which makes a second send of it the first one's. */
 	draft: string;
+	/**
+	 * Whether it waits for a person to approve it before anything is sent, as an agent's mail to
+	 * someone it isn't allowed to write to does.
+	 */
+	hold: boolean;
 }
 
 /** The states a person may discard a message the mailbox sent from. */
-const DISCARDABLE = new Set(["refused", "uncertain", "waiting", "discarded"]);
+const DISCARDABLE = new Set(["held", "refused", "uncertain", "waiting", "discarded"]);
+
+/** A message waiting for a person to approve it, as the mailbox's page lists it. */
+export type Awaiting = {
+	id: string;
+	threadId: string;
+	subject: string | null;
+	sentBy: string | null;
+	arrivedAt: number;
+};
 
 export type Sent =
 	| ({ ok: true; id: string; threadId: string } & SendStatus)
@@ -112,6 +126,8 @@ export type StoredSummary = {
 	sentBy: string | null;
 	/** For a message the mailbox sent, its `SendStatus` as JSON. */
 	sending: string | null;
+	/** For a message that waited for approval, the membership of whoever approved it. */
+	approvedBy: string | null;
 };
 
 export type StoredMessage = StoredSummary & {
@@ -165,7 +181,8 @@ export interface ThreadMessages {
 const SUMMARY = `id, thread_id AS threadId, arrived_at AS arrivedAt, size, from_header AS "from",
 	subject, date_header AS date, dmarc, verified_domain AS verifiedDomain, sent_by AS sentBy,
 	(SELECT json_object('state', state, 'code', code, 'nextAt', next_at) FROM outgoing
-		WHERE outgoing.message = message.id) AS sending`;
+		WHERE outgoing.message = message.id) AS sending,
+	(SELECT approved_by FROM outgoing WHERE outgoing.message = message.id) AS approvedBy`;
 
 /**
  * One mailbox: its messages' index in SQLite, their raw mail in R2 under
@@ -359,9 +376,10 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 	}
 
 	/**
-	 * Sends a message a person wrote. Its copy is stored first, in its thread, as mail that arrives
-	 * is, and then Email Service is asked to send it; the answer says what became of it. The copy
-	 * counts against the mailbox's space, so a full mailbox sends nothing.
+	 * Sends a message a person or an agent wrote. Its copy is stored first, in its thread, as mail
+	 * that arrives is, and then Email Service is asked to send it; the answer says what became of
+	 * it. One to `hold` is only stored, until a person approves it. The copy counts against the
+	 * mailbox's space, so a full mailbox sends nothing.
 	 */
 	async send(sending: Sending): Promise<Sent> {
 		const sql = this.ctx.storage.sql;
@@ -400,13 +418,15 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			for (const ref of sending.references.slice(-MAX_REFERENCES)) {
 				sql.exec("INSERT OR IGNORE INTO message_reference (message, ref) VALUES (?, ?)", id, ref);
 			}
-			// Not tried yet: should nothing try it, the alarm finds it waiting after a while.
+			// Not tried yet: should nothing try it, the alarm finds it waiting after a while. One held
+			// for approval is left alone by the alarm.
 			sql.exec(
 				`INSERT INTO outgoing (message, state, request, attempted_at, draft)
-				VALUES (?, 'sending', ?, ?, ?)`,
+				VALUES (?, ?, ?, ?, ?)`,
 				id,
+				sending.hold ? "held" : "sending",
 				JSON.stringify(sending.request),
-				Date.now(),
+				sending.hold ? null : Date.now(),
 				sending.draft,
 			);
 		});
@@ -417,7 +437,39 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			.exec<{ threadId: string }>("SELECT thread_id AS threadId FROM message WHERE id = ?", id)
 			.one().threadId;
 		await this.#indexSoon();
+		if (sending.hold) return { ok: true, id, threadId, ...this.#status(id) };
 		return { ok: true, id, threadId, ...((await this.#tryNow(id, "first")) ?? this.#status(id)) };
+	}
+
+	/**
+	 * Sends a message that waited for approval, once, as approved by this membership. Null when
+	 * there is no such message here, or it isn't waiting, as when someone approved or rejected it
+	 * first.
+	 */
+	async approve(id: string, approvedBy: string): Promise<SendStatus | null> {
+		return this.#tryNow(id, "approve", approvedBy);
+	}
+
+	/** The messages waiting for approval, the oldest first, with how many there are. */
+	awaiting(limit: number): { count: number; messages: Awaiting[] } {
+		const sql = this.ctx.storage.sql;
+		const count = sql
+			.exec<{ n: number }>(
+				`SELECT count(*) AS n FROM outgoing JOIN message ON message.id = outgoing.message
+				WHERE outgoing.state = 'held' AND message.state = 'stored'`,
+			)
+			.one().n;
+		const messages = sql
+			.exec<Awaiting>(
+				`SELECT message.id AS id, message.thread_id AS threadId, message.subject AS subject,
+					message.sent_by AS sentBy, message.arrived_at AS arrivedAt
+				FROM outgoing JOIN message ON message.id = outgoing.message
+				WHERE outgoing.state = 'held' AND message.state = 'stored'
+				ORDER BY message.arrived_at, message.id LIMIT ?`,
+				limit,
+			)
+			.toArray();
+		return { count, messages };
 	}
 
 	/**
@@ -448,15 +500,18 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 	}
 
 	/**
-	 * Deletes a message that isn't sent, whether refused, uncertain or waiting to be tried again, or
-	 * discarded already when deleting its copy failed. False when there is no such message here, or
+	 * Deletes a message that isn't sent, whether held for approval, refused, uncertain or waiting to
+	 * be tried again, or discarded already when deleting its copy failed. With `onlyHeld`, only one
+	 * held for approval, for someone who may reject it but not discard others' mail. False when there is no such message here, or
 	 * it is sent or being sent.
 	 */
-	async discard(id: string): Promise<boolean> {
+	async discard(id: string, onlyHeld = false): Promise<boolean> {
 		const row = this.ctx.storage.sql
 			.exec<{ state: string }>("SELECT state FROM outgoing WHERE message = ?", id)
 			.toArray()[0];
 		if (!row || !DISCARDABLE.has(row.state)) return false;
+		// Checked here, with nothing awaited before it's marked: one approved meanwhile isn't held.
+		if (onlyHeld && row.state !== "held") return false;
 		return this.remove(id);
 	}
 
@@ -470,22 +525,30 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 	 * message, the alarm's of one that waits, or a person's of one refused or uncertain. A message
 	 * discarded, deleted or tried by someone else meanwhile isn't sent, and the answer is null.
 	 */
-	async #tryNow(id: string, from: "first" | "due" | "again"): Promise<SendStatus | null> {
+	async #tryNow(
+		id: string,
+		from: "first" | "due" | "again" | "approve",
+		approvedBy: string | null = null,
+	): Promise<SendStatus | null> {
 		const sql = this.ctx.storage.sql;
 		const now = Date.now();
 		const found = {
 			first: "state = 'sending' AND attempts = 0",
 			due: "state = 'waiting'",
 			again: "state IN ('refused', 'uncertain')",
+			approve: "state = 'held'",
 		}[from];
 		const row = sql
 			.exec<{ request: string; attempts: number }>(
 				`UPDATE outgoing SET state = 'sending', attempted_at = ?, next_at = NULL,
-					attempts = CASE WHEN ? THEN 1 ELSE attempts + 1 END
+					attempts = CASE WHEN ? THEN 1 ELSE attempts + 1 END,
+					approved_by = coalesce(?, approved_by), approved_at = coalesce(?, approved_at)
 				WHERE message = ? AND ${found}
 				RETURNING request, attempts`,
 				now,
-				from === "again" ? 1 : 0,
+				from === "again" || from === "approve" ? 1 : 0,
+				approvedBy,
+				approvedBy === null ? null : now,
 				id,
 			)
 			.toArray()[0];
@@ -734,10 +797,10 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			.toArray()[0];
 		if (!row) return false;
 		// One that isn't sent is discarded before anything is awaited, a state no try starts from:
-		// the alarm, or a person's Send again, could otherwise send it while its copy is deleted.
+		// the alarm, a person's Send again or an approval could otherwise send it while its copy goes.
 		sql.exec(
 			`UPDATE outgoing SET state = 'discarded', next_at = NULL
-			WHERE message = ? AND state IN ('waiting', 'refused', 'uncertain')`,
+			WHERE message = ? AND state IN ('held', 'waiting', 'refused', 'uncertain')`,
 			id,
 		);
 		await this.env.RAW_MAIL.delete(row.object);

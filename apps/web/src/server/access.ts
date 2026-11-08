@@ -22,15 +22,23 @@ export interface Caller {
 }
 
 /**
- * The caller for what an agent may also do: reading the mailboxes it was given, and listing them.
- * A request with a bearer token is an agent's, whatever cookies come with it: a key that doesn't
- * work is turned away, never tried as someone's session instead. A key works only in the workspace
- * it was made for. Another scheme, such as Basic auth from a proxy in front of the app, carries no
- * key, so the session decides. Changes stay with `currentMember`, for people.
+ * Whether a request carries a bearer token, which makes it an agent's, whatever cookies come with
+ * it. Another scheme, such as Basic auth from a proxy in front of the app, carries no key.
+ */
+export const bearsKey = (headers: Headers) =>
+	/^bearer(\s|$)/i.test(headers.get("authorization")?.trim() ?? "");
+
+/**
+ * The caller for what an agent may also do: reading the mailboxes it was given, listing them, and
+ * sending from those that let it. A request with a bearer token is an agent's (`bearsKey`): a key
+ * that doesn't work is turned away, never tried as someone's session instead. A key works only in
+ * the workspace it was made for. Without one, the session decides. Other changes stay with
+ * `currentMember`, for people.
  */
 export async function currentCaller(slug: string): Promise<Caller | null> {
-	const authorization = getRequestHeaders().get("authorization")?.trim() ?? "";
-	if (!/^bearer(\s|$)/i.test(authorization)) {
+	const headers = getRequestHeaders();
+	const authorization = headers.get("authorization")?.trim() ?? "";
+	if (!bearsKey(headers)) {
 		const member = await currentMember(slug);
 		return member && { userId: member.user.id, membership: member.membership };
 	}

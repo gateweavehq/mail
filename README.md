@@ -57,12 +57,15 @@ tools that run on Cloudflare, next to [Gateweave Track](https://github.com/gatew
   discarded, and one that may have gone is never sent twice by itself.
 - **Agents.** An admin makes an agent for an AI agent and gives it a key. It reads, through the
   API, only the mailboxes it is given; opening a mailbox to everyone doesn't open it to agents.
+  A mailbox can let an agent send too. Mail to the addresses and domains its settings name goes
+  on its own; the rest waits for someone who reads the mailbox to approve or reject it. Each
+  agent has a daily limit of its own.
 
 ## What it is planned to become
 
 None of this exists yet; it is the direction, and it may change.
 
-- Agents that act on mail as well as read it, and send with an admin's approval.
+- Agents that act on mail as well as read and send it, such as filing or labelling it.
 - Formatting, attachments, forwarding and replying to all when writing.
 - Addresses an agent can make for itself.
 - Aliases that point at a mailbox.

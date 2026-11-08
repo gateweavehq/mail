@@ -192,7 +192,9 @@ Mailboxes send through the same binding, from their own addresses, whether `EMAI
 not. Onboard each domain whose addresses should send the same way. Until it is, a message from it
 is refused, and its copy in the thread says why. A workspace sends up to 200 messages a day, which
 `SEND_PER_DAY` changes; Email Service has limits of its own for the account, and won't send to an
-address that bounced or complained before.
+address that bounced or complained before. An agent also has a day's count of its own, which an
+owner or admin sets on the Agents page, and mail it writes that waits for approval counts against
+the workspace's day only once it is approved.
 
 As you hold the database, you can do it for them, from the repository root. Find their `id` in this
 list. Don't paste an address someone sent you into a command, as it could run as part of it:

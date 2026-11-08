@@ -1,7 +1,17 @@
 import type { OutboxAction } from "#/server/mailbox/send";
 
-/** What became of a message the mailbox sends, as far as Mail knows. */
-export type SendState = "sending" | "waiting" | "sent" | "refused" | "uncertain" | "discarded";
+/**
+ * What became of a message the mailbox sends, as far as Mail knows. One an agent wrote is `held`
+ * until a person approves it, unless its policy lets it go as it is.
+ */
+export type SendState =
+	| "held"
+	| "sending"
+	| "waiting"
+	| "sent"
+	| "refused"
+	| "uncertain"
+	| "discarded";
 
 // A type, not an interface, so that SQLite's rows can be read as it.
 export type SendStatus = {

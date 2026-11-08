@@ -2,7 +2,7 @@ import { and, asc, count, eq, gt, inArray, isNotNull, isNull, or, sql } from "dr
 import { parseDomainName, parseLocalPart, splitRecipient } from "../../lib/addresses";
 import type { Directory, MailRoute } from "../../lib/directory";
 import { canReadMailbox, isAdminRole, type MemberRole } from "../../lib/roles";
-import { isAgentMembership } from "../auth/agents";
+import { AGENT_ROLE, isAgentMembership } from "../auth/agents";
 import type { Database } from "../db";
 import { schema } from "../db";
 import { toRole } from "../workspaces";
@@ -78,13 +78,19 @@ export async function findAddress(db: Database, recipient: string, now: Date) {
 	return found ?? null;
 }
 
-/** Who reads a mailbox besides owners and admins: people and agents apart, as they are chosen. */
-function accessOf(everyone: boolean, grants: { memberId: string; role: string }[]) {
+/**
+ * Who reads a mailbox besides owners and admins, people and agents apart, as they are chosen, and
+ * the agents that may send from it too.
+ */
+function accessOf(everyone: boolean, grants: { memberId: string; role: string; send: boolean }[]) {
 	const ids = (agents: boolean) =>
 		grants
 			.filter((grant) => isAgentMembership(grant.role) === agents)
 			.map((grant) => grant.memberId);
-	return { everyone, memberIds: ids(false), agentIds: ids(true) };
+	const senderIds = grants
+		.filter((grant) => grant.send && isAgentMembership(grant.role))
+		.map((grant) => grant.memberId);
+	return { everyone, memberIds: ids(false), agentIds: ids(true), senderIds };
 }
 
 /** Who is asking, for what they may see. */
@@ -145,6 +151,7 @@ export async function listDirectory(
 						mailboxId: mailboxAccess.mailboxId,
 						memberId: mailboxAccess.memberId,
 						role: member.role,
+						send: mailboxAccess.send,
 					})
 					.from(mailboxAccess)
 					.innerJoin(mailbox, eq(mailbox.id, mailboxAccess.mailboxId))
@@ -316,6 +323,8 @@ export interface MailboxAccessChange {
 	everyone: boolean;
 	/** Every membership that may read it from now on, besides owners and admins. */
 	memberIds: string[];
+	/** Those of them that may send from it too: agents, as people who read a mailbox send anyway. */
+	senderIds: string[];
 }
 
 /**
@@ -332,6 +341,10 @@ export async function setMailboxAccess(
 	const ids = [...new Set(change.memberIds)];
 	if (ids.length > MAX_MAILBOX_READERS) {
 		return refuse(`A mailbox can be given to ${MAX_MAILBOX_READERS} people at most.`);
+	}
+	const senders = [...new Set(change.senderIds)];
+	if (senders.some((id) => !ids.includes(id))) {
+		return refuse("Only someone given the mailbox can be let send from it.");
 	}
 	const box = await db
 		.select({ id: mailbox.id })
@@ -361,10 +374,19 @@ export async function setMailboxAccess(
 		db
 			.insert(mailboxAccess)
 			.select(
-				sql`SELECT ${box.id}, ${member.id}, ${grantedBy}, ${Date.now()} FROM ${member}
+				sql`SELECT ${box.id}, ${member.id}, ${grantedBy}, ${Date.now()}, 0 FROM ${member}
 					WHERE ${member.organizationId} = ${workspaceId} AND ${member.id} IN ${chosen}`,
 			)
 			.onConflictDoNothing(),
+		// Only an agent may be let send: a person who reads a mailbox sends from it anyway.
+		db
+			.update(mailboxAccess)
+			.set({
+				send: sql`${mailboxAccess.memberId} IN (SELECT value FROM json_each(${JSON.stringify(senders)}))
+					AND EXISTS (SELECT 1 FROM ${member} WHERE ${member.id} = ${mailboxAccess.memberId}
+						AND ${member.role} = ${AGENT_ROLE})`,
+			})
+			.where(eq(mailboxAccess.mailboxId, box.id)),
 	]);
 	return { ok: true };
 }

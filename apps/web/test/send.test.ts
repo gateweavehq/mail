@@ -49,7 +49,11 @@ interface ThreadPage {
 	messages: {
 		id: string;
 		from: { name: string; address: string } | null;
-		sent: { by: string | null; status: Status | null } | null;
+		sent: {
+			by: string | null;
+			status: Status | null;
+			approval: { by: string | null } | null;
+		} | null;
 	}[];
 	latest: {
 		id: string;
@@ -69,7 +73,7 @@ async function directory(slug: string, headers: Record<string, string>, action?:
 		ok?: boolean;
 		proved?: boolean;
 		domains: { id: string; proof: { value: string } | null }[];
-		mailboxes: { id: string; name: string }[];
+		mailboxes: { id: string; name: string; access?: { senderIds: string[] } | null }[];
 	};
 }
 
@@ -178,6 +182,76 @@ async function sentTo(address: string): Promise<SentEmail[]> {
 	return (await mail.emails()).filter((email) =>
 		[email.to, email.cc ?? []].flat().includes(address),
 	);
+}
+
+/** An agent of the workspace, with its key, as its owner makes it in settings. */
+async function makeAgent(box: Box, name = "Sorter") {
+	const response = await auth("/agents/create", { organizationId: box.workspaceId, name });
+	expect(response.status).toBe(200);
+	const { agent, key } = (await response.json()) as {
+		agent: { id: string; memberId: string };
+		key: string;
+	};
+	return { ...agent, name, headers: { authorization: `Bearer ${key}` } };
+}
+
+type Agent = Awaited<ReturnType<typeof makeAgent>>;
+
+/** Asks Better Auth's agents plugin, as the owner unless someone else asks. */
+function auth(path: string, body: unknown, person: Asker = owner) {
+	return mail.fetch(`${origin}/api/auth${path}`, {
+		method: "POST",
+		headers: { ...person.headers, origin, "content-type": "application/json" },
+		body: JSON.stringify(body),
+	});
+}
+
+/** Gives the mailbox to these, and lets these agents among them send from it. */
+async function letSend(box: Box, memberIds: string[], senderIds: string[]) {
+	return mail.fetch(`${origin}/api/directory/${box.slug}`, {
+		method: "POST",
+		headers: { ...owner.headers, origin, "content-type": "application/json" },
+		body: JSON.stringify({
+			action: "set-mailbox-access",
+			mailboxId: box.mailboxId,
+			everyone: false,
+			memberIds,
+			senderIds,
+		}),
+	});
+}
+
+/** An agent's message, as it sends it with its key: the same route, from no page. */
+async function agentSends(box: Box, agent: Agent, to: string[], cc: string[] = []) {
+	const response = await mail.fetch(`${origin}/api/mail/${box.slug}/${box.mailboxId}/outbox`, {
+		method: "POST",
+		headers: { ...agent.headers, "content-type": "application/json" },
+		body: JSON.stringify({
+			action: "send",
+			draft: crypto.randomUUID(),
+			to,
+			cc,
+			subject: `Update ${++counter}`,
+			text: "Your order shipped.",
+		}),
+	});
+	return response;
+}
+
+/** What waits for approval in the mailbox, as its page lists it. */
+async function awaiting(box: Box, person: Asker = owner) {
+	const response = await mail.fetch(`${origin}/api/mail/${box.slug}/${box.mailboxId}/threads`, {
+		headers: person.headers,
+	});
+	expect(response.status).toBe(200);
+	return (
+		(await response.json()) as {
+			awaiting: {
+				count: number;
+				messages: { id: string; threadId: string; subject: string; by: string | null }[];
+			} | null;
+		}
+	).awaiting;
 }
 
 /** Someone new in the workspace, with this role, and the id of their membership. */
@@ -458,21 +532,16 @@ describe("who may send", () => {
 		expect((await outbox(box, owner, draft, { origin: "https://elsewhere.test" })).status).toBe(
 			403,
 		);
-		// Nor with an agent's key, given the mailbox or not: keys read and never send.
-		const made = await mail.fetch(`${origin}/api/auth/agents/create`, {
-			method: "POST",
-			headers: { ...owner.headers, origin, "content-type": "application/json" },
-			body: JSON.stringify({ organizationId: box.workspaceId, name: "Sorter" }),
-		});
-		const { agent, key } = (await made.json()) as { agent: { memberId: string }; key: string };
+		// Nor with the key of an agent not given the mailbox, or given it only to read.
+		const agent = await makeAgent(box);
+		expect((await outbox(box, agent, draft)).status).toBe(404);
 		await directory(box.slug, owner.headers, {
 			action: "set-mailbox-access",
 			mailboxId: box.mailboxId,
 			everyone: false,
 			memberIds: [reader.memberId, agent.memberId],
 		});
-		const agentAsks = await outbox(box, { headers: { authorization: `Bearer ${key}` } }, draft);
-		expect(agentAsks.status).toBe(404);
+		expect((await outbox(box, agent, draft)).status).toBe(403);
 		expect(await sentTo(recipient)).toHaveLength(1);
 	});
 
@@ -591,5 +660,209 @@ describe("what is written", () => {
 		// Another workspace has its own.
 		const other = await mailboxWithAddress();
 		expect((await send(other, { to: ["one-more@example.org"] })).state).toBe("sent");
+	});
+});
+
+describe("an agent", () => {
+	it("sends only from a mailbox that lets it, and only agents are let", async () => {
+		const box = await mailboxWithAddress();
+		const agent = await makeAgent(box);
+		const person = await join(box.workspaceId);
+		const recipient = `ada.${box.slug}@example.org`;
+		// Only someone given the mailbox can be let send from it.
+		expect((await letSend(box, [], [agent.memberId])).status).toBe(400);
+		expect((await letSend(box, [agent.memberId], [])).status).toBe(200);
+		expect((await agentSends(box, agent, [recipient])).status).toBe(403);
+
+		// A person who reads a mailbox sends anyway, so only the agent's grant says it may.
+		expect(
+			(await letSend(box, [agent.memberId, person.memberId], [agent.memberId, person.memberId]))
+				.status,
+		).toBe(200);
+		const [seen] = (await directory(box.slug, owner.headers)).mailboxes;
+		expect(seen?.access?.senderIds).toEqual([agent.memberId]);
+		expect((await agentSends(box, agent, [recipient])).status).toBe(200);
+		// Taking the mailbox away takes sending with it.
+		expect((await letSend(box, [], [])).status).toBe(200);
+		expect((await agentSends(box, agent, [recipient])).status).toBe(404);
+	});
+
+	it("waits for a person to approve what it writes, unless its policy lets it go", async () => {
+		const box = await mailboxWithAddress();
+		const agent = await makeAgent(box);
+		const reader = await join(box.workspaceId);
+		await letSend(box, [agent.memberId, reader.memberId], [agent.memberId]);
+		const recipient = `ada.${box.slug}@example.org`;
+
+		const written = await agentSends(box, agent, [recipient]);
+		expect(written.status).toBe(200);
+		const held = (await written.json()) as Sent;
+		expect(held).toMatchObject({ state: "held", code: null, nextAt: null });
+		expect(await sentTo(recipient)).toEqual([]);
+		const [message] = (await thread(box, held.threadId)).messages;
+		expect(message?.sent).toEqual({
+			by: agent.name,
+			mine: false,
+			status: { state: "held", code: null, nextAt: null },
+			approval: null,
+		});
+		expect(await awaiting(box, reader)).toEqual({
+			count: 1,
+			messages: [expect.objectContaining({ id: held.id, threadId: held.threadId, by: agent.name })],
+		});
+
+		// The agent can't approve its own mail, nor do anything else to it.
+		for (const action of ["approve", "discard", "send-again"]) {
+			expect((await outbox(box, agent, { action, message: held.id })).status).toBe(403);
+		}
+
+		// Anyone who reads the mailbox can, and it is sent then, once.
+		const approved = await outbox(box, reader, { action: "approve", message: held.id });
+		expect(approved.status).toBe(200);
+		expect(await approved.json()).toMatchObject({ ok: true, state: "sent" });
+		expect(await sentTo(recipient)).toHaveLength(1);
+		expect((await outbox(box, reader, { action: "approve", message: held.id })).status).toBe(409);
+		expect(await sentTo(recipient)).toHaveLength(1);
+		const [after] = (await thread(box, held.threadId)).messages;
+		expect(after?.sent?.status?.state).toBe("sent");
+		expect(after?.sent?.approval).toEqual({ by: reader.name });
+		expect(await awaiting(box)).toEqual({ count: 0, messages: [] });
+
+		// To whom its policy allows, it goes on its own, unless anyone else is on it too.
+		const set = await auth("/agents/set-policy", {
+			agentId: agent.id,
+			sendPerDay: 20,
+			allowed: [`@allowed-${box.slug}.example.org`, "Ops@Example.org"],
+		});
+		expect(set.status).toBe(200);
+		const allowed = `someone@allowed-${box.slug}.example.org`;
+		const alone = (await (
+			await agentSends(box, agent, [allowed], ["ops@example.org"])
+		).json()) as Sent;
+		expect(alone.state).toBe("sent");
+		expect((await thread(box, alone.threadId)).messages[0]?.sent?.approval).toBeNull();
+		const mixed = (await (await agentSends(box, agent, [allowed], [recipient])).json()) as Sent;
+		expect(mixed.state).toBe("held");
+		const sub = (await (
+			await agentSends(box, agent, [`a@mail.allowed-${box.slug}.example.org`])
+		).json()) as Sent;
+		expect(sub.state).toBe("held");
+	});
+
+	it("has what waits rejected by anyone who reads the mailbox, and nothing else of theirs", async () => {
+		const box = await mailboxWithAddress();
+		const agent = await makeAgent(box);
+		const reader = await join(box.workspaceId);
+		await letSend(box, [agent.memberId, reader.memberId], [agent.memberId]);
+		// The stand-in refuses it, by its local part, and so never sends it.
+		const recipient = "refuse-E_RECIPIENT_SUPPRESSED@example.org";
+		const held = (await (await agentSends(box, agent, [recipient])).json()) as Sent;
+
+		expect((await outbox(box, reader, { action: "discard", message: held.id })).status).toBe(200);
+		expect((await outbox(box, reader, { action: "approve", message: held.id })).status).toBe(409);
+		expect(await sentTo(recipient)).toEqual([]);
+
+		// One that was approved and refused is no longer theirs to discard, as it isn't waiting.
+		const again = (await (await agentSends(box, agent, [recipient])).json()) as Sent;
+		const tried = await outbox(box, owner, { action: "approve", message: again.id });
+		expect(await tried.json()).toMatchObject({ state: "refused" });
+		expect((await outbox(box, reader, { action: "discard", message: again.id })).status).toBe(403);
+		expect((await outbox(box, owner, { action: "discard", message: again.id })).status).toBe(200);
+	});
+
+	it("writes at most its policy's day, and the workspace's day counts what goes", async () => {
+		const box = await mailboxWithAddress();
+		const agent = await makeAgent(box);
+		await letSend(box, [agent.memberId], [agent.memberId]);
+		const more = SEND_PER_DAY + 1;
+		expect(
+			(await auth("/agents/set-policy", { agentId: agent.id, sendPerDay: more, allowed: [] }))
+				.status,
+		).toBe(200);
+		// Waiting mail doesn't use the workspace's day, so the agent can write more than it sends.
+		const held: Sent[] = [];
+		for (let i = 0; i < more; i++) {
+			const written = await agentSends(box, agent, [`day${i}.${box.slug}@example.org`]);
+			expect(written.status).toBe(200);
+			held.push((await written.json()) as Sent);
+		}
+		const over = await agentSends(box, agent, [`over.${box.slug}@example.org`]);
+		expect(over.status).toBe(429);
+		expect(((await over.json()) as { error: string }).error).toMatch(/^This agent has written/);
+
+		// Approving counts against the workspace, as it goes, and only what waits.
+		const unknown = crypto.randomUUID();
+		for (let i = 0; i < 3; i++) {
+			expect((await outbox(box, owner, { action: "approve", message: unknown })).status).toBe(409);
+		}
+		for (const message of held.slice(0, SEND_PER_DAY)) {
+			const approved = await outbox(box, owner, { action: "approve", message: message.id });
+			expect(approved.status).toBe(200);
+		}
+		const last = held.at(-1);
+		const tooMany = await outbox(box, owner, { action: "approve", message: last?.id });
+		expect(tooMany.status).toBe(429);
+		expect(await awaiting(box)).toMatchObject({ count: 1 });
+
+		// With none a day, it can't send at all.
+		await auth("/agents/set-policy", { agentId: agent.id, sendPerDay: 0, allowed: [] });
+		expect((await agentSends(box, agent, [`none.${box.slug}@example.org`])).status).toBe(403);
+	});
+
+	it("doesn't start its day again when its policy changes", async () => {
+		const box = await mailboxWithAddress();
+		const agent = await makeAgent(box);
+		await letSend(box, [agent.memberId], [agent.memberId]);
+		const policy = (sendPerDay: number) =>
+			auth("/agents/set-policy", { agentId: agent.id, sendPerDay, allowed: [] });
+		expect((await policy(3)).status).toBe(200);
+		expect((await agentSends(box, agent, [`first.${box.slug}@example.org`])).status).toBe(200);
+		// What it wrote at 3 a day is a third of its day, which is all of 1 a day.
+		expect((await policy(1)).status).toBe(200);
+		expect((await agentSends(box, agent, [`second.${box.slug}@example.org`])).status).toBe(429);
+	});
+
+	it("is only a key: a person given the agent's role by hand sends as people do", async () => {
+		const box = await mailboxWithAddress();
+		const person = await join(box.workspaceId, "agent");
+		expect((await letSend(box, [person.memberId], [person.memberId])).status).toBe(200);
+		const sent = await send(box, { to: [`ada.${box.slug}@example.org`] }, person);
+		expect(sent.state).toBe("sent");
+	});
+
+	it("has its policy set only by an owner or admin, and only as it can be read", async () => {
+		const box = await mailboxWithAddress();
+		const agent = await makeAgent(box);
+		const member = await join(box.workspaceId);
+		const policy = { agentId: agent.id, sendPerDay: 5, allowed: ["@acme.test"] };
+		expect((await auth("/agents/set-policy", policy, member)).status).not.toBe(200);
+		expect((await auth("/agents/set-policy", policy, agent)).status).not.toBe(200);
+		for (const wrong of [
+			{ sendPerDay: -1 },
+			{ sendPerDay: 1001 },
+			{ allowed: ["acme.test"] },
+			{ allowed: ["@*.acme.test"] },
+			{ allowed: Array.from({ length: 101 }, (_, i) => `a${i}@acme.test`) },
+		]) {
+			expect((await auth("/agents/set-policy", { ...policy, ...wrong })).status).toBe(400);
+		}
+		const saved = await auth("/agents/set-policy", {
+			...policy,
+			allowed: ["@Acme.test", "b@acme.test", "@acme.test"],
+		});
+		expect(await saved.json()).toEqual({
+			id: agent.id,
+			policy: { sendPerDay: 5, allowed: ["@acme.test", "b@acme.test"] },
+		});
+		const listed = await mail.fetch(
+			`${origin}/api/auth/agents/list?organizationId=${box.workspaceId}`,
+			{ headers: owner.headers },
+		);
+		expect(await listed.json()).toEqual([
+			expect.objectContaining({
+				id: agent.id,
+				policy: { sendPerDay: 5, allowed: ["@acme.test", "b@acme.test"] },
+			}),
+		]);
 	});
 });
