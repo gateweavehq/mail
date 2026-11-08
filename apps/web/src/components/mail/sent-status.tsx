@@ -1,4 +1,4 @@
-import { CircleAlert, Clock, Send } from "lucide-react";
+import { Check, CircleAlert, Clock, Send } from "lucide-react";
 import { useState } from "react";
 import { Button } from "#/components/ui/button";
 import { ConfirmDialog } from "#/components/workspace/confirm-dialog";
@@ -9,6 +9,8 @@ import { canSendAgain, changeOutbox, refusalReason, type SendStatus } from "#/li
 /** A word or two for how a message the mailbox sent went, for its line in a thread. */
 export function sentLabel(status: SendStatus | null): string | null {
 	switch (status?.state) {
+		case "held":
+			return "Waiting for approval";
 		case "sending":
 			return "Sending…";
 		case "sent":
@@ -28,7 +30,8 @@ export function sentLabel(status: SendStatus | null): string | null {
 
 /**
  * What became of a message the mailbox sent, when it isn't simply sent, and what can be done: try
- * again, or discard it, which takes its copy out of the mailbox too.
+ * again, or discard it, which takes its copy out of the mailbox too. What an agent wrote that waits
+ * for approval anyone who reads the mailbox can approve, or reject, which discards it.
  */
 export function SentNotice({
 	workspace,
@@ -54,20 +57,22 @@ export function SentNotice({
 	const [error, setError] = useState<string | null>(null);
 	const admin = isAdminRole(useMyRole());
 	if (!status || status.state === "sent") return null;
+	const held = status.state === "held";
 	const discardable =
 		(mine || admin) &&
 		(canSendAgain(status) || status.state === "waiting" || status.state === "discarded");
 
-	async function sendAgain() {
+	async function change(action: "send-again" | "approve") {
 		setPending(true);
 		setError(null);
-		const result = await changeOutbox(workspace, mailbox, { action: "send-again", message: id });
+		const result = await changeOutbox(workspace, mailbox, { action, message: id });
 		setPending(false);
 		if (result.ok) await onChanged();
 		else setError(result.error);
 	}
 
-	const Icon = status.state === "sending" || status.state === "waiting" ? Clock : CircleAlert;
+	const Icon =
+		held || status.state === "sending" || status.state === "waiting" ? Clock : CircleAlert;
 	return (
 		<div
 			className={`space-y-3 rounded-lg border p-3 text-sm ${
@@ -83,10 +88,26 @@ export function SentNotice({
 					{error}
 				</p>
 			)}
-			{(canSendAgain(status) || discardable) && (
+			{held && (
+				<div className="flex flex-wrap gap-2">
+					<Button size="sm" onClick={() => change("approve")} disabled={pending}>
+						<Check aria-hidden />
+						{pending ? "Sending…" : "Approve and send"}
+					</Button>
+					<Button size="sm" variant="ghost" onClick={() => setAsking(true)} disabled={pending}>
+						Reject
+					</Button>
+				</div>
+			)}
+			{!held && (canSendAgain(status) || discardable) && (
 				<div className="flex flex-wrap gap-2">
 					{canSendAgain(status) && (
-						<Button size="sm" variant="outline" onClick={sendAgain} disabled={pending}>
+						<Button
+							size="sm"
+							variant="outline"
+							onClick={() => change("send-again")}
+							disabled={pending}
+						>
 							<Send aria-hidden />
 							{pending ? "Sending…" : "Send again"}
 						</Button>
@@ -100,8 +121,8 @@ export function SentNotice({
 			)}
 			{asking && (
 				<ConfirmDialog
-					title="Discard this message?"
-					confirmLabel="Discard"
+					title={held ? "Reject this message?" : "Discard this message?"}
+					confirmLabel={held ? "Reject" : "Discard"}
 					onConfirm={async () => {
 						const result = await changeOutbox(workspace, mailbox, {
 							action: "discard",
@@ -125,6 +146,8 @@ export function SentNotice({
 
 function said(status: SendStatus): string {
 	switch (status.state) {
+		case "held":
+			return "An agent wrote this to someone it may not mail on its own, so it waits for someone who reads this mailbox to approve it. Check who it goes to and what it says first.";
 		case "sending":
 			return "Sending…";
 		case "waiting": {

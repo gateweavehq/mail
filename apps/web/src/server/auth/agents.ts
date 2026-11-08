@@ -9,6 +9,12 @@ import {
 } from "better-auth/api";
 import { and, asc, count, eq, like, notExists, or } from "drizzle-orm";
 import * as z from "zod";
+import {
+	type AgentPolicy,
+	AgentPolicyInput,
+	DEFAULT_AGENT_POLICY,
+	readAllowed,
+} from "../../lib/agent-policy";
 import { isAdminRole } from "../../lib/roles";
 import type { Database } from "../db";
 import { schema } from "../db";
@@ -149,13 +155,31 @@ export interface AgentInfo {
 	name: string;
 	createdAt: number;
 	keys: AgentKeyInfo[];
+	/** What it may send. */
+	policy: AgentPolicy;
+}
+
+/**
+ * What this agent's membership may send: its policy, or the defaults when none was set. Read as the
+ * agent sends, so a change counts from its next message.
+ */
+export async function agentPolicyOf(db: Database, memberId: string): Promise<AgentPolicy> {
+	const { agentPolicy } = schema;
+	const row = await db
+		.select({ sendPerDay: agentPolicy.sendPerDay, allowed: agentPolicy.allowed })
+		.from(agentPolicy)
+		.where(eq(agentPolicy.memberId, memberId))
+		.get();
+	return row
+		? { sendPerDay: row.sendPerDay, allowed: readAllowed(row.allowed) }
+		: DEFAULT_AGENT_POLICY;
 }
 
 const agentName = z.string().trim().min(1).max(80);
 const id = z.string().min(1).max(64);
 
 export function agentMembers({ db }: { db: Database }) {
-	const { agentKey, member, user } = schema;
+	const { agentKey, agentPolicy, member, user } = schema;
 
 	async function requireAdmin(organizationId: string, userId: string) {
 		const row = await db
@@ -174,7 +198,12 @@ export function agentMembers({ db }: { db: Database }) {
 	 */
 	async function agentForAdmin(agentId: string, userId: string) {
 		const agent = await db
-			.select({ id: user.id, name: user.name, organizationId: member.organizationId })
+			.select({
+				id: user.id,
+				name: user.name,
+				memberId: member.id,
+				organizationId: member.organizationId,
+			})
 			.from(member)
 			.innerJoin(user, eq(member.userId, user.id))
 			.where(
@@ -248,6 +277,8 @@ export function agentMembers({ db }: { db: Database }) {
 							memberId: member.id,
 							name: user.name,
 							createdAt: member.createdAt,
+							sendPerDay: agentPolicy.sendPerDay,
+							allowed: agentPolicy.allowed,
 							key: {
 								id: agentKey.id,
 								start: agentKey.start,
@@ -258,6 +289,7 @@ export function agentMembers({ db }: { db: Database }) {
 						.from(member)
 						.innerJoin(user, eq(member.userId, user.id))
 						.leftJoin(agentKey, eq(agentKey.userId, user.id))
+						.leftJoin(agentPolicy, eq(agentPolicy.memberId, member.id))
 						.where(
 							and(
 								eq(member.organizationId, organizationId),
@@ -275,6 +307,10 @@ export function agentMembers({ db }: { db: Database }) {
 							name: row.name,
 							createdAt: row.createdAt.getTime(),
 							keys: [],
+							policy:
+								row.sendPerDay === null || row.allowed === null
+									? DEFAULT_AGENT_POLICY
+									: { sendPerDay: row.sendPerDay, allowed: readAllowed(row.allowed) },
 						};
 						agents.set(row.id, agent);
 						if (row.key) {
@@ -341,6 +377,7 @@ export function agentMembers({ db }: { db: Database }) {
 						name,
 						createdAt: now.getTime(),
 						keys: [key.info],
+						policy: DEFAULT_AGENT_POLICY,
 					};
 					return ctx.json({ agent, key: key.secret });
 				},
@@ -361,6 +398,37 @@ export function agentMembers({ db }: { db: Database }) {
 						.where(eq(user.id, agent.id))
 						.run();
 					return ctx.json({ id: agent.id, name: ctx.body.name });
+				},
+			),
+
+			setAgentPolicy: createAuthEndpoint(
+				"/agents/set-policy",
+				{
+					method: "POST",
+					body: z.object({ agentId: id }).extend(AgentPolicyInput.shape),
+					// Letting an agent mail more people without approval is as much a grant as a key, so a
+					// stolen cookie can't do it either.
+					use: [freshSessionMiddleware],
+				},
+				async (ctx) => {
+					const agent = await agentForAdmin(ctx.body.agentId, ctx.context.session.user.id);
+					const allowed = JSON.stringify([...new Set(ctx.body.allowed)].sort());
+					const values = {
+						sendPerDay: ctx.body.sendPerDay,
+						allowed,
+						updatedBy: ctx.context.session.user.id,
+						updatedAt: new Date(),
+					};
+					await db
+						.insert(agentPolicy)
+						.values({ memberId: agent.memberId, ...values })
+						.onConflictDoUpdate({ target: agentPolicy.memberId, set: values })
+						.run();
+					const policy: AgentPolicy = {
+						sendPerDay: ctx.body.sendPerDay,
+						allowed: readAllowed(allowed),
+					};
+					return ctx.json({ id: agent.id, policy });
 				},
 			),
 

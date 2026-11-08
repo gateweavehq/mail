@@ -1,6 +1,6 @@
 // Ported from Gateweave Track's agent settings (apps/web/src/components/settings/agents-settings.tsx).
 import { Link, useRouter } from "@tanstack/react-router";
-import { Bot, Copy, Ellipsis, KeyRound, Plus } from "lucide-react";
+import { Bot, Copy, Ellipsis, KeyRound, Plus, Send } from "lucide-react";
 import { type FormEvent, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "#/components/ui/button";
@@ -20,8 +20,15 @@ import {
 } from "#/components/ui/dropdown-menu";
 import { Input } from "#/components/ui/input";
 import { Label } from "#/components/ui/label";
+import { Textarea } from "#/components/ui/textarea";
 import { ConfirmDialog } from "#/components/workspace/confirm-dialog";
 import { useWorkspace } from "#/components/workspace/context";
+import {
+	MAX_AGENT_SEND_PER_DAY,
+	MAX_ALLOWED_ENTRIES,
+	policySummary,
+	typedAllowed,
+} from "#/lib/agent-policy";
 import type { AgentInfo, AgentKeyInfo } from "#/lib/agents";
 import { authClient } from "#/lib/auth-client";
 import { formatDateTime, formatRelative, formatShortDate } from "#/lib/dates";
@@ -32,7 +39,7 @@ function failure(
 	fallback: string,
 ) {
 	if (error.code === "SESSION_NOT_FRESH") {
-		return "Making a key needs a recent sign-in. Sign out and sign in again, then try again.";
+		return "This needs a recent sign-in. Sign out and sign in again, then try again.";
 	}
 	return error.message || fallback;
 }
@@ -64,8 +71,9 @@ export function AgentsSettings({
 				<p className="text-sm text-muted-foreground">
 					An agent is a member for an AI agent, such as one that sorts what arrives at support. It
 					reads mail through the API with a key, and only the mailboxes it is given: opening a
-					mailbox to everyone doesn't open it to agents. It never signs in, and it cannot change the
-					workspace.
+					mailbox to everyone doesn't open it to agents. A mailbox can let it send too: what it
+					writes to the addresses its settings here allow goes on its own, and anything else waits
+					for a person to approve it. It never signs in, and it cannot change the workspace.
 					{admin ? (
 						<>
 							{" "}
@@ -219,7 +227,7 @@ function KeyReveal({
 
 function AgentRow({ agent, onNewKey }: { agent: AgentInfo; onNewKey: (key: NewKey) => void }) {
 	const router = useRouter();
-	const [action, setAction] = useState<"rename" | "delete" | null>(null);
+	const [action, setAction] = useState<"rename" | "sending" | "delete" | null>(null);
 	const [revoking, setRevoking] = useState<AgentKeyInfo | null>(null);
 
 	async function newKey() {
@@ -266,6 +274,7 @@ function AgentRow({ agent, onNewKey }: { agent: AgentInfo; onNewKey: (key: NewKe
 					<p className="text-xs text-muted-foreground">
 						Created {formatShortDate(agent.createdAt)}
 					</p>
+					<p className="text-xs text-muted-foreground">{policySummary(agent.policy)}</p>
 				</div>
 				<Button variant="outline" size="sm" onClick={newKey}>
 					<KeyRound />
@@ -284,6 +293,10 @@ function AgentRow({ agent, onNewKey }: { agent: AgentInfo; onNewKey: (key: NewKe
 					</DropdownMenuTrigger>
 					<DropdownMenuContent align="end">
 						<DropdownMenuItem onSelect={() => setAction("rename")}>Rename</DropdownMenuItem>
+						<DropdownMenuItem onSelect={() => setAction("sending")}>
+							<Send />
+							Sending
+						</DropdownMenuItem>
 						<DropdownMenuItem
 							className="text-destructive focus:text-destructive"
 							onSelect={() => setAction("delete")}
@@ -341,7 +354,113 @@ function AgentRow({ agent, onNewKey }: { agent: AgentInfo; onNewKey: (key: NewKe
 				</ConfirmDialog>
 			)}
 			{action === "rename" && <RenameAgentDialog agent={agent} onClose={() => setAction(null)} />}
+			{action === "sending" && <PolicyDialog agent={agent} onClose={() => setAction(null)} />}
 		</li>
+	);
+}
+
+/** How much an agent may send, and to whom without approval. */
+function PolicyDialog({ agent, onClose }: { agent: AgentInfo; onClose: () => void }) {
+	const router = useRouter();
+	const [perDay, setPerDay] = useState(String(agent.policy.sendPerDay));
+	const [allowed, setAllowed] = useState(agent.policy.allowed.join("\n"));
+	const [pending, setPending] = useState(false);
+	const [error, setError] = useState<string | null>(null);
+
+	async function onSubmit(event: FormEvent) {
+		event.preventDefault();
+		const sendPerDay = Number(perDay);
+		if (!Number.isInteger(sendPerDay) || sendPerDay < 0 || sendPerDay > MAX_AGENT_SEND_PER_DAY) {
+			setError(`A day's mail is a whole number from 0 to ${MAX_AGENT_SEND_PER_DAY}.`);
+			return;
+		}
+		const entries = typedAllowed(allowed);
+		if (entries.length > MAX_ALLOWED_ENTRIES) {
+			setError(`List up to ${MAX_ALLOWED_ENTRIES} addresses and domains.`);
+			return;
+		}
+		setPending(true);
+		setError(null);
+		const result = await authClient.agents.setPolicy({
+			agentId: agent.id,
+			sendPerDay,
+			allowed: entries,
+		});
+		setPending(false);
+		if (result.error) {
+			setError(
+				failure(
+					result.error,
+					"Those weren't saved. Each line is an address, such as ops@example.com, or a domain after an @, such as @example.com.",
+				),
+			);
+			return;
+		}
+		onClose();
+		await router.invalidate();
+	}
+
+	return (
+		<Dialog open onOpenChange={(open) => !open && !pending && onClose()}>
+			<DialogContent className="max-w-md">
+				<DialogHeader>
+					<DialogTitle className="wrap-anywhere">What {agent.name} can send</DialogTitle>
+					<DialogDescription>
+						It sends only from mailboxes that let it. Mail to anyone not listed here waits for
+						someone who reads the mailbox to approve it.
+					</DialogDescription>
+				</DialogHeader>
+				<form onSubmit={onSubmit} className="space-y-4">
+					<div className="space-y-2">
+						<Label htmlFor="agent-per-day">Messages a day</Label>
+						<Input
+							id="agent-per-day"
+							type="number"
+							inputMode="numeric"
+							min={0}
+							max={MAX_AGENT_SEND_PER_DAY}
+							step={1}
+							value={perDay}
+							onChange={(event) => setPerDay(event.target.value)}
+							aria-describedby="agent-per-day-help"
+							required
+						/>
+						<p id="agent-per-day-help" className="text-xs text-muted-foreground">
+							Counted as it writes them, waiting or not. Changing it doesn't start its day again,
+							and 0 stops it sending.
+						</p>
+					</div>
+					<div className="space-y-2">
+						<Label htmlFor="agent-allowed">Goes without approval to</Label>
+						<Textarea
+							id="agent-allowed"
+							value={allowed}
+							onChange={(event) => setAllowed(event.target.value)}
+							rows={4}
+							placeholder={"ops@example.com\n@example.com"}
+							aria-describedby="agent-allowed-help"
+						/>
+						<p id="agent-allowed-help" className="text-xs text-muted-foreground">
+							One a line: an address, or a domain after an @ for anyone there. A message goes on its
+							own only when everyone it is to is listed.
+						</p>
+					</div>
+					{error && (
+						<p role="alert" className="text-sm text-destructive">
+							{error}
+						</p>
+					)}
+					<DialogFooter className="gap-2">
+						<Button type="button" variant="outline" onClick={onClose} disabled={pending}>
+							Cancel
+						</Button>
+						<Button type="submit" disabled={pending}>
+							{pending ? "Saving…" : "Save"}
+						</Button>
+					</DialogFooter>
+				</form>
+			</DialogContent>
+		</Dialog>
 	);
 }
 

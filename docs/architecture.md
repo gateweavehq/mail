@@ -124,10 +124,12 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     takes a request with a bearer token as the agent's alone: a key that doesn't work, or works
     for another workspace, gets "not found", and the cookies that came with it are never tried
     instead. Another scheme, such as Basic auth from a proxy in front of the app, carries no key,
-    so the session decides. Only reading takes a caller (`openMailbox`, and listing the directory,
-    which shows an agent the mailboxes it was given); every change takes `currentMember`, a person
-    signed in. Making an agent or a key takes a sign-in from the last day, since a key outlives
-    the session that made it. The plugin manages only accounts it made, under `agents.invalid`:
+    so the session decides. Reading takes a caller (`openMailbox`, and listing the directory,
+    which shows an agent the mailboxes it was given), and so does sending, where a key may only
+    send, as below; every other change takes `currentMember`, a person signed in. Making an agent
+    or a key, or changing its sending policy, takes a sign-in from the last day, since each
+    outlives the session that made it. Letting it send from a mailbox is a change to the mailbox's
+    access, as giving it the mailbox to read is. The plugin manages only accounts it made, under `agents.invalid`:
     a person who was given the `agent` role by hand is never listed, keyed or deleted as one.
     Agents are kept off the members page and out of Better Auth's role and removal endpoints;
     deleting one, from its own page, takes its keys and grants, and a deleted workspace takes its
@@ -188,7 +190,8 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     write.
   - **Sending** (`send.ts`, `compose.ts`, `delivery.ts`). A person who may read a mailbox replies
     to its mail and writes new mail from it, at `POST /api/mail/<workspace>/<mailbox>/outbox`,
-    signed in and from the app's own origin; a key can't send. A message goes from one of the
+    signed in and from the app's own origin. An agent sends there with its key, as below. A
+    message goes from one of the
     mailbox's addresses on a proved domain that hasn't run out (`senders.ts`): the one chosen, or
     for a reply the one the answered message came to, or else the oldest. It goes through the
     `EMAIL` binding of Cloudflare Email Service, which sends only from a domain onboarded for
@@ -207,7 +210,24 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
       with. A reply takes `In-Reply-To` and `References` from the answered message's own headers:
       its `References`, or failing those its `In-Reply-To`, then its id. A long chain keeps the
       first id and the newest that fit in Email Service's 2,048 bytes for a header.
-    - **States** (`outgoing.state`). `sending`, then `sent`. `waiting` when Email Service is busy
+    - **An agent's mail waits for a person** (`agent-policy.ts`). A key may only send, never
+      approve, reject, send again or discard, and only from a mailbox whose grant to the agent says
+      so (`mailbox_access.send`, which only an agent's grant can have, as a person who reads a
+      mailbox sends anyway). Its policy (`agent_policy`, set by an owner or admin on the Agents
+      page) gives it a day's count, 20 unless changed and 0 to stop it, counted as it writes,
+      whether the message waits or not (`agent-send:<member>` in the rate-limit object), and a
+      list of addresses and domains (`@example.com`, not its subdomains) it may mail on its own.
+      A message to anyone else, To or Cc, is kept as `held`: its copy is in its thread like any
+      other, Email Service isn't called, and the mailbox's page lists what waits. Anyone who may
+      read the mailbox can approve it, which sends it then and records who did
+      (`outgoing.approved_by`), or reject it, which discards it; rejecting doesn't need the right
+      to discard others' mail, but only for a message still held, which the object checks again
+      as it marks it. The workspace's day counts a message when it goes: a held one when it is
+      approved, once the gateway has seen it still waits. A changed policy doesn't start the
+      agent's day again (the limiter keeps a named rule's use when its number changes). Only a
+      key is an agent here: agents never sign in, so a session is a person's, whatever its role.
+    - **States** (`outgoing.state`). `held` for an agent's message that waits for approval, as
+      above. `sending`, then `sent`. `waiting` when Email Service is busy
       (its rate or daily limit): the object's alarm tries again after 15 seconds, 1, 5 and 30
       minutes and 2 hours, or 1, 3, 6 and 12 hours for the daily limit, and then takes it as
       refused. `refused` with Email Service's code, which the page says in words. `uncertain` when
@@ -333,8 +353,7 @@ Not built. This is where it is going, and it may change.
   as above.
 - **Remote images per sender**, remembered for those the reader trusts, where now they are asked
   for each time.
-- **Agents that send**, with an admin's approval and limits of their own, and addresses and
-  aliases an agent can make for itself.
+- **Addresses and aliases an agent can make for itself.**
 - **Writing more than plain text**: formatting, attachments, forwarding and replying to all.
 
 ## What Cloudflare does with mail

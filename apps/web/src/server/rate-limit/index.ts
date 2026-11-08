@@ -75,6 +75,18 @@ export async function allowSend(workspaceId: string): Promise<Decision> {
 	return consumeDurably(`send:${workspaceId}`, [{ window: 24 * 60 * 60, max }]);
 }
 
+/**
+ * Whether this agent may write another message, counting it if so: as many a day as its policy
+ * says, a whole day's at once. It counts what waits for approval too, so a runaway agent can't fill
+ * the queue people approve from either. A changed policy doesn't start the day again: what the agent
+ * wrote still counts, against the new number.
+ */
+export async function allowAgentSend(memberId: string, perDay: number): Promise<Decision> {
+	return consumeDurably(`agent-send:${memberId}`, [
+		{ window: 24 * 60 * 60, max: perDay, name: "day" },
+	]);
+}
+
 const local = new LocalLimiter();
 
 /**

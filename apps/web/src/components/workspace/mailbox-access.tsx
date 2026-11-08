@@ -28,8 +28,16 @@ interface Reader {
 
 const counted = (n: number, one: string, many: string) => (n === 1 ? `1 ${one}` : `${n} ${many}`);
 
-/** Who can read a mailbox, in a sentence. */
+/** Who can read a mailbox, in a sentence, and which agents can send from it. */
 export function accessSummary(access: Access): string {
+	const senders = access.senderIds.length;
+	const sending = senders
+		? ` ${senders === access.agentIds.length && senders > 1 ? "All of the agents" : counted(senders, "agent", "agents")} can send from it too.`
+		: "";
+	return readersSummary(access) + sending;
+}
+
+function readersSummary(access: Access): string {
 	const agents = access.agentIds.length ? counted(access.agentIds.length, "agent", "agents") : null;
 	if (access.everyone) {
 		return agents
@@ -47,8 +55,9 @@ export function accessSummary(access: Access): string {
 /**
  * Chooses who may read a mailbox. Owners and admins read every one, so only the others are listed.
  * Agents are apart: "everyone" means people, so an agent reads a mailbox only when it is ticked
- * here. What is saved is what the dialog shows: with everyone ticked, no person needs a grant of
- * their own, so none are kept, and a grant to someone since made an admin goes.
+ * here, and sends from it only when let. What is saved is what the dialog shows: with everyone
+ * ticked, no person needs a grant of their own, so none are kept, and a grant to someone since made
+ * an admin goes.
  */
 export function MailboxAccessDialog({
 	box,
@@ -64,6 +73,7 @@ export function MailboxAccessDialog({
 	const [readers, setReaders] = useState<{ people: Reader[]; agents: Reader[] } | null>(null);
 	const [everyone, setEveryone] = useState(access.everyone);
 	const [chosen, setChosen] = useState(() => new Set([...access.memberIds, ...access.agentIds]));
+	const [senders, setSenders] = useState(() => new Set(access.senderIds));
 	const [error, setError] = useState<string | null>(null);
 	const [pending, setPending] = useState(false);
 
@@ -96,13 +106,17 @@ export function MailboxAccessDialog({
 		};
 	}, [slug]);
 
+	const toggled = (set: Set<string>, memberId: string, on: boolean) => {
+		const next = new Set(set);
+		if (on) next.add(memberId);
+		else next.delete(memberId);
+		return next;
+	};
+
 	function toggle(memberId: string, on: boolean) {
-		setChosen((current) => {
-			const next = new Set(current);
-			if (on) next.add(memberId);
-			else next.delete(memberId);
-			return next;
-		});
+		setChosen((current) => toggled(current, memberId, on));
+		// An agent that can't read a mailbox can't send from it either.
+		if (!on) setSenders((current) => toggled(current, memberId, false));
 	}
 
 	async function save() {
@@ -114,15 +128,17 @@ export function MailboxAccessDialog({
 		// A grant to someone listed in neither, such as a role this version doesn't know, stays.
 		const listed = new Set([...readers.people, ...readers.agents].map((r) => r.memberId));
 		const unlisted = [...chosen].filter((memberId) => !listed.has(memberId));
+		const memberIds = [
+			...(everyone ? [] : picked(readers.people)),
+			...picked(readers.agents),
+			...unlisted,
+		];
 		const result = await changeDirectory(slug, {
 			action: "set-mailbox-access",
 			mailboxId: box.id,
 			everyone,
-			memberIds: [
-				...(everyone ? [] : picked(readers.people)),
-				...picked(readers.agents),
-				...unlisted,
-			],
+			memberIds,
+			senderIds: memberIds.filter((memberId) => senders.has(memberId)),
 		});
 		if (result.ok) {
 			await router.invalidate();
@@ -134,7 +150,12 @@ export function MailboxAccessDialog({
 		}
 	}
 
-	const list = (kind: string, rows: Reader[], ticked: (reader: Reader) => boolean) => (
+	const list = (
+		kind: string,
+		rows: Reader[],
+		ticked: (reader: Reader) => boolean,
+		sends = false,
+	) => (
 		<ul className="max-h-48 space-y-2 overflow-y-auto">
 			{rows.map((reader) => {
 				const id = `${kind}-${box.id}-${reader.memberId}`;
@@ -145,12 +166,27 @@ export function MailboxAccessDialog({
 							checked={ticked(reader)}
 							onCheckedChange={(checked) => toggle(reader.memberId, checked === true)}
 						/>
-						<Label htmlFor={id} className="min-w-0 break-words font-normal">
+						<Label htmlFor={id} className="min-w-0 flex-1 break-words font-normal">
 							{reader.name}
 							{reader.detail && (
 								<span className="break-all text-muted-foreground"> {reader.detail}</span>
 							)}
 						</Label>
+						{sends && (
+							<span className="flex shrink-0 items-center gap-1.5">
+								<Checkbox
+									id={`send-${id}`}
+									checked={chosen.has(reader.memberId) && senders.has(reader.memberId)}
+									disabled={!chosen.has(reader.memberId)}
+									onCheckedChange={(checked) =>
+										setSenders((current) => toggled(current, reader.memberId, checked === true))
+									}
+								/>
+								<Label htmlFor={`send-${id}`} className="font-normal text-muted-foreground">
+									<span className="sr-only">{reader.name} </span>can send
+								</Label>
+							</span>
+						)}
 					</li>
 				);
 			})}
@@ -201,9 +237,11 @@ export function MailboxAccessDialog({
 							{readers.agents.length > 0 && (
 								<fieldset className="space-y-2" disabled={pending}>
 									<legend className="text-sm text-muted-foreground">
-										Agents, which read it only when ticked here:
+										Agents, which read it only when ticked here. One that can send mails the
+										addresses its settings allow on its own, and anything else waits for someone
+										here to approve it:
 									</legend>
-									{list("agent", readers.agents, (reader) => chosen.has(reader.memberId))}
+									{list("agent", readers.agents, (reader) => chosen.has(reader.memberId), true)}
 								</fieldset>
 							)}
 						</>

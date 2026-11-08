@@ -36,6 +36,8 @@ const Action = z.discriminatedUnion("action", [
 		mailboxId: Id,
 		everyone: z.boolean(),
 		memberIds: z.array(Id).max(MAX_MAILBOX_READERS),
+		/** Those of them, agents, that may send from it too. */
+		senderIds: z.array(Id).max(MAX_MAILBOX_READERS).default([]),
 	}),
 	z.object({ action: z.literal("remove-mailbox"), id: Id }),
 	z.object({
@@ -84,7 +86,7 @@ export async function changeDirectory(request: Request, slug: string): Promise<R
 	return answer(result, result.ok ? 200 : result.status);
 }
 
-async function run(action: DirectoryAction, workspaceId: string, userId: string) {
+async function run(action: z.output<typeof Action>, workspaceId: string, userId: string) {
 	const now = new Date();
 	switch (action.action) {
 		case "add-domain":

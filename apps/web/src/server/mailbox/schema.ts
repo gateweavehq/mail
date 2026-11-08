@@ -136,6 +136,41 @@ CREATE TRIGGER outgoing_gone AFTER DELETE ON message BEGIN
 END;
 `;
 
+// An agent's mail can wait for a person: `held` until someone approves it, who is kept with when.
+// SQLite can't change a CHECK in place, so `outgoing` is made again. Its trigger, on `message`, goes
+// first and comes back after: renaming a table checks every trigger, and this one would name a
+// table that is gone.
+const VERSION_5 = `
+DROP TRIGGER outgoing_gone;
+CREATE TABLE outgoing_new (
+	message TEXT PRIMARY KEY,
+	state TEXT NOT NULL CHECK (
+		state IN ('held', 'sending', 'waiting', 'sent', 'refused', 'uncertain', 'discarded')
+	),
+	request TEXT NOT NULL,
+	attempts INTEGER NOT NULL DEFAULT 0,
+	attempted_at INTEGER,
+	next_at INTEGER,
+	code TEXT,
+	provider_id TEXT,
+	sent_at INTEGER,
+	draft TEXT,
+	approved_by TEXT,
+	approved_at INTEGER
+) STRICT;
+INSERT INTO outgoing_new (message, state, request, attempts, attempted_at, next_at, code,
+	provider_id, sent_at, draft)
+SELECT message, state, request, attempts, attempted_at, next_at, code, provider_id, sent_at, draft
+FROM outgoing;
+DROP TABLE outgoing;
+ALTER TABLE outgoing_new RENAME TO outgoing;
+CREATE INDEX outgoing_due ON outgoing (state, next_at);
+CREATE UNIQUE INDEX outgoing_draft ON outgoing (draft);
+CREATE TRIGGER outgoing_gone AFTER DELETE ON message BEGIN
+	DELETE FROM outgoing WHERE message = old.id;
+END;
+`;
+
 /** Each brings the schema from the version before it. Append only: objects keep what they ran. */
 export const MIGRATIONS: ((sql: SqlStorage) => void)[] = [
 	(sql) => sql.exec(VERSION_1),
@@ -159,6 +194,7 @@ export const MIGRATIONS: ((sql: SqlStorage) => void)[] = [
 	},
 	(sql) => sql.exec(VERSION_3),
 	(sql) => sql.exec(VERSION_4),
+	(sql) => sql.exec(VERSION_5),
 ];
 
 /** What migrating needs of a Durable Object's storage. */

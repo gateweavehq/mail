@@ -2,6 +2,11 @@
 export interface Rule {
 	window: number;
 	max: number;
+	/**
+	 * What its use is kept under, for a limit someone sets: changing `max` then doesn't start the
+	 * window again. Without one, a rule is told apart by its numbers.
+	 */
+	name?: string;
 }
 
 export interface Decision {
@@ -17,7 +22,7 @@ export interface Decision {
 export type Allowance = Record<string, number>;
 
 export function ruleKey(rule: Rule) {
-	return `${rule.max}/${rule.window}`;
+	return rule.name ?? `${rule.max}/${rule.window}`;
 }
 
 // Splitting a window into equal steps leaves floating-point error, so three steps of a third of a

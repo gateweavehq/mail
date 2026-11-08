@@ -29,6 +29,9 @@ import { threadSubject } from "./thread";
 /** Messages or threads on one page of a mailbox. */
 export const PAGE_SIZE = 50;
 
+/** How many of the messages waiting for approval a mailbox's page names. */
+export const AWAITING_SHOWN = 10;
+
 /** The most text a message's page shows, in characters. */
 export const MAX_SHOWN_TEXT = 200_000;
 
@@ -49,6 +52,7 @@ export async function openMailbox(slug: string, mailboxId: string, { people = fa
 			name: mailbox.name,
 			everyone: mailbox.everyone,
 			granted: mailboxAccess.memberId,
+			send: mailboxAccess.send,
 		})
 		.from(mailbox)
 		.leftJoin(
@@ -60,7 +64,14 @@ export async function openMailbox(slug: string, mailboxId: string, { people = fa
 	if (!box || !canReadMailbox(role, { everyone: box.everyone, granted: box.granted !== null })) {
 		return null;
 	}
-	return { id: box.id, name: box.name, member, stub: mailboxStub(box.id) };
+	// Only an agent's grant says whether it may send; a person who reads a mailbox may anyway.
+	return {
+		id: box.id,
+		name: box.name,
+		member,
+		agentMaySend: box.send === true,
+		stub: mailboxStub(box.id),
+	};
 }
 
 /** The member signed in, as a caller. */
@@ -73,14 +84,18 @@ async function signedIn(slug: string): Promise<Caller | null> {
 type OpenMailbox = NonNullable<Awaited<ReturnType<typeof openMailbox>>>;
 
 /**
- * The names of those who sent these messages from the mailbox, by membership, while they are in
- * the workspace. Someone who has left is no longer named.
+ * The names of those who sent these messages from the mailbox, or approved them, by membership,
+ * while they are in the workspace. Someone who has left is no longer named.
  */
 async function senderNames(
 	workspaceId: string,
-	rows: { sentBy: string | null }[],
+	rows: { sentBy: string | null; approvedBy?: string | null }[],
 ): Promise<Map<string, string>> {
-	const ids = [...new Set(rows.map((row) => row.sentBy).filter((id) => id !== null))];
+	const ids = [
+		...new Set(
+			rows.flatMap((row) => [row.sentBy, row.approvedBy ?? null]).filter((id) => id !== null),
+		),
+	];
 	if (ids.length === 0) return new Map();
 	const { member, user } = schema;
 	const found = await db
@@ -102,6 +117,7 @@ function sentOf(row: StoredSummary, names: Map<string, string>, me: string) {
 		by: names.get(row.sentBy) ?? null,
 		mine: row.sentBy === me,
 		status: row.sending === null ? null : (JSON.parse(row.sending) as SendStatus),
+		approval: row.approvedBy === null ? null : { by: names.get(row.approvedBy) ?? null },
 	};
 }
 
@@ -192,15 +208,31 @@ export async function listThreads(
 ): Promise<ThreadsPage | null> {
 	const box = await openMailbox(slug, mailboxId);
 	if (!box) return null;
-	const [rows, from] = await Promise.all([
+	const first = before === null && !query;
+	const [rows, from, held] = await Promise.all([
 		query ? box.stub.search(query, before, PAGE_SIZE + 1) : box.stub.threads(before, PAGE_SIZE + 1),
 		senderAddresses(box.member.membership.workspaceId, box.id),
+		first ? box.stub.awaiting(AWAITING_SHOWN) : null,
 	]);
 	const shown = rows.slice(0, PAGE_SIZE);
 	const last = shown.at(-1);
+	const names = held ? await senderNames(box.member.membership.workspaceId, held.messages) : null;
 	return {
 		name: box.name,
 		from,
+		awaiting:
+			held && names
+				? {
+						count: held.count,
+						messages: held.messages.map((row) => ({
+							id: row.id,
+							threadId: row.threadId,
+							subject: threadSubject(decoded(row.subject)),
+							by: row.sentBy === null ? null : (names.get(row.sentBy) ?? null),
+							arrivedAt: row.arrivedAt,
+						})),
+					}
+				: null,
 		threads: shown.map((row) => ({
 			id: row.id,
 			latestAt: row.latestAt,

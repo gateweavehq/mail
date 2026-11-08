@@ -241,6 +241,17 @@ function Sender({ message }: { message: OpenedMessage }) {
 							by <span className="font-medium text-foreground">{message.sent.by}</span>
 						</>
 					) : null}
+					{message.sent.approval ? (
+						<>
+							, approved
+							{message.sent.approval.by ? (
+								<>
+									{" "}
+									by <span className="font-medium text-foreground">{message.sent.approval.by}</span>
+								</>
+							) : null}
+						</>
+					) : null}
 					.
 				</span>
 			</p>

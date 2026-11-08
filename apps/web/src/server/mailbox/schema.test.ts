@@ -36,7 +36,65 @@ describe("migrate", () => {
 			{ version: 2 },
 			{ version: 3 },
 			{ version: 4 },
+			{ version: 5 },
 		]);
+	});
+
+	it("keeps what is being sent when version 5 makes `outgoing` again, and lets mail wait for approval", () => {
+		const { db, storage: store } = storage();
+		store.transactionSync(() => {
+			store.sql.exec("CREATE TABLE schema_migration (version INTEGER PRIMARY KEY) STRICT");
+			for (let version = 0; version < 4; version++) {
+				MIGRATIONS[version]?.(store.sql);
+				store.sql.exec("INSERT INTO schema_migration (version) VALUES (?)", version + 1);
+			}
+		});
+		const sent = (id: string) =>
+			db
+				.prepare(
+					`INSERT INTO message (id, state, delivery_key, object, size, arrived_at, envelope_from,
+						envelope_to, sent_by)
+					VALUES (?, 'stored', ?, ?, 10, 1, 'a@x', 'b@y', 'member')`,
+				)
+				.run(id, `sent:${id}`, `w/m/${id}.eml`);
+		sent("waits");
+		db.prepare(
+			`INSERT INTO outgoing (message, state, request, attempts, attempted_at, next_at, code, draft)
+			VALUES ('waits', 'waiting', '{}', 2, 4, 5, 'E_RATE_LIMIT_EXCEEDED', 'draft-1')`,
+		).run();
+
+		migrate(store);
+		expect(db.prepare("SELECT * FROM outgoing").all()).toEqual([
+			{
+				message: "waits",
+				state: "waiting",
+				request: "{}",
+				attempts: 2,
+				attempted_at: 4,
+				next_at: 5,
+				code: "E_RATE_LIMIT_EXCEEDED",
+				provider_id: null,
+				sent_at: null,
+				draft: "draft-1",
+				approved_by: null,
+				approved_at: null,
+			},
+		]);
+		sent("held");
+		db.prepare(
+			"INSERT INTO outgoing (message, state, request, draft) VALUES ('held', 'held', '{}', 'draft-2')",
+		).run();
+		// The draft's index and the trigger are back.
+		expect(() =>
+			db
+				.prepare(
+					"INSERT INTO outgoing (message, state, request, draft) VALUES ('x', 'held', '{}', 'draft-1')",
+				)
+				.run(),
+		).toThrow();
+		expect(names(db, "index")).toEqual(expect.arrayContaining(["outgoing_draft", "outgoing_due"]));
+		db.prepare("DELETE FROM message WHERE id = 'held'").run();
+		expect(db.prepare("SELECT message FROM outgoing").all()).toEqual([{ message: "waits" }]);
 	});
 
 	it("lets what the mailbox sends go with its message", () => {

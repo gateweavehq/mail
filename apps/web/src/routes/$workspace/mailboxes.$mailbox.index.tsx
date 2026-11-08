@@ -1,5 +1,5 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { PenLine, Search as SearchIcon, ShieldCheck } from "lucide-react";
+import { Clock, PenLine, Search as SearchIcon, ShieldCheck } from "lucide-react";
 import { useState } from "react";
 import { z } from "zod";
 import { Composer } from "#/components/mail/composer";
@@ -16,8 +16,57 @@ import { Input } from "#/components/ui/input";
 import { useWorkspace } from "#/components/workspace/context";
 import { Notice } from "#/components/workspace/notice";
 import { formatDateTime, formatShortDate } from "#/lib/dates";
-import { getThreads, type ListedThread, MAX_QUERY_SENT } from "#/lib/mailbox";
+import { type AwaitingMessage, getThreads, type ListedThread, MAX_QUERY_SENT } from "#/lib/mailbox";
 import { useDocumentTitle } from "#/lib/title";
+
+/** What agents wrote here that waits for someone to approve it, the oldest first. */
+function Awaiting({ awaiting }: { awaiting: { count: number; messages: AwaitingMessage[] } }) {
+	const { slug } = useWorkspace();
+	const { mailbox } = Route.useParams();
+	const more = awaiting.count - awaiting.messages.length;
+	return (
+		<section aria-labelledby="awaiting-heading" className="space-y-2 rounded-lg border p-4">
+			<h2 id="awaiting-heading" className="flex items-center gap-2 text-sm font-medium">
+				<Clock className="size-4 shrink-0" aria-hidden />
+				{awaiting.count === 1
+					? "1 message waits for approval"
+					: `${awaiting.count} messages wait for approval`}
+			</h2>
+			<p className="text-sm text-muted-foreground">
+				An agent wrote {awaiting.count === 1 ? "it" : "them"} to someone it may not mail on its own.
+				Open one to approve or reject it.
+			</p>
+			<ul className="space-y-1 text-sm">
+				{awaiting.messages.map((message) => (
+					<li key={message.id} className="flex min-w-0 items-baseline gap-2">
+						<Link
+							to="/$workspace/mailboxes/$mailbox/threads/$thread"
+							params={{ workspace: slug, mailbox, thread: message.threadId }}
+							className="min-w-0 truncate underline underline-offset-4"
+						>
+							{message.subject || "(no subject)"}
+						</Link>
+						{message.by && (
+							<span className="shrink-0 text-xs text-muted-foreground">{message.by}</span>
+						)}
+						<time
+							className="ml-auto shrink-0 text-xs text-muted-foreground"
+							dateTime={new Date(message.arrivedAt).toISOString()}
+							title={formatDateTime(message.arrivedAt)}
+						>
+							{formatShortDate(message.arrivedAt)}
+						</time>
+					</li>
+				))}
+			</ul>
+			{more > 0 && (
+				<p className="text-sm text-muted-foreground">
+					{more === 1 ? "And 1 more." : `And ${more} more.`}
+				</p>
+			)}
+		</section>
+	);
+}
 
 /** How many senders a thread's line names before saying how many more. */
 const NAMED_SENDERS = 3;
@@ -137,6 +186,8 @@ function MailboxPage() {
 			<p role="status" className="sr-only">
 				{query ? searchSaid(query, page.threads.length, Boolean(page.next), older) : ""}
 			</p>
+
+			{page.awaiting && page.awaiting.count > 0 && <Awaiting awaiting={page.awaiting} />}
 
 			{page.threads.length === 0 ? (
 				<p className="rounded-lg border p-6 text-sm text-muted-foreground">

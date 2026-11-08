@@ -76,6 +76,11 @@ export const mailboxAccess = sqliteTable(
 			.references(() => member.id, { onDelete: "cascade" }),
 		grantedBy: text("granted_by").references(() => user.id, { onDelete: "set null" }),
 		createdAt: createdAt(),
+		/**
+		 * Whether an agent given the mailbox may also send from it. A person who reads a mailbox may
+		 * send from it anyway, so it means nothing for people.
+		 */
+		send: integer("send", { mode: "boolean" }).default(false).notNull(),
 	},
 	(table) => [
 		primaryKey({ columns: [table.mailboxId, table.memberId] }),
@@ -127,3 +132,19 @@ export const mailAddress = sqliteTable(
 		index("mail_address_expires_at_idx").on(table.expiresAt),
 	],
 );
+
+/**
+ * What an agent may send, set by owners and admins. An agent without a row has the defaults in
+ * `lib/agent-policy.ts`. It belongs to the membership, so it goes with the agent.
+ */
+export const agentPolicy = sqliteTable("agent_policy", {
+	memberId: text("member_id")
+		.primaryKey()
+		.references(() => member.id, { onDelete: "cascade" }),
+	/** Messages it may write a day, held or not. Zero stops it sending. */
+	sendPerDay: integer("send_per_day").notNull(),
+	/** Addresses and whole domains (`@example.com`) its mail goes to without a person, as JSON. */
+	allowed: text("allowed").notNull(),
+	updatedBy: text("updated_by").references(() => user.id, { onDelete: "set null" }),
+	updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+});

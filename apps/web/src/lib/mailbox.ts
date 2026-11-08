@@ -32,6 +32,18 @@ export interface SentInfo {
 	/** Whether whoever reads it wrote it. */
 	mine: boolean;
 	status: SendStatus | null;
+	/** For one that waited for approval, who approved it, named while they are in the workspace. */
+	approval: { by: string | null } | null;
+}
+
+/** A message an agent wrote that waits for a person to approve it. */
+export interface AwaitingMessage {
+	id: string;
+	threadId: string;
+	subject: string;
+	/** The agent's name, while it is in the workspace. */
+	by: string | null;
+	arrivedAt: number;
 }
 
 /** Where a listing goes on from. */
@@ -75,6 +87,11 @@ export interface ThreadsPage {
 	name: string;
 	/** The addresses the mailbox may send from, lower case: its own, on a proved domain. */
 	from: string[];
+	/**
+	 * The messages waiting for approval, the oldest first, and how many there are. Only on the
+	 * first page, when not searching.
+	 */
+	awaiting: { count: number; messages: AwaitingMessage[] } | null;
 	threads: ListedThread[];
 	/** Where the next page, of threads with older news, starts, or null when there is none. */
 	next: ThreadCursor | null;

@@ -1,9 +1,19 @@
 import { env } from "cloudflare:workers";
 import { z } from "zod";
-import { isAddress, MAX_RECIPIENTS, MAX_SUBJECT, MAX_TEXT } from "../../lib/outbox";
+import { goesWithoutApproval } from "../../lib/agent-policy";
+import {
+	isAddress,
+	MAX_RECIPIENTS,
+	MAX_SUBJECT,
+	MAX_TEXT,
+	type SendStatus,
+} from "../../lib/outbox";
 import { isAdminRole } from "../../lib/roles";
+import { bearsKey } from "../access";
+import { db } from "../auth";
+import { agentPolicyOf } from "../auth/agents";
 import { appOrigin } from "../origin";
-import { allowSend } from "../rate-limit";
+import { allowAgentSend, allowSend } from "../rate-limit";
 import {
 	addressHeader,
 	dateHeader,
@@ -57,6 +67,8 @@ const Action = z.discriminatedUnion("action", [
 	}),
 	z.object({ action: z.literal("send-again"), message: Id }),
 	z.object({ action: z.literal("discard"), message: Id }),
+	/** Sends a message an agent wrote that waits for a person. */
+	z.object({ action: z.literal("approve"), message: Id }),
 ]);
 
 export type OutboxAction = z.input<typeof Action>;
@@ -68,32 +80,63 @@ function answer(body: unknown, status = 200): Response {
 const refuse = (error: string, status: number) => answer({ ok: false, error }, status);
 
 /**
- * Sends from a mailbox, tries again or discards, for `POST /api/mail/<workspace>/<mailbox>/outbox`.
- * Only a person who may read the mailbox may, signed in: a key never sends.
+ * Sends from a mailbox, tries again, approves or discards, for
+ * `POST /api/mail/<workspace>/<mailbox>/outbox`. A person who may read the mailbox may, signed in.
+ * An agent may only send, with its key, from a mailbox it was let send from, as its policy allows:
+ * what it writes to anyone else waits for a person to approve it.
  */
 export async function outboxAnswer(
 	request: Request,
 	slug: string,
 	mailboxId: string,
 ): Promise<Response> {
-	// A session cookie comes along wherever a request is from, so ask where that is.
-	if (request.headers.get("origin") !== appOrigin()) return refuse("Not allowed from there", 403);
-	const box = await openMailbox(slug, mailboxId, { people: true });
+	// A key decides alone, as `currentCaller` has it, and no browser sends one by itself. A
+	// session's cookie comes along wherever a request is from, so then ask where that is.
+	const keyed = bearsKey(request.headers);
+	if (!keyed && request.headers.get("origin") !== appOrigin()) {
+		return refuse("Not allowed from there", 403);
+	}
+	const box = await openMailbox(slug, mailboxId, { people: !keyed });
 	if (!box) return refuse("Not found", 404);
 	const parsed = Action.safeParse(await request.json().catch(() => null));
 	if (!parsed.success) return refuse("That isn't something we can send.", 400);
 	const action = parsed.data;
 	const { workspaceId, memberId, role } = box.member.membership;
+	// A key is an agent's. Agents never sign in, so a session is a person's, whatever its role: one
+	// given the agent's role by hand, or one this version doesn't know, reads only with a grant.
+	const agent = keyed;
+	if (agent && action.action !== "send") {
+		return refuse("An agent only sends. People approve, send again and discard.", 403);
+	}
+	if (agent && !box.agentMaySend) {
+		return refuse("This agent may read this mailbox but not send from it.", 403);
+	}
 
 	if (action.action === "discard") {
 		// Discarding deletes the copy, which only owners and admins may do to someone else's mail.
+		// Anyone who reads the mailbox may reject what waits for approval, as they may approve it.
 		const row = await box.stub.get(action.message);
-		if (row && row.sentBy !== memberId && !isAdminRole(role)) {
+		const writerOrAdmin = !row || row.sentBy === memberId || isAdminRole(role);
+		if (!writerOrAdmin && !isHeld(row)) {
 			return refuse("Only who wrote it, or an owner or admin, can discard it.", 403);
 		}
-		return (await box.stub.discard(action.message))
+		return (await box.stub.discard(action.message, !writerOrAdmin))
 			? answer({ ok: true })
 			: refuse("Only a message that isn't sent can be discarded.", 409);
+	}
+
+	if (action.action === "approve") {
+		// Counted as it goes, as what a person sends is, so only once it is known to wait. The object
+		// still sends it only from `held`, should two people approve it at once.
+		if (!isHeld(await box.stub.get(action.message))) {
+			return refuse("It isn't waiting for approval any more.", 409);
+		}
+		const allowed = await allowSend(workspaceId);
+		if (!allowed.allowed) return tooMany(allowed.retryAfter);
+		const status = await box.stub.approve(action.message, memberId);
+		return status
+			? answer({ ok: true, ...status })
+			: refuse("It isn't waiting for approval any more.", 409);
 	}
 
 	if (action.action === "send-again") {
@@ -129,9 +172,24 @@ export async function outboxAnswer(
 	// A draft sent before, as when its answer was lost, is what became of it, and counts once.
 	const earlier = await box.stub.drafted(action.draft);
 	if (earlier) return sentAnswer(earlier);
-	// Counted once the message could go, so a mistake doesn't use up the day's allowance.
-	const allowed = await allowSend(workspaceId);
-	if (!allowed.allowed) return tooMany(allowed.retryAfter);
+	// An agent's mail waits for a person unless all of it goes where its policy lets it, and counts
+	// against its own day either way.
+	let hold = false;
+	if (agent) {
+		const policy = await agentPolicyOf(db, memberId);
+		if (policy.sendPerDay === 0) {
+			return refuse("This agent isn't let send mail. An owner or admin can change that.", 403);
+		}
+		hold = !goesWithoutApproval(recipients, policy.allowed);
+		const counted = await allowAgentSend(memberId, policy.sendPerDay);
+		if (!counted.allowed) return tooMany(counted.retryAfter, "This agent has written");
+	}
+	// Counted once the message could go, so a mistake doesn't use up the day's allowance. One that
+	// waits is counted when it is approved.
+	if (!hold) {
+		const allowed = await allowSend(workspaceId);
+		if (!allowed.allowed) return tooMany(allowed.retryAfter);
+	}
 
 	// What goes into its headers is only what Email Service takes; what threads its copy is all.
 	const message: Outgoing = {
@@ -162,6 +220,7 @@ export async function outboxAnswer(
 		references: answering.references,
 		request: sendRequest(message),
 		draft: action.draft,
+		hold,
 	});
 	return sentAnswer(sent);
 }
@@ -173,10 +232,14 @@ function sentAnswer(sent: Sent): Response {
 		: refuse("It is still being saved. Look in the thread in a moment.", 409);
 }
 
-function tooMany(retryAfter: number | null | undefined): Response {
+/** Whether a message waits for a person to approve it. */
+const isHeld = (row: { sending: string | null } | null) =>
+	row?.sending ? (JSON.parse(row.sending) as SendStatus).state === "held" : false;
+
+function tooMany(retryAfter: number | null | undefined, who = "This workspace has sent"): Response {
 	const hours = Math.max(1, Math.round((retryAfter ?? 0) / 3600));
 	return refuse(
-		`This workspace has sent as much as it may for now. Try again in about ${hours === 1 ? "an hour" : `${hours} hours`}.`,
+		`${who} as much as it may for now. Try again in about ${hours === 1 ? "an hour" : `${hours} hours`}.`,
 		429,
 	);
 }

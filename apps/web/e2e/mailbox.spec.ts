@@ -523,8 +523,8 @@ test("an admin makes an agent, gives it a mailbox, and its key reads the mail un
 	expect((await api()).status()).toBe(404);
 
 	await card.getByRole("button", { name: "Choose who can read Support" }).click();
-	await expect(dialog.getByLabel("Sorter")).toBeEnabled();
-	await dialog.getByLabel("Sorter").check();
+	await expect(dialog.getByLabel("Sorter", { exact: true })).toBeEnabled();
+	await dialog.getByLabel("Sorter", { exact: true }).check();
 	await dialog.getByRole("button", { name: "Save" }).click();
 	await expect(card.getByText("Everyone in the workspace can read it, and 1 agent.")).toBeVisible();
 	const listed = await api();
@@ -539,6 +539,90 @@ test("an admin makes an agent, gives it a mailbox, and its key reads the mail un
 	await page.getByRole("dialog").getByRole("button", { name: "Revoke" }).click();
 	await expect(page.getByText("No keys. It can't read anything until you make one.")).toBeVisible();
 	expect((await api()).status()).toBe(404);
+});
+
+test("an agent's mail to someone its settings don't name waits until a person approves it", async ({
+	page,
+	request,
+	baseURL,
+}) => {
+	const { slug, person, mailboxId } = await supportMailbox(page, request, baseURL);
+
+	await page.goto(`/${slug}/settings/agents`);
+	await waitForHydration(page);
+	await page.getByLabel("Agent name").fill("Sorter");
+	await page.getByRole("button", { name: "Create agent" }).click();
+	const key = await page.getByLabel("Agent key").inputValue();
+	await page.getByRole("button", { name: "Done" }).click();
+	await expect(
+		page.getByText("Writes up to 20 messages a day, each waiting for approval."),
+	).toBeVisible();
+
+	// An admin lets it mail a partner's domain on its own, and fewer a day.
+	await page.getByRole("button", { name: "More for Sorter" }).click();
+	await page.getByRole("menuitem", { name: "Sending" }).click();
+	const policy = page.getByRole("dialog", { name: "What Sorter can send" });
+	await policy.getByLabel("Messages a day").fill("5");
+	await policy.getByLabel("Goes without approval to").fill("@Partner.example");
+	await policy.getByRole("button", { name: "Save" }).click();
+	await expect(policy).toBeHidden();
+	await expect(
+		page.getByText(
+			"Writes up to 5 messages a day. To @partner.example it goes on its own; anything else waits for approval.",
+		),
+	).toBeVisible();
+
+	// The mailbox lets it send as well as read.
+	await page.goto(`/${slug}`);
+	await waitForHydration(page);
+	const card = page
+		.getByRole("listitem")
+		.filter({ has: page.getByRole("heading", { name: "Support" }) });
+	await card.getByRole("button", { name: "Choose who can read Support" }).click();
+	const access = page.getByRole("dialog", { name: "Who can read Support" });
+	await expect(access.getByLabel("Sorter can send")).toBeDisabled();
+	await access.getByLabel("Sorter", { exact: true }).check();
+	await access.getByLabel("Sorter can send").check();
+	await access.getByRole("button", { name: "Save" }).click();
+	await expect(
+		card.getByText("Owners, admins and 1 agent can read it. 1 agent can send from it too."),
+	).toBeVisible();
+
+	// It writes, with its key, to a customer, which waits.
+	const written = await request.post(`/api/mail/${slug}/${mailboxId}/outbox`, {
+		headers: { authorization: `Bearer ${key}` },
+		data: {
+			action: "send",
+			draft: crypto.randomUUID(),
+			to: ["customer@example.org"],
+			subject: "Your parcel",
+			text: "It left on Monday.",
+		},
+	});
+	expect(written.status()).toBe(200);
+	expect(await written.json()).toMatchObject({ state: "held" });
+
+	// The mailbox's page says what waits, and a person approves it from its thread.
+	await page.goto(`/${slug}/mailboxes/${mailboxId}`);
+	await waitForHydration(page);
+	const waiting = page.getByRole("region", { name: "1 message waits for approval" });
+	await expect(waiting.getByText("Sorter")).toBeVisible();
+	await waiting.getByRole("link", { name: "Your parcel" }).click();
+	await expect(page.getByRole("heading", { level: 1, name: "Your parcel" })).toBeVisible();
+	const thread = page.getByRole("list", { name: "Messages in this thread" });
+	const copy = thread.getByRole("article", { name: /Support/ });
+	await expect(copy.getByText("Waiting for approval", { exact: true })).toBeVisible();
+	await copy.getByRole("button", { name: "Approve and send" }).click();
+	await expect(copy.getByText("Sent", { exact: true })).toBeVisible();
+	await expect(
+		copy.getByText(`Written in this mailbox by Sorter, approved by ${person.name}.`),
+	).toBeVisible();
+
+	await page.getByRole("link", { name: "Support" }).click();
+	await expect(page.getByRole("link", { name: /Your parcel/ })).toBeVisible();
+	await expect(
+		page.getByRole("region", { name: /wait for approval|waits for approval/ }),
+	).toHaveCount(0);
 });
 
 /** A one-pixel PNG. */

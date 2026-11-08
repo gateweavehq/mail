@@ -27,9 +27,15 @@ export interface DirectoryMailbox {
 	addresses: DirectoryAddress[];
 	/**
 	 * Who else may read it, besides owners and admins: everyone (people, not agents), and these
-	 * people's and agents' memberships. Only for owners and admins, who can change it.
+	 * people's and agents' memberships, with the agents that may send from it too. Only for owners
+	 * and admins, who can change it.
 	 */
-	access: { everyone: boolean; memberIds: string[]; agentIds: string[] } | null;
+	access: {
+		everyone: boolean;
+		memberIds: string[];
+		agentIds: string[];
+		senderIds: string[];
+	} | null;
 }
 
 export interface Directory {
