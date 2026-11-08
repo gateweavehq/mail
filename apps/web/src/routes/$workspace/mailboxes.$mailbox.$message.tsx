@@ -1,10 +1,18 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
-import { Paperclip, ShieldAlert, ShieldCheck } from "lucide-react";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { Paperclip, ShieldAlert, ShieldCheck, Trash2 } from "lucide-react";
+import { useState } from "react";
 import { Button } from "#/components/ui/button";
-import { useWorkspace } from "#/components/workspace/context";
+import { ConfirmDialog } from "#/components/workspace/confirm-dialog";
+import { isAdminRole, useMyRole, useWorkspace } from "#/components/workspace/context";
 import { Notice } from "#/components/workspace/notice";
 import { formatDateTime } from "#/lib/dates";
-import { getMessage, type OpenedMessage, originalUrl, type Person } from "#/lib/mailbox";
+import {
+	deleteMessage,
+	getMessage,
+	type OpenedMessage,
+	originalUrl,
+	type Person,
+} from "#/lib/mailbox";
 import { useDocumentTitle } from "#/lib/title";
 
 export const Route = createFileRoute("/$workspace/mailboxes/$mailbox/$message")({
@@ -19,6 +27,7 @@ function MessagePage() {
 	const { slug } = useWorkspace();
 	const { mailbox } = Route.useParams();
 	const message = Route.useLoaderData();
+	const admin = isAdminRole(useMyRole());
 	useDocumentTitle(message?.subject || "Message");
 
 	const back = (
@@ -118,26 +127,76 @@ function MessagePage() {
 				</section>
 			)}
 
-			<Button asChild size="sm" variant="outline">
-				{/* A plain link: the download is a file, not a page of the app. */}
-				<a href={originalUrl(slug, mailbox, message.id)} download>
-					Download the original ({formatSize(message.size)})
-				</a>
-			</Button>
+			<div className="flex flex-wrap items-start gap-2">
+				<Button asChild size="sm" variant="outline">
+					{/* A plain link: the download is a file, not a page of the app. */}
+					<a href={originalUrl(slug, mailbox, message.id)} download>
+						Download the original ({formatSize(message.size)})
+					</a>
+				</Button>
+				{admin && <DeleteMessage id={message.id} />}
+			</div>
 		</article>
 	);
 }
 
+/** Deletes the message for everyone, after asking. Owners and admins only. */
+function DeleteMessage({ id }: { id: string }) {
+	const { slug } = useWorkspace();
+	const { mailbox } = Route.useParams();
+	const navigate = useNavigate();
+	const [asking, setAsking] = useState(false);
+	const [error, setError] = useState<string | null>(null);
+
+	return (
+		<>
+			<Button size="sm" variant="outline" onClick={() => setAsking(true)}>
+				<Trash2 aria-hidden />
+				Delete
+			</Button>
+			{error && (
+				<p role="alert" className="basis-full text-sm text-destructive">
+					{error}
+				</p>
+			)}
+			{asking && (
+				<ConfirmDialog
+					title="Delete this message?"
+					confirmLabel="Delete message"
+					onConfirm={async () => {
+						const result = await deleteMessage(slug, mailbox, id);
+						if (!result.ok) {
+							setError(result.error);
+							return;
+						}
+						await navigate({
+							to: "/$workspace/mailboxes/$mailbox",
+							params: { workspace: slug, mailbox },
+						});
+					}}
+					onClose={() => setAsking(false)}
+				>
+					It goes from the mailbox for everyone, with its original. This can't be undone.
+				</ConfirmDialog>
+			)}
+		</>
+	);
+}
+
 /**
- * Whether the From header can be believed. Only Cloudflare's DMARC pass says the domain in it sent
- * the message; anything else may be forged.
+ * Whether the From header can be believed. Only Cloudflare's DMARC pass, for the domain of the
+ * address shown, says that domain sent the message. The name in front of the address is the
+ * sender's to write, so the domain is named. Anything else may be forged.
  */
 function Sender({ message }: { message: OpenedMessage }) {
-	if (message.verified) {
+	if (message.verifiedDomain) {
 		return (
-			<p className="flex items-center gap-2 text-sm text-muted-foreground">
-				<ShieldCheck className="size-4 shrink-0" aria-hidden />
-				The sender's domain sent this message.
+			<p className="flex items-start gap-2 text-sm text-muted-foreground">
+				<ShieldCheck className="mt-0.5 size-4 shrink-0" aria-hidden />
+				<span className="min-w-0 break-words">
+					Sent from <span className="font-medium text-foreground">{message.verifiedDomain}</span>,
+					which Cloudflare checked. The name in front of the address isn't checked.
+				</span>
 			</p>
 		);
 	}

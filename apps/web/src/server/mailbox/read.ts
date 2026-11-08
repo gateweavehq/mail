@@ -2,9 +2,11 @@ import { env } from "cloudflare:workers";
 import { and, eq } from "drizzle-orm";
 import PostalMime, { type Address, addressParser, decodeWords } from "postal-mime";
 import type { MailboxPage, MessageCursor, OpenedMessage, Person } from "../../lib/mailbox";
+import { isAdminRole } from "../../lib/roles";
 import { currentMember } from "../access";
 import { db } from "../auth";
 import { schema } from "../db";
+import { appOrigin } from "../origin";
 import { mailboxStub } from "./index";
 
 /** Messages on one page of a mailbox. */
@@ -31,7 +33,7 @@ async function openMailbox(slug: string, mailboxId: string) {
 			),
 		)
 		.get();
-	return box ? { ...box, stub: mailboxStub(box.id) } : null;
+	return box ? { ...box, member, stub: mailboxStub(box.id) } : null;
 }
 
 /** A header as people read it. A word that won't decode is left as sent. */
@@ -81,7 +83,7 @@ export async function listMessages(
 			arrivedAt: row.arrivedAt,
 			from: sender(row.from),
 			subject: decoded(row.subject),
-			verified: row.dmarc === "pass",
+			verifiedDomain: row.verifiedDomain,
 			size: row.size,
 		})),
 		next: rows.length > PAGE_SIZE && last ? { arrivedAt: last.arrivedAt, id: last.id } : null,
@@ -116,7 +118,7 @@ export async function openMessage(
 		cc: people(email.cc),
 		subject: decoded(row.subject),
 		date: row.date,
-		verified: row.dmarc === "pass",
+		verifiedDomain: row.verifiedDomain,
 		dmarc: row.dmarc,
 		text: text.slice(0, MAX_SHOWN_TEXT),
 		textCut: text.length > MAX_SHOWN_TEXT || Boolean(fromHtml?.cut),
@@ -212,4 +214,26 @@ export async function messageAnswer(
 ): Promise<Response> {
 	const message = await openMessage(slug, mailboxId, messageId);
 	return message ? answer(message) : notFoundJson();
+}
+
+/**
+ * Deletes a message, for `DELETE /api/mail/<workspace>/<mailbox>/<message>`. Only an owner or
+ * admin may, as it can't be undone; it frees the message's space in the mailbox.
+ */
+export async function deleteMessageAnswer(
+	request: Request,
+	slug: string,
+	mailboxId: string,
+	messageId: string,
+): Promise<Response> {
+	// A session cookie comes along wherever a request is from, so ask where that is.
+	if (request.headers.get("origin") !== appOrigin()) {
+		return answer({ ok: false, error: "Not allowed from there" }, 403);
+	}
+	const box = await openMailbox(slug, mailboxId);
+	if (!box) return notFoundJson();
+	if (!isAdminRole(box.member.membership.role)) {
+		return answer({ ok: false, error: "Only an owner or admin can delete mail." }, 403);
+	}
+	return (await box.stub.remove(messageId)) ? answer({ ok: true }) : notFoundJson();
 }

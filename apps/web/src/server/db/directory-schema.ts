@@ -34,7 +34,7 @@ export const mailDomain = sqliteTable(
 	],
 );
 
-/** Where a workspace's mail goes. Its contents live in a Durable Object, once that ships. */
+/** Where a workspace's mail goes. Its messages live in its own Durable Object and in R2. */
 export const mailbox = sqliteTable(
 	"mailbox",
 	{
@@ -46,6 +46,26 @@ export const mailbox = sqliteTable(
 		createdAt: createdAt(),
 	},
 	(table) => [index("mailbox_organization_id_idx").on(table.organizationId)],
+);
+
+/**
+ * A mailbox that has gone, until its mail has gone too. A trigger writes the row as the mailbox's
+ * row is deleted, however that comes about, a workspace's deletion included (migration 0005).
+ * Removing a mailbox deletes its mail at once, and the daily run does it again an hour or more
+ * later, for a removal that stopped part way and for a delivery that found the mailbox just before
+ * it went. Then the row goes.
+ */
+export const mailboxRemoval = sqliteTable(
+	"mailbox_removal",
+	{
+		mailboxId: text("mailbox_id").primaryKey(),
+		// No reference, as the workspace may be gone too. Its id names where the mail is in R2.
+		organizationId: text("organization_id").notNull(),
+		removedAt: integer("removed_at", { mode: "timestamp_ms" })
+			.default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
+			.notNull(),
+	},
+	(table) => [index("mailbox_removal_removed_at_idx").on(table.removedAt)],
 );
 
 /** One address on one domain, for one mailbox. Migration 0003 keeps all three in one workspace. */

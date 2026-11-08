@@ -11,7 +11,9 @@ it can't send or reply yet. It uses:
 - optionally, Cloudflare Email Service, to send password resets, verification and invitations.
 
 You need a Cloudflare account with the **Workers Paid** plan. Sign-in takes more CPU than the Free
-plan gives a request, and Email Sending is a Paid feature.
+plan gives a request, and Email Sending is a Paid feature. Turn on R2 in the account before the
+first deploy, by opening R2 in the dashboard once and following its steps: until then, the bucket
+can't be created, and the deploy fails.
 
 **Getting a domain's mail to the Worker.** Prove the domain under a workspace's Settings, then turn
 on Email Routing for that same domain in the Cloudflare account that runs the Worker. Each domain
@@ -116,10 +118,13 @@ Then pick it instead of **+ Create new** on the button's form, or put its id in 
 ## Where mail is kept
 
 Each message goes into the R2 bucket as it arrived, one object per message, and each mailbox's
-Durable Object holds the index of its messages. A mailbox holds up to 1 GiB; past that, a sender
-is told to try again later. Removing a mailbox, or deleting its workspace, removes its mail at once,
-and a daily run removes whatever such a removal left when it stopped part way. Deleting an account
-leaves mail alone, since it belongs to the workspace.
+Durable Object holds the index of its messages. A mailbox holds up to 1 GiB, which
+`MAILBOX_BYTES` changes; past that, a sender is told to try again later, and an owner or admin can
+delete messages to make room. Removing a mailbox, or deleting its workspace, removes its mail at
+once. The database keeps a record of each removal, and a daily run removes the mail again an hour
+or more later, for a removal that stopped part way, then forgets the record. Mail only touches its
+own mailboxes' objects, so the bucket can hold other things too. Deleting an account leaves mail
+alone, since it belongs to the workspace.
 
 R2 storage and Durable Object storage are billed past what the plan includes: see
 [R2 pricing](https://developers.cloudflare.com/r2/pricing/) and
@@ -149,6 +154,7 @@ because `wrangler.jsonc` sets `keep_vars`.
 | `OIDC_CLIENT_SECRET`   | Its client secret there.                                                                                           |
 | `OIDC_PROVIDER_NAME`   | What the sign-in button calls it. Unset: "single sign-on".                                                         |
 | `EMAIL_FROM`           | Turns on email (invitations, password reset), such as `Gateweave Mail <mail@example.com>`.                         |
+| `MAILBOX_BYTES`        | How many bytes one mailbox may hold, as a whole number. Unset: 1 GiB.                                              |
 | `LEGAL_NOTICE_URL`     | The address of your legal notice. See [below](#your-legal-pages).                                                  |
 | `PRIVACY_POLICY_URL`   | The address of your privacy policy.                                                                                |
 | `TERMS_URL`            | The address of your terms.                                                                                         |

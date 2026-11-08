@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
-	cloudflareDmarc,
+	cloudflareVerdict,
 	deliveryKey,
 	firstHeader,
 	HEADER_BLOCK_LIMIT,
 	parseHeaders,
 	readHeaderBlock,
+	verifiedDomain,
 } from "./headers";
 
 /** A stream that gives these pieces one at a time, as a socket would. */
@@ -67,25 +68,37 @@ describe("parseHeaders", () => {
 			"Subject: A long\r\n subject\r\nReceived: one\r\nreceived: two\r\nBroken line\r\n",
 		);
 		expect(headers).toEqual([
-			{ name: "subject", value: "A long subject" },
-			{ name: "received", value: "one" },
-			{ name: "received", value: "two" },
+			{ name: "subject", value: "A long subject", strict: true },
+			{ name: "received", value: "one", strict: true },
+			{ name: "received", value: "two", strict: true },
 		]);
 		expect(firstHeader(headers, "received")).toBe("one");
 		expect(firstHeader(headers, "date")).toBeNull();
 	});
+
+	// Programs differ on what such a name means, so it must not be read as an ordinary one.
+	it("marks a name written with spaces or other odd characters", () => {
+		expect(parseHeaders("From : a@example.org\r\n\u000bFrom: b@example.org\r\n")).toEqual([
+			{ name: "from", value: "a@example.org", strict: false },
+			{ name: "from", value: "b@example.org", strict: false },
+		]);
+	});
 });
 
-describe("cloudflareDmarc", () => {
-	const verdictOf = (lines: string[]) => cloudflareDmarc(parseHeaders(lines.join("\r\n")));
-	const own = (dmarc: string) =>
-		`Authentication-Results: mx.cloudflare.net; dkim=pass header.d=example.org; dmarc=${dmarc} header.from=example.org`;
+const own = (dmarc: string, domain = "example.org") =>
+	`Authentication-Results: mx.cloudflare.net; dkim=pass header.d=${domain}; dmarc=${dmarc} header.from=${domain} policy.dmarc=none; spf=pass (mx.cloudflare.net: domain of a@${domain} designates 192.0.2.1 as permitted sender) smtp.mailfrom=a@${domain}`;
 
-	it("reads Cloudflare's own verdict", () => {
+describe("cloudflareVerdict", () => {
+	const verdictOf = (lines: string[]) => cloudflareVerdict(parseHeaders(lines.join("\r\n")));
+
+	it("reads Cloudflare's own verdict, and the domain it checked", () => {
 		expect(
 			verdictOf([...CLOUDFLARE, own("pass"), "X-CF-SpamH-Score: 1", "From: a@example.org"]),
-		).toBe("pass");
-		expect(verdictOf([...CLOUDFLARE, own("FAIL")])).toBe("fail");
+		).toEqual({ dmarc: "pass", fromDomain: "example.org" });
+		expect(verdictOf([...CLOUDFLARE, own("FAIL", "Example.ORG.")])).toEqual({
+			dmarc: "fail",
+			fromDomain: "example.org",
+		});
 	});
 
 	it("trusts nothing when the message doesn't start with Cloudflare's Received", () => {
@@ -95,9 +108,17 @@ describe("cloudflareDmarc", () => {
 
 	it("trusts no verdict below the sender's own headers", () => {
 		expect(verdictOf([...CLOUDFLARE, "From: a@example.org", own("pass")])).toBeNull();
-		expect(verdictOf([...CLOUDFLARE, own("none"), "From: a@example.org", own("pass")])).toBe(
-			"none",
-		);
+		expect(verdictOf([...CLOUDFLARE, own("none"), "From: a@example.org", own("pass")])).toEqual({
+			dmarc: "none",
+			fromDomain: "example.org",
+		});
+	});
+
+	// Were Cloudflare's own verdict ever missing, the sender's headers would follow its others.
+	it("stops where Cloudflare's headers stop, when its verdict isn't among them", () => {
+		expect(verdictOf([...CLOUDFLARE, "Received-SPF: pass", own("pass")])).toBeNull();
+		expect(verdictOf([...CLOUDFLARE, "ARC-Seal: i=2; cv=pass", own("pass")])).toBeNull();
+		expect(verdictOf([...CLOUDFLARE, "X-CF-SpamH-Score: 1", own("pass")])).toBeNull();
 	});
 
 	it("trusts no verdict that doesn't say it is Cloudflare's", () => {
@@ -110,6 +131,69 @@ describe("cloudflareDmarc", () => {
 		expect(
 			verdictOf([...CLOUDFLARE, "Authentication-Results: mx.cloudflare.net; arc=pass"]),
 		).toBeNull();
+	});
+
+	// Cloudflare's comments quote the envelope sender, which the sender chooses.
+	it("reads nothing out of a comment", () => {
+		expect(
+			verdictOf([
+				...CLOUDFLARE,
+				'Authentication-Results: mx.cloudflare.net; spf=pass (mx.cloudflare.net: domain of "x; dmarc=pass header.from=bank.example"@evil.example designates 192.0.2.1 as permitted sender) smtp.mailfrom=x@evil.example; dmarc=fail header.from=evil.example',
+			]),
+		).toEqual({ dmarc: "fail", fromDomain: "evil.example" });
+	});
+
+	it("trusts no verdict when it names DMARC twice", () => {
+		expect(
+			verdictOf([
+				...CLOUDFLARE,
+				'Authentication-Results: mx.cloudflare.net; dmarc=fail header.from=evil.example; spf=pass (domain of "x) ; dmarc=pass header.from=bank.example (y"@evil.example) smtp.mailfrom=x@evil.example',
+			]),
+		).toBeNull();
+	});
+});
+
+describe("verifiedDomain", () => {
+	const domainOf = (lines: string[]) => {
+		const headers = parseHeaders(lines.join("\r\n"));
+		return verifiedDomain(headers, cloudflareVerdict(headers));
+	};
+	const passed = (from: string[], domain = "example.org") => [
+		...CLOUDFLARE,
+		own("pass", domain),
+		...from,
+	];
+
+	it("is the From's domain when Cloudflare checked that one and it passed", () => {
+		expect(domainOf(passed(["From: A Person <a@example.org>"]))).toBe("example.org");
+		expect(domainOf(passed(["From: a@Example.org"]))).toBe("example.org");
+	});
+
+	it("is the address's domain, whatever the name in front of it says", () => {
+		expect(domainOf(passed(['From: "ceo@bank.example" <a@example.org>']))).toBe("example.org");
+	});
+
+	it("is nothing when DMARC didn't pass", () => {
+		expect(domainOf([...CLOUDFLARE, own("none"), "From: a@example.org"])).toBeNull();
+	});
+
+	it("is nothing when Cloudflare checked another domain than the From shows", () => {
+		expect(domainOf(passed(["From: ceo@bank.example"], "evil.example"))).toBeNull();
+		expect(domainOf(passed(["From: a@mail.example.org"]))).toBeNull();
+	});
+
+	// Which of two a program shows, or which Cloudflare checked, can't be told from here.
+	it("is nothing when the message has more than one From", () => {
+		expect(domainOf(passed(["From: a@example.org", "From: ceo@bank.example"]))).toBeNull();
+		expect(domainOf(passed(["From : ceo@bank.example", "From: a@example.org"]))).toBeNull();
+		expect(domainOf(passed(["\u000bFrom: ceo@bank.example", "From: a@example.org"]))).toBeNull();
+		expect(domainOf(passed(["From : a@example.org"]))).toBeNull();
+	});
+
+	it("is nothing when the From names more than one sender", () => {
+		expect(domainOf(passed(["From: a@example.org, ceo@bank.example"]))).toBeNull();
+		expect(domainOf(passed(["From: Team: a@example.org, b@example.org;"]))).toBeNull();
+		expect(domainOf(passed(["From: Nobody"]))).toBeNull();
 	});
 });
 
@@ -143,7 +227,13 @@ describe("deliveryKey", () => {
 		).not.toBe(key);
 	});
 
-	it("is null without a Message-ID, so such a message is always kept", async () => {
-		expect(await deliveryKey("box", headersOf(sender.slice(0, 3)))).toBeNull();
+	// Delivery is at least once whether or not the sender wrote a Message-ID.
+	it("is made from the other headers when there is no Message-ID", async () => {
+		const key = await deliveryKey("box", headersOf(sender.slice(0, 3)));
+		expect(key).toMatch(/^[0-9a-f]{64}$/);
+		expect(await deliveryKey("box", headersOf(sender.slice(0, 3)))).toBe(key);
+		expect(await deliveryKey("box", headersOf([...sender.slice(0, 2), "Subject: Other"]))).not.toBe(
+			key,
+		);
 	});
 });

@@ -61,6 +61,25 @@ test("mail that arrives at an address shows in its mailbox, and opens as text", 
 	);
 	expect(delivered.status()).toBe(200);
 
+	// One whose sender Cloudflare proved, with the headers Email Routing puts above it.
+	const proved = [
+		"Received: from mail.example.org (mail.example.org [192.0.2.1]) by cloudflare-email.net (unknown) id A for <x@example.com>",
+		"Authentication-Results: mx.cloudflare.net; dkim=pass header.d=example.org; dmarc=pass header.from=example.org; spf=pass",
+		"From: Shop <orders@example.org>",
+		`To: ${to}`,
+		"Subject: Your order has shipped",
+		"Date: Sun, 08 Nov 2026 10:00:00 +0000",
+		`Message-ID: <${Date.now()}.shop@example.org>`,
+		"",
+		"It's on its way.",
+		"",
+	].join("\r\n");
+	const second = await request.post(
+		`/cdn-cgi/local/email?from=orders@example.org&to=${encodeURIComponent(to)}`,
+		{ data: proved },
+	);
+	expect(second.status()).toBe(200);
+
 	await page.goto(`/${slug}`);
 	await waitForHydration(page);
 	await page.getByRole("link", { name: "Support" }).click();
@@ -68,6 +87,10 @@ test("mail that arrives at an address shows in its mailbox, and opens as text", 
 	await expect(page.getByRole("heading", { level: 1, name: "Support" })).toBeVisible();
 	const messages = page.getByRole("list", { name: "Messages in Support" });
 	await expect(messages).toBeVisible();
+	// The proved domain shows beside the mark, as the name in front of an address proves nothing.
+	await expect(
+		messages.getByRole("link", { name: /Your order has shipped.*Sent from example\.org/ }),
+	).toBeVisible();
 	await messages.getByRole("link", { name: /My order hasn't come/ }).click();
 
 	await expect(page.getByRole("heading", { name: "My order hasn't come" })).toBeVisible();
@@ -78,4 +101,11 @@ test("mail that arrives at an address shows in its mailbox, and opens as text", 
 	const download = page.waitForEvent("download");
 	await page.getByRole("link", { name: /Download the original/ }).click();
 	expect((await download).suggestedFilename()).toBe("message.eml");
+
+	// The owner can delete it, after saying so.
+	await page.getByRole("button", { name: "Delete" }).click();
+	await page.getByRole("dialog").getByRole("button", { name: "Delete message" }).click();
+	await expect(page).toHaveURL(`/${slug}/mailboxes/${box?.id}`);
+	await expect(messages.getByRole("link", { name: /Your order has shipped/ })).toBeVisible();
+	await expect(messages.getByRole("link", { name: /My order hasn't come/ })).toHaveCount(0);
 });

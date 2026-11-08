@@ -65,28 +65,39 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
   on arrival.
   - **R2 holds nothing the mailbox doesn't know about.** The object names each message before it
     is written, as pending, and an alarm removes a delivery that hasn't finished 15 minutes later,
-    with whatever part of it reached R2. So removing a mailbox's prefix removes all of its mail.
-  - **The same message twice is kept once.** A delivery's key is a hash of the mailbox and the
-    message's `Message-ID`, `From`, `Date` and `Subject`. When one finishes and a stored message
-    has the same key, their bodies are compared, and the copy goes only if they match: someone who
-    guessed a message's headers can't get it dropped. A message without a `Message-ID` is always
-    kept.
-  - **A mailbox holds up to 1 GiB.** Past that, a message gets a temporary refusal, so it arrives if
-    room is made before the sender gives up.
+    with whatever part of it reached R2. The alarm marks such a delivery expired before it
+    deletes anything, so one that finishes late finds it gone, deletes its own mail and is tried
+    again. So removing a mailbox's prefix removes all of its mail.
+  - **The same message twice is kept once.** A delivery's key is a hash of the mailbox and
+    whichever of the message's `Message-ID`, `From`, `Date` and `Subject` it has. When one
+    finishes and a stored message has the same key, their bodies are compared, and the copy goes
+    only if they match: someone who guessed a message's headers can't get it dropped. The copy's
+    mail goes before its row, so a failure leaves it pending for the alarm.
+  - **A mailbox holds up to 1 GiB**, or `MAILBOX_BYTES`. Its object keeps the total in a row of its
+    own, which triggers update as messages come and go, so a delivery doesn't add them up. Past the
+    limit, a message gets a temporary refusal, so it arrives if room is made before the sender
+    gives up. Owners and admins can delete a message, which frees its space.
   - **Reading.** A page parses a message with postal-mime when someone opens it, and shows its text
     only: HTML waits until it can be shown without running what it holds. The original downloads
     from `/api/mail/<workspace>/<mailbox>/<message>/original`, as a file, never as a page. Every
     member of a workspace can read its mailboxes for now. A non-member, or a mailbox of another
     workspace, gets the same "not found" as a missing one, and the mailbox is checked against the
     caller's workspace in D1 before its object is asked anything.
-  - **Who sent it.** A message shows as from its sender only when Cloudflare's own
-    `Authentication-Results` says `dmarc=pass`. Cloudflare adds its headers at the top, below its
-    own `Received` line, so only a verdict among them counts; one lower down came with the message.
+  - **Who sent it.** A message shows as from a domain only when Cloudflare's own
+    `Authentication-Results` says `dmarc=pass` for that domain (`header.from`), and the message
+    has one `From` holding one address on it. Cloudflare adds its headers at the top, below its
+    own `Received` line, each once and in one order, so only a verdict among them counts. A field
+    out of that order, and everything below it, came with the message. Comments in the verdict are
+    skipped, as they quote the envelope sender, and a verdict that names DMARC twice isn't trusted.
+    A field whose name only looks like `From`, such as `From :`, counts as a second one. Pages
+    show the proved domain beside the mark: the name in front of the address is the sender's to
+    write.
   - **Removing.** Removing a mailbox, or deleting its workspace, removes its mail and its object's
-    data, after the directory has forgotten its addresses, so nothing new arrives. When that stops
-    part way, the daily run finds the mailbox's prefix in R2 with no mailbox in D1 and removes it.
-    Each run looks at up to 500 mailboxes, from a random place, so every one is looked at over a few
-    days.
+    data, after the directory has forgotten its addresses, so nothing new arrives. A trigger in D1
+    records each mailbox as its row goes, a workspace's by cascade too (`mailbox_removal`). The
+    daily run removes the mail again an hour or more after, then forgets the record: that finishes
+    a removal that stopped part way, and catches a delivery that found the mailbox just before it
+    went. Only removed mailboxes' prefixes are touched, so the bucket can hold other things.
 
 ### Workspaces
 

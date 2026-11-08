@@ -37,7 +37,7 @@ export interface AuthConfig {
 	allowPasswordTry?: ((userId: string) => Promise<boolean>) | undefined;
 	/** Whether this person may be emailed about those tries running out. Never without it. */
 	allowSpentTriesEmail?: ((userId: string) => Promise<boolean>) | undefined;
-	/** Removes the mail of a deleted workspace's mailboxes. Left for the daily sweep without it. */
+	/** Removes the mail of a deleted workspace's mailboxes. Left for the daily run without it. */
 	removeMailboxes?: ((workspaceId: string, mailboxIds: string[]) => Promise<void>) | undefined;
 }
 

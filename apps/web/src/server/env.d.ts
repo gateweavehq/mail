@@ -26,6 +26,11 @@ declare namespace Cloudflare {
 		 */
 		DNS_RESOLVER_URL?: string;
 		/**
+		 * How many bytes one mailbox may hold, as a whole number. 1 GiB when unset. A mailbox that is
+		 * full tells senders to try again later.
+		 */
+		MAILBOX_BYTES?: string;
+		/**
 		 * The addresses of this deployment's legal pages, linked from the sign-in pages and the
 		 * workspace menu. Each is left out when unset, or when it is not an http(s) address.
 		 */

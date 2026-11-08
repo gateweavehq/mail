@@ -12,8 +12,11 @@ export interface ListedMessage {
 	arrivedAt: number;
 	from: Person | null;
 	subject: string;
-	/** Cloudflare found that the From header's domain sent it (DMARC pass). */
-	verified: boolean;
+	/**
+	 * The domain of the From's address, when Cloudflare's DMARC check proved that domain sent it.
+	 * The name in front of the address proves nothing, so this is what to show beside the proof.
+	 */
+	verifiedDomain: string | null;
 	size: number;
 }
 
@@ -40,7 +43,8 @@ export interface OpenedMessage {
 	subject: string;
 	/** The Date header as sent, or null when there is none. */
 	date: string | null;
-	verified: boolean;
+	/** As in a listing. */
+	verifiedDomain: string | null;
 	/** Cloudflare's DMARC verdict as it gave it, such as "fail" or "none", or null. */
 	dmarc: string | null;
 	/** The text, made from the HTML when the message has no text of its own. */
@@ -77,6 +81,25 @@ export const getMessage = createServerFn({ method: "GET" })
 		return openMessage(data.workspace, data.mailbox, data.message);
 	});
 
+/** Where a message is, to read or, for an owner or admin, to delete. */
+export const messageUrl = (workspace: string, mailbox: string, message: string) =>
+	`/api/mail/${encodeURIComponent(workspace)}/${encodeURIComponent(mailbox)}/${encodeURIComponent(message)}`;
+
 /** Where a message's raw mail can be downloaded, for those who can see it. */
 export const originalUrl = (workspace: string, mailbox: string, message: string) =>
-	`/api/mail/${encodeURIComponent(workspace)}/${encodeURIComponent(mailbox)}/${encodeURIComponent(message)}/original`;
+	`${messageUrl(workspace, mailbox, message)}/original`;
+
+/** Deletes a message, for an owner or admin. Says why when it couldn't. */
+export async function deleteMessage(
+	workspace: string,
+	mailbox: string,
+	message: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+	try {
+		const response = await fetch(messageUrl(workspace, mailbox, message), { method: "DELETE" });
+		if (response.status === 404) return { ok: false, error: "That message is gone already." };
+		return (await response.json()) as { ok: true } | { ok: false; error: string };
+	} catch {
+		return { ok: false, error: "That didn't reach the server. Try again." };
+	}
+}

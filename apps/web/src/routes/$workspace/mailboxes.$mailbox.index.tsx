@@ -113,32 +113,46 @@ function MailboxPage() {
 function MessageRow({ message }: { message: ListedMessage }) {
 	const { slug } = useWorkspace();
 	const { mailbox } = Route.useParams();
+	// One line from `sm` up. On a phone, two: who and when, then what and the proved domain.
+	const arrived = (className: string) => (
+		<time
+			className={`shrink-0 text-xs text-muted-foreground ${className}`}
+			dateTime={new Date(message.arrivedAt).toISOString()}
+			title={formatDateTime(message.arrivedAt)}
+		>
+			{formatShortDate(message.arrivedAt)}
+		</time>
+	);
 	return (
 		<li>
 			<Link
 				to="/$workspace/mailboxes/$mailbox/$message"
 				params={{ workspace: slug, mailbox, message: message.id }}
-				className="flex items-baseline gap-3 px-4 py-3 hover:bg-muted/50 focus-visible:bg-muted/50 focus-visible:outline-none"
+				className="flex flex-col gap-1 px-4 py-3 hover:bg-muted/50 focus-visible:bg-muted/50 focus-visible:outline-none sm:flex-row sm:items-baseline sm:gap-3"
 			>
-				<span className="w-40 shrink-0 truncate text-sm font-medium sm:w-48">
-					{senderName(message.from)}
+				<span className="flex min-w-0 items-baseline gap-3 sm:w-48 sm:shrink-0">
+					<span className="min-w-0 flex-1 truncate text-sm font-medium">
+						{senderName(message.from)}
+					</span>
+					{arrived("sm:hidden")}
 				</span>
-				<span className="min-w-0 flex-1 truncate text-sm">
-					{message.subject || <span className="text-muted-foreground">(no subject)</span>}
+				<span className="flex min-w-0 flex-1 items-baseline gap-3">
+					<span className="min-w-0 flex-1 truncate text-sm">
+						{message.subject || <span className="text-muted-foreground">(no subject)</span>}
+					</span>
+					{message.verifiedDomain && (
+						// The domain, not only a mark: the name beside it is the sender's to write.
+						<span
+							className="flex max-w-[45%] shrink-0 items-center gap-1 self-center text-xs text-muted-foreground sm:max-w-48"
+							title={`Cloudflare checked that ${message.verifiedDomain} sent it`}
+						>
+							<ShieldCheck className="size-3.5 shrink-0" aria-hidden />
+							<span className="sr-only">Sent from </span>
+							<span className="truncate">{message.verifiedDomain}</span>
+						</span>
+					)}
+					{arrived("hidden sm:inline")}
 				</span>
-				{message.verified && (
-					<ShieldCheck
-						className="size-4 shrink-0 self-center text-muted-foreground"
-						aria-label="Its sender's domain sent it"
-					/>
-				)}
-				<time
-					className="shrink-0 text-xs text-muted-foreground"
-					dateTime={new Date(message.arrivedAt).toISOString()}
-					title={formatDateTime(message.arrivedAt)}
-				>
-					{formatShortDate(message.arrivedAt)}
-				</time>
 			</Link>
 		</li>
 	);

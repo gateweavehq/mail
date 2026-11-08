@@ -5,6 +5,7 @@
  * `Authentication-Results` would come along in the same string as Cloudflare's. Reading the block
  * keeps the order, and Cloudflare puts what it adds above everything the sender wrote.
  */
+import { addressParser } from "postal-mime";
 
 /** The most of a message's start that is read for its headers. */
 export const HEADER_BLOCK_LIMIT = 256 * 1024;
@@ -17,6 +18,11 @@ export interface Header {
 	name: string;
 	/** Unfolded and trimmed, otherwise as sent. */
 	value: string;
+	/**
+	 * The name is written as the standard says, with nothing but printable ASCII. Programs differ on
+	 * what a name such as `From ` with a space means, so such a field is never trusted.
+	 */
+	strict: boolean;
 }
 
 /**
@@ -74,7 +80,12 @@ export function parseHeaders(block: string): Header[] {
 		}
 		const colon = line.indexOf(":");
 		if (colon <= 0) continue;
-		headers.push({ name: line.slice(0, colon).trim().toLowerCase(), value: line.slice(colon + 1) });
+		const name = line.slice(0, colon);
+		headers.push({
+			name: name.trim().toLowerCase(),
+			value: line.slice(colon + 1),
+			strict: /^[\x21-\x39\x3b-\x7e]+$/.test(name),
+		});
 	}
 	for (const header of headers) header.value = header.value.trim();
 	return headers;
@@ -86,49 +97,143 @@ export function firstHeader(headers: Header[], name: string): string | null {
 	return value === undefined ? null : value.slice(0, MAX_KEPT_HEADER);
 }
 
-/** What Cloudflare adds above a message before it reaches the Worker. */
-const ADDED_BY_CLOUDFLARE = new Set([
+/** What Cloudflare adds above a message before it reaches the Worker, in the order it adds them. */
+const ADDED_BY_CLOUDFLARE = [
 	"arc-seal",
 	"arc-message-signature",
 	"arc-authentication-results",
 	"received-spf",
 	"authentication-results",
-]);
+];
+
+/** Cloudflare's DMARC check of a message. */
+export interface Verdict {
+	/** Such as "pass", "fail" or "none". */
+	dmarc: string;
+	/** The From domain it checked, in lower case, or null when it didn't say. */
+	fromDomain: string | null;
+}
 
 /**
- * Cloudflare's DMARC verdict on a message, such as "pass", "fail" or "none", or null when it can't
- * be told. Only Cloudflare's own `Authentication-Results` counts: the first one, among the fields
- * Cloudflare adds above its `Received`, from `mx.cloudflare.net`. Anything else is the sender's to
- * write. When the message doesn't start the way Cloudflare's do, nothing is trusted.
+ * Cloudflare's DMARC verdict on a message, or null when it can't be told. Only Cloudflare's own
+ * `Authentication-Results` counts: the one among the fields Cloudflare adds above its `Received`,
+ * from `mx.cloudflare.net`. Cloudflare adds each of those once and in one order, so a field out of
+ * that order is the sender's, and so is everything after it. When the message doesn't start the
+ * way Cloudflare's do, nothing is trusted.
  */
-export function cloudflareDmarc(headers: Header[]): string | null {
+export function cloudflareVerdict(headers: Header[]): Verdict | null {
 	const [received, ...rest] = headers;
-	if (received?.name !== "received" || !/\bby cloudflare-email\.net\b/i.test(received.value)) {
+	if (
+		!received?.strict ||
+		received.name !== "received" ||
+		!/\bby cloudflare-email\.net\b/i.test(received.value)
+	) {
 		return null;
 	}
+	let at = -1;
 	for (const header of rest) {
-		if (header.name === "authentication-results") {
-			if (!/^mx\.cloudflare\.net\s*;/i.test(header.value)) return null;
-			const verdict = /(?:^|;)\s*dmarc\s*=\s*([a-z]+)/i.exec(header.value);
-			return verdict?.[1]?.toLowerCase() ?? null;
-		}
-		if (!ADDED_BY_CLOUDFLARE.has(header.name) && !header.name.startsWith("x-cf-")) return null;
+		const place = header.strict ? ADDED_BY_CLOUDFLARE.indexOf(header.name) : -1;
+		if (place <= at) return null;
+		at = place;
+		if (header.name === "authentication-results") return verdictIn(header.value);
 	}
 	return null;
 }
 
+/** The DMARC result in an `Authentication-Results` value from Cloudflare. */
+function verdictIn(value: string): Verdict | null {
+	const [server, ...results] = resultParts(value);
+	if (!server || !/^mx\.cloudflare\.net(?:\s+\d+)?$/i.test(server)) return null;
+	const dmarc = results.filter((part) => /^dmarc\s*=/i.test(part));
+	// One message gets one DMARC check. A second can only have come from something the sender wrote.
+	const [only] = dmarc;
+	if (dmarc.length !== 1 || !only) return null;
+	const result = /^dmarc\s*=\s*([a-z]+)(?:\s|$)/i.exec(only);
+	if (!result?.[1]) return null;
+	const domain = /(?:^|\s)header\.from\s*=\s*("[^"]*"|[^\s"]+)/i.exec(only)?.[1];
+	return {
+		dmarc: result[1].toLowerCase(),
+		fromDomain: domain ? normalDomain(domain.replace(/^"|"$/g, "")) : null,
+	};
+}
+
+/**
+ * An `Authentication-Results` value cut at its semicolons, with its comments left out. A
+ * semicolon inside a quoted string or a comment doesn't cut, as Cloudflare's comments quote the
+ * envelope sender, which the sender chooses. Nothing comes back when the brackets or quotes don't
+ * close.
+ */
+function resultParts(value: string): string[] {
+	const parts: string[] = [];
+	let part = "";
+	let depth = 0;
+	let quoted = false;
+	for (let i = 0; i < value.length; i++) {
+		const char = value[i];
+		if (char === "\\" && (depth > 0 || quoted)) {
+			if (quoted) part += value.slice(i, i + 2);
+			i++;
+		} else if (depth > 0) {
+			if (char === "(") depth++;
+			else if (char === ")") depth--;
+		} else if (quoted) {
+			part += char;
+			if (char === '"') quoted = false;
+		} else if (char === '"') {
+			quoted = true;
+			part += char;
+		} else if (char === "(") {
+			depth = 1;
+			part += " ";
+		} else if (char === ";") {
+			parts.push(part.trim());
+			part = "";
+		} else {
+			part += char;
+		}
+	}
+	if (depth > 0 || quoted) return [];
+	parts.push(part.trim());
+	return parts;
+}
+
+const normalDomain = (domain: string) => domain.trim().toLowerCase().replace(/\.$/, "");
+
+/**
+ * The domain a message is proved to come from, or null. That is when Cloudflare's DMARC check
+ * passed for the domain of the one address in the one `From`, which is the address a page shows.
+ * A field whose name only looks like `From` counts as a second one: programs differ on such names,
+ * and Cloudflare may have checked it instead.
+ */
+export function verifiedDomain(headers: Header[], verdict: Verdict | null): string | null {
+	if (verdict?.dmarc !== "pass" || !verdict.fromDomain) return null;
+	const froms = headers.filter((header) => header.name.replace(/[^a-z]/g, "") === "from");
+	const [from] = froms;
+	if (froms.length !== 1 || !from?.strict || from.name !== "from") return null;
+	let senders: ReturnType<typeof addressParser>;
+	try {
+		senders = addressParser(from.value);
+	} catch {
+		return null;
+	}
+	const [sender] = senders;
+	if (senders.length !== 1 || !sender || sender.group || !sender.address) return null;
+	const at = sender.address.lastIndexOf("@");
+	if (at <= 0) return null;
+	const domain = normalDomain(sender.address.slice(at + 1));
+	return domain === verdict.fromDomain ? domain : null;
+}
+
 /**
  * What tells two deliveries of one message apart from two messages: the mailbox and the sender's
- * `Message-ID`, `From`, `Date` and `Subject`. A retry brings different raw bytes, as Cloudflare
- * signs each delivery anew, so the raw message can't be the key. Null without a `Message-ID`.
+ * `Message-ID`, `From`, `Date` and `Subject`, whichever of them it has. A retry brings different
+ * raw bytes, as Cloudflare signs each delivery anew, so the raw message can't be the key. Messages
+ * that share a key are told apart by their bodies.
  */
-export async function deliveryKey(mailboxId: string, headers: Header[]): Promise<string | null> {
-	const messageId = firstHeader(headers, "message-id");
-	if (!messageId) return null;
+export async function deliveryKey(mailboxId: string, headers: Header[]): Promise<string> {
 	const parts = [
 		mailboxId,
-		messageId,
-		...["from", "date", "subject"].map((n) => firstHeader(headers, n)),
+		...["message-id", "from", "date", "subject"].map((name) => firstHeader(headers, name)),
 	];
 	const digest = await crypto.subtle.digest(
 		"SHA-256",

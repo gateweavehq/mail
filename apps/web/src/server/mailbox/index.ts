@@ -1,13 +1,14 @@
 import { env } from "cloudflare:workers";
-import { inArray } from "drizzle-orm";
+import { asc, eq, lte } from "drizzle-orm";
 import type { Database } from "../db";
 import { schema } from "../db";
 import {
-	cloudflareDmarc,
+	cloudflareVerdict,
 	deliveryKey,
 	firstHeader,
 	parseHeaders,
 	readHeaderBlock,
+	verifiedDomain,
 } from "./headers";
 
 export { Mailbox } from "./durable-object";
@@ -40,6 +41,7 @@ export async function storeMail(
 ): Promise<void> {
 	const [forHeaders, forStoring] = message.raw.tee();
 	const headers = parseHeaders(await readHeaderBlock(forHeaders));
+	const verdict = cloudflareVerdict(headers);
 	const mailbox = mailboxStub(found.mailboxId);
 	const begun = await mailbox.begin({
 		workspaceId: found.workspaceId,
@@ -52,7 +54,8 @@ export async function storeMail(
 		subject: firstHeader(headers, "subject"),
 		date: firstHeader(headers, "date"),
 		messageId: firstHeader(headers, "message-id"),
-		dmarc: cloudflareDmarc(headers),
+		dmarc: verdict?.dmarc ?? null,
+		verifiedDomain: verifiedDomain(headers, verdict),
 	});
 	if (!begun.ok) {
 		await forStoring.cancel();
@@ -65,6 +68,9 @@ export async function storeMail(
 	await forStoring.pipeTo(sized.writable);
 	await stored;
 	if ((await mailbox.finish(begun.id)) === "gone") {
+		// The alarm or a removal let this delivery go while it was on its way, and nothing knows its
+		// mail now. The sender tries again.
+		await env.RAW_MAIL.delete(begun.object).catch(() => {});
 		throw new Error("The mailbox gave up on this delivery");
 	}
 }
@@ -75,93 +81,62 @@ export async function destroyMailbox(workspaceId: string, mailboxId: string): Pr
 }
 
 /**
- * Removes the mail of mailboxes that have just been removed, one at a time. One that fails is left
- * for the daily sweep, and its error's name is all that is logged.
+ * Removes the mail of mailboxes that have just been removed, one at a time. D1 has a record of
+ * each removal, which the daily run finishes, so one that fails here is only logged, by its
+ * error's name.
  */
 export async function removeMailboxes(workspaceId: string, mailboxIds: string[]): Promise<void> {
 	for (const mailboxId of mailboxIds) {
 		try {
 			await destroyMailbox(workspaceId, mailboxId);
 		} catch (error) {
-			console.error("mailbox: removing its mail failed; the daily sweep will", {
+			console.error("mailbox: removing its mail failed; the daily run will", {
 				name: error instanceof Error ? error.name : "unknown",
 			});
 		}
 	}
 }
 
-/** How many mailboxes one sweep looks at, so the daily run stays short. */
-const SWEEP_LIMIT = 500;
+/**
+ * How long after a removal the daily run finishes it. A delivery that found the mailbox just
+ * before it went can land a few minutes later, and by then none can.
+ */
+export const REMOVAL_SETTLES_MS = 60 * 60 * 1000;
 
-/** The workspaces' prefixes in R2, from `startAfter` on, or up to `upTo`. */
-async function* workspacePrefixes(range: { startAfter?: string; upTo?: string }) {
-	let cursor: string | undefined;
-	do {
-		const listed = await env.RAW_MAIL.list({
-			delimiter: "/",
-			cursor,
-			...(cursor ? {} : { startAfter: range.startAfter }),
-		});
-		for (const prefix of listed.delimitedPrefixes) {
-			if (range.upTo !== undefined && prefix > range.upTo) return;
-			yield prefix;
-		}
-		cursor = listed.truncated ? listed.cursor : undefined;
-	} while (cursor);
-}
+/** How many removals one daily run finishes. The rest wait for the next. */
+const REMOVALS_PER_RUN = 500;
 
 /**
- * Removes the mail of mailboxes that no longer exist. Removing a mailbox or a workspace does this
- * at once, and this is for when that failed part way: R2 is listed by workspace and mailbox, and
- * whatever D1 doesn't know any more goes. The mailbox's index goes with it. Each run starts at a
- * random place and goes round, so a server with more mailboxes than one run looks at is still
- * covered over a few days.
+ * Removes again what removed mailboxes held, from D1's records of their removal, and forgets the
+ * records. Only those mailboxes' prefixes are touched, so the bucket may hold other things.
  */
-export async function sweepRemovedMailboxes(db: Database): Promise<number> {
-	const seen: { workspaceId: string; mailboxId: string }[] = [];
-	const start = crypto.randomUUID();
-	outer: for (const range of [{ startAfter: start }, { upTo: start }]) {
-		for await (const workspacePrefix of workspacePrefixes(range)) {
-			let cursor: string | undefined;
-			do {
-				const mailboxes = await env.RAW_MAIL.list({
-					prefix: workspacePrefix,
-					delimiter: "/",
-					cursor,
-				});
-				for (const mailboxPrefix of mailboxes.delimitedPrefixes) {
-					const [workspaceId, mailboxId] = mailboxPrefix.split("/");
-					if (workspaceId && mailboxId) seen.push({ workspaceId, mailboxId });
-					if (seen.length >= SWEEP_LIMIT) break outer;
+export async function finishRemovals(db: Database, now = Date.now()): Promise<number> {
+	const due = await db
+		.select()
+		.from(schema.mailboxRemoval)
+		.where(lte(schema.mailboxRemoval.removedAt, new Date(now - REMOVAL_SETTLES_MS)))
+		.orderBy(asc(schema.mailboxRemoval.removedAt))
+		.limit(REMOVALS_PER_RUN)
+		.all();
+	let finished = 0;
+	// A few at once: each is a call to its mailbox's object and a listing of R2.
+	for (let at = 0; at < due.length; at += 10) {
+		await Promise.all(
+			due.slice(at, at + 10).map(async (removal) => {
+				try {
+					await destroyMailbox(removal.organizationId, removal.mailboxId);
+					await db
+						.delete(schema.mailboxRemoval)
+						.where(eq(schema.mailboxRemoval.mailboxId, removal.mailboxId))
+						.run();
+					finished++;
+				} catch (error) {
+					console.error("mailbox: finishing a removal failed; the next run will", {
+						name: error instanceof Error ? error.name : "unknown",
+					});
 				}
-				cursor = mailboxes.truncated ? mailboxes.cursor : undefined;
-			} while (cursor);
-		}
-	}
-
-	let removed = 0;
-	// D1 takes at most 100 bound parameters in one query.
-	for (let at = 0; at < seen.length; at += 90) {
-		const chunk = seen.slice(at, at + 90);
-		const existing = new Set(
-			(
-				await db
-					.select({ id: schema.mailbox.id })
-					.from(schema.mailbox)
-					.where(
-						inArray(
-							schema.mailbox.id,
-							chunk.map((one) => one.mailboxId),
-						),
-					)
-					.all()
-			).map((row) => row.id),
+			}),
 		);
-		for (const one of chunk) {
-			if (existing.has(one.mailboxId)) continue;
-			await destroyMailbox(one.workspaceId, one.mailboxId);
-			removed++;
-		}
 	}
-	return removed;
+	return finished;
 }

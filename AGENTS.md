@@ -91,10 +91,13 @@ These are load-bearing. Breaking one breaks users' data or security, usually sil
     `message.setReject` is permanent (`555`): use it only for a real refusal, such as an address
     that does not exist, never for our own trouble.
 11. **Mail is untrusted input.** Only `dmarc=pass` in Cloudflare's own `Authentication-Results`,
-    among the headers it adds at the top, is proof of who sent a message: a forged one can arrive
-    marked `dmarc=none`, or bring an `Authentication-Results` of its own. `message.from` is the
-    envelope sender, not the person the reader will see, so show the `From` header. Never show a
-    message's HTML in a page, and serve the original only as a download.
+    among the headers it adds at the top, is proof of who sent a message, and only of the domain
+    it checked (`header.from`), when that is the domain of the one address in the one `From`
+    (`verifiedDomain`). A forged message can arrive marked `dmarc=none`, bring an
+    `Authentication-Results` of its own, or put an address in the name before the real one, so
+    show the proved domain, never a mark alone. `message.from` is the envelope sender, not the
+    person the reader will see, so show the `From` header. Never show a message's HTML in a page,
+    and serve the original only as a download.
 12. **A mailbox's Durable Object has no public route.** Only `email()`, after looking the address
     up, and server code, after checking membership and that the mailbox is in the caller's
     workspace, reach it. Every R2 object is named by the mailbox's object, as pending, before it is

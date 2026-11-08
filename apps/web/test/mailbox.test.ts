@@ -36,7 +36,7 @@ interface Page {
 		arrivedAt: number;
 		from: { name: string; address: string } | null;
 		subject: string;
-		verified: boolean;
+		verifiedDomain: string | null;
 		size: number;
 	}[];
 	next: { arrivedAt: number; id: string } | null;
@@ -47,7 +47,7 @@ interface Opened {
 	from: { name: string; address: string } | null;
 	to: { name: string; address: string }[];
 	subject: string;
-	verified: boolean;
+	verifiedDomain: string | null;
 	dmarc: string | null;
 	text: string;
 	hasHtml: boolean;
@@ -63,6 +63,9 @@ async function directory(slug: string, headers: Record<string, string>, action?:
 	expect(response.status).toBe(200);
 	return (await response.json()) as Listed & { ok?: boolean; proved?: boolean };
 }
+
+/** How much a mailbox holds in these tests. */
+const MAILBOX_BYTES = 100_000;
 
 /** A workspace with a proved domain and a mailbox with one address. */
 async function mailboxWithAddress(person = owner) {
@@ -124,6 +127,7 @@ const fromCloudflare = (dmarc: string) => [
 function message(
 	to: string,
 	{
+		from = "Sender Person <sender@example.org>",
 		subject = "Hello",
 		body = "Hello there.",
 		messageId = `<${crypto.randomUUID()}@example.org>`,
@@ -133,7 +137,7 @@ function message(
 ) {
 	return [
 		...above,
-		"From: Sender Person <sender@example.org>",
+		`From: ${from}`,
 		`To: ${to}`,
 		`Subject: ${subject}`,
 		"Date: Sun, 08 Nov 2026 09:00:00 +0000",
@@ -175,7 +179,10 @@ async function objects(prefix: string) {
 }
 
 beforeAll(async () => {
-	mail = await startMail(origin, { hosts: { "cloudflare-dns.com": dns } });
+	mail = await startMail(origin, {
+		hosts: { "cloudflare-dns.com": dns },
+		settings: { MAILBOX_BYTES: String(MAILBOX_BYTES) },
+	});
 	owner = await signUp(mail, origin, "Owner");
 	outsider = await signUp(mail, origin, "Outsider");
 });
@@ -194,7 +201,7 @@ describe("storing mail", () => {
 		expect(page.messages[0]).toMatchObject({
 			from: { name: "Sender Person", address: "sender@example.org" },
 			subject: "First",
-			verified: false,
+			verifiedDomain: null,
 		});
 		expect(page.next).toBeNull();
 		expect(await objects(`${box.workspaceId}/${box.mailboxId}/`)).toHaveLength(1);
@@ -341,32 +348,54 @@ describe("reading a message", () => {
 });
 
 describe("who sent it", () => {
-	async function verdict(above: string[], extra: string[] = []) {
+	async function verdict(above: string[], extra: string[] = [], from?: string) {
 		const box = await mailboxWithAddress();
-		await kept(box.address, message(box.address, { above, extra }));
+		await kept(box.address, message(box.address, { above, extra, ...(from ? { from } : {}) }));
 		const [listed] = (await messages(box.slug, box.mailboxId)).messages;
 		return { listed, opened: await open(box.slug, box.mailboxId, listed?.id ?? "") };
 	}
 
 	it("trusts the sender when Cloudflare's own check passed", async () => {
 		const { listed, opened } = await verdict(fromCloudflare("pass"));
-		expect(listed?.verified).toBe(true);
-		expect(opened).toMatchObject({ verified: true, dmarc: "pass" });
+		expect(listed?.verifiedDomain).toBe("example.org");
+		expect(opened).toMatchObject({ verifiedDomain: "example.org", dmarc: "pass" });
+	});
+
+	// The domain is what a reader can trust, not the name in front of the address.
+	it("names the domain that was proved, whatever the From's name says", async () => {
+		const { listed } = await verdict(
+			fromCloudflare("pass"),
+			[],
+			'"ceo@bank.example" <a@example.org>',
+		);
+		expect(listed?.verifiedDomain).toBe("example.org");
+	});
+
+	it("doesn't when Cloudflare checked another domain than the From shows", async () => {
+		const { opened } = await verdict(fromCloudflare("pass"), [], "Your Bank <ceo@bank.example>");
+		expect(opened).toMatchObject({ verifiedDomain: null, dmarc: "pass" });
+	});
+
+	it("doesn't when the message has a second From", async () => {
+		const second = await verdict(fromCloudflare("pass"), ["From: ceo@bank.example"]);
+		expect(second.opened.verifiedDomain).toBeNull();
+		const odd = await verdict(fromCloudflare("pass"), ["From : ceo@bank.example"]);
+		expect(odd.opened.verifiedDomain).toBeNull();
 	});
 
 	it("doesn't when Cloudflare's check didn't pass", async () => {
 		const { opened } = await verdict(fromCloudflare("fail"));
-		expect(opened).toMatchObject({ verified: false, dmarc: "fail" });
+		expect(opened).toMatchObject({ verifiedDomain: null, dmarc: "fail" });
 	});
 
 	// A sender can put any header in a message, Authentication-Results included.
 	it("doesn't believe a verdict that came with the message", async () => {
 		const forged = "Authentication-Results: mx.cloudflare.net; dmarc=pass header.from=example.org";
 		const below = await verdict(fromCloudflare("none"), [forged]);
-		expect(below.opened).toMatchObject({ verified: false, dmarc: "none" });
+		expect(below.opened).toMatchObject({ verifiedDomain: null, dmarc: "none" });
 
 		const alone = await verdict([forged]);
-		expect(alone.opened).toMatchObject({ verified: false, dmarc: null });
+		expect(alone.opened).toMatchObject({ verifiedDomain: null, dmarc: null });
 	});
 });
 
@@ -459,15 +488,143 @@ describe("removing mail", () => {
 		await expect.poll(() => objects(prefix), { timeout: 5000 }).toEqual([]);
 	});
 
-	it("goes in the daily run when a removal stopped part way, and nothing else does", async () => {
+	/** Makes D1's records of removals look older, as the daily run only finishes those. */
+	async function ageRemovals() {
+		await mail.db
+			.prepare("UPDATE mailbox_removal SET removed_at = removed_at - ?")
+			.bind(2 * 60 * 60 * 1000)
+			.run();
+	}
+
+	async function removals(mailboxId: string) {
+		const row = await mail.db
+			.prepare("SELECT count(*) AS n FROM mailbox_removal WHERE mailbox_id = ?")
+			.bind(mailboxId)
+			.first<{ n: number }>();
+		return row?.n ?? 0;
+	}
+
+	// As if the Worker stopped right after the mailbox's row went, before removing its mail.
+	it("is finished by the daily run when a removal stopped part way", async () => {
 		const box = await mailboxWithAddress();
 		await kept(box.address, message(box.address));
-		const left = `${box.workspaceId}/${crypto.randomUUID()}/`;
-		await mail.bucket.put(`${left}${crypto.randomUUID()}.eml`, "left behind");
+		const prefix = `${box.workspaceId}/${box.mailboxId}/`;
+		await mail.db.prepare("DELETE FROM mailbox WHERE id = ?").bind(box.mailboxId).run();
+		expect(await removals(box.mailboxId)).toBe(1);
 
+		// A delivery that found the mailbox just before it went may still land, so the run waits.
 		await mail.runScheduled();
-		expect(await objects(left)).toEqual([]);
-		expect(await objects(`${box.workspaceId}/${box.mailboxId}/`)).toHaveLength(1);
+		expect(await objects(prefix)).toHaveLength(1);
+
+		await ageRemovals();
+		await mail.runScheduled();
+		expect(await objects(prefix)).toEqual([]);
+		expect(await removals(box.mailboxId)).toBe(0);
+	});
+
+	it("is finished by the daily run for every mailbox of a workspace that went", async () => {
+		const box = await mailboxWithAddress();
+		const other = await addMailbox(box.slug, owner, box.domainId, `sales@${box.domain}`);
+		await kept(box.address, message(box.address));
+		await kept(`sales@${box.domain}`, message(`sales@${box.domain}`));
+		await mail.db.prepare("DELETE FROM organization WHERE id = ?").bind(box.workspaceId).run();
+		expect(await removals(box.mailboxId)).toBe(1);
+		expect(await removals(other)).toBe(1);
+
+		await ageRemovals();
+		await mail.runScheduled();
+		expect(await objects(`${box.workspaceId}/`)).toEqual([]);
+	});
+
+	// The bucket may be shared, and only what a mailbox stored is Mail's to remove.
+	it("touches nothing in the bucket that no removed mailbox stored", async () => {
+		const box = await mailboxWithAddress();
+		await kept(box.address, message(box.address));
+		const elsewhere = ["notes/today.txt", `${box.workspaceId}/${crypto.randomUUID()}/kept.eml`];
+		for (const key of elsewhere) await mail.bucket.put(key, "not Mail's");
+
+		await ageRemovals();
+		await mail.runScheduled();
+		for (const key of elsewhere) expect(await objects(key)).toEqual([key]);
 		expect((await messages(box.slug, box.mailboxId)).messages).toHaveLength(1);
+	});
+});
+
+describe("deleting a message", () => {
+	function remove(slug: string, mailboxId: string, id: string, headers: Record<string, string>) {
+		return mail.fetch(`${origin}/api/mail/${slug}/${mailboxId}/${id}`, {
+			method: "DELETE",
+			headers,
+		});
+	}
+
+	it("is for an owner or admin, and its mail goes", async () => {
+		const box = await mailboxWithAddress();
+		await kept(box.address, message(box.address, { subject: "Going" }));
+		await kept(box.address, message(box.address, { subject: "Staying" }));
+		const going = (await messages(box.slug, box.mailboxId)).messages.find(
+			(one) => one.subject === "Going",
+		);
+
+		const response = await remove(box.slug, box.mailboxId, going?.id ?? "", owner.headers);
+		expect(response.status).toBe(200);
+		expect((await messages(box.slug, box.mailboxId)).messages.map((one) => one.subject)).toEqual([
+			"Staying",
+		]);
+		expect(await objects(`${box.workspaceId}/${box.mailboxId}/`)).toHaveLength(1);
+		expect((await remove(box.slug, box.mailboxId, going?.id ?? "", owner.headers)).status).toBe(
+			404,
+		);
+	});
+
+	it("isn't for a member, nor from another site, and nobody else finds the message", async () => {
+		const box = await mailboxWithAddress();
+		await kept(box.address, message(box.address));
+		const [listed] = (await messages(box.slug, box.mailboxId)).messages;
+		const id = listed?.id ?? "";
+		const reader = await signUp(mail, origin, `Member${++counter}`);
+		await mail.db
+			.prepare(
+				"INSERT INTO member (id, organization_id, user_id, role, created_at) VALUES (?, ?, ?, 'member', ?)",
+			)
+			.bind(crypto.randomUUID(), box.workspaceId, reader.userId, Date.now())
+			.run();
+
+		expect((await remove(box.slug, box.mailboxId, id, reader.headers)).status).toBe(403);
+		expect(
+			(
+				await remove(box.slug, box.mailboxId, id, {
+					...owner.headers,
+					origin: "https://elsewhere.test",
+				})
+			).status,
+		).toBe(403);
+		expect((await remove(box.slug, box.mailboxId, id, outsider.headers)).status).toBe(404);
+		expect((await messages(box.slug, box.mailboxId)).messages).toHaveLength(1);
+	});
+});
+
+describe("a full mailbox", () => {
+	const big = (to: string, subject: string) =>
+		message(to, { subject, body: "x".repeat(MAILBOX_BYTES * 0.6) });
+
+	// The sender keeps the message and tries again later, by when there may be room.
+	it("tells the sender to try again, and takes the mail once a message is deleted", async () => {
+		const box = await mailboxWithAddress();
+		await kept(box.address, big(box.address, "First"));
+		const refused = await deliver(box.address, big(box.address, "Second"));
+		expect(refused.status).toBeGreaterThanOrEqual(500);
+		expect(refused.text).not.toContain("No such address");
+
+		const [first] = (await messages(box.slug, box.mailboxId)).messages;
+		const deleted = await mail.fetch(
+			`${origin}/api/mail/${box.slug}/${box.mailboxId}/${first?.id}`,
+			{ method: "DELETE", headers: owner.headers },
+		);
+		expect(deleted.status).toBe(200);
+		await kept(box.address, big(box.address, "Second"));
+		expect((await messages(box.slug, box.mailboxId)).messages.map((one) => one.subject)).toEqual([
+			"Second",
+		]);
 	});
 });
