@@ -134,15 +134,20 @@ test("mail that arrives at an address shows in its mailbox, and opens as text", 
 	const download = page.waitForEvent("download");
 	await first.getByRole("link", { name: /Download the original/ }).click();
 	expect((await download).suggestedFilename()).toBe("message.eml");
+	await first.getByRole("button", { name: /A Customer/ }).click();
+	await expect(first.getByText("It was due on Friday.")).toHaveCount(0);
 
-	// The owner can delete a message, after saying so, and the thread keeps the rest.
-	await first.getByRole("button", { name: "Delete" }).click();
+	// The owner can delete a message, after saying so, and the thread keeps the rest. The message
+	// that is newest now opens, and the focus goes to the thread's heading.
+	await reply.getByRole("button", { name: "Delete" }).click();
 	await page.getByRole("dialog").getByRole("button", { name: "Delete message" }).click();
-	await expect(first).toHaveCount(0);
+	await expect(reply).toHaveCount(0);
 	await expect(page.getByText("1 message", { exact: true })).toBeVisible();
+	await expect(first.getByText("It was due on Friday.")).toBeVisible();
+	await expect(page.getByRole("heading", { level: 1, name: "My order hasn't come" })).toBeFocused();
 
 	// Deleting its last message takes the thread with it, back to the mailbox.
-	await reply.getByRole("button", { name: "Delete" }).click();
+	await first.getByRole("button", { name: "Delete" }).click();
 	await page.getByRole("dialog").getByRole("button", { name: "Delete message" }).click();
 	await expect(page).toHaveURL(`/${slug}/mailboxes/${box?.id}`);
 	await expect(threads.getByRole("link", { name: /Your order has shipped/ })).toBeVisible();

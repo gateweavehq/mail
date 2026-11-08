@@ -17,12 +17,12 @@ const MAX_ID = 998;
  */
 export function messageIds(value: string | null): string[] {
 	if (!value) return [];
-	const found: string[] = [];
+	const found = new Set<string>();
 	for (const match of value.matchAll(/<([^<>\s]+)>/g)) {
 		const id = match[1];
-		if (id && id.length <= MAX_ID && !found.includes(id)) found.push(id);
+		if (id && id.length <= MAX_ID) found.add(id);
 	}
-	return found;
+	return [...found];
 }
 
 /** A message's own id, or null when its `Message-ID` holds none. */
@@ -35,17 +35,32 @@ export function ownId(headers: Header[]): string | null {
  * Only the newest `MAX_REFERENCES` are kept, which is plenty to find a thread.
  */
 export function referencedIds(headers: Header[]): string[] {
-	const ids = messageIds(firstHeader(headers, "references"));
-	for (const id of messageIds(firstHeader(headers, "in-reply-to"))) {
-		if (!ids.includes(id)) ids.push(id);
-	}
-	return ids.slice(-MAX_REFERENCES);
+	// `References` lists the oldest first, and a long thread's runs past what a listing keeps of a
+	// header, so it is read from its end.
+	const references = headers.find((header) => header.name === "references")?.value ?? null;
+	const ids = new Set(messageIds(references?.slice(-MAX_REFERENCES * (MAX_ID + 3)) ?? null));
+	for (const id of messageIds(firstHeader(headers, "in-reply-to"))) ids.add(id);
+	return [...ids].slice(-MAX_REFERENCES);
 }
 
-// "Re:", "Fwd:" and their kin in other languages, maybe numbered as in "Re[2]:", and list tags such
-// as "[team]". Full-width colons come from Chinese and Japanese mail programs.
-const PREFIX =
-	/^\s*(?:(?:re|fwd?|fw|aw|wg|sv|vs|antw|doorst|tr|rif|r|res|enc|odp|pd|ynt|ilt|yan[ıi]t|回复|回覆|转发|轉寄|答复|返信|転送)\s*(?:\[\d+\]|\(\d+\))?\s*[:：]|\[[^\]]{1,40}\])\s*/iu;
+// "Re:", "Fwd:" and their kin in other languages, maybe numbered as in "Re[2]:". Full-width colons
+// come from Chinese and Japanese mail programs.
+const REPLY =
+	/^\s*(?:re|fwd?|fw|aw|wg|sv|vs|antw|doorst|tr|rif|r|res|enc|odp|pd|ynt|ilt|yan[ıi]t|回复|回覆|转发|轉寄|答复|返信|転送)\s*(?:\[\d+\]|\(\d+\))?\s*[:：]\s*/iu;
+
+// Those, and list tags such as "[team]".
+const PREFIX = new RegExp(String.raw`${REPLY.source}|^\s*\[[^\]]{1,40}\]\s*`, "iu");
+
+/** Takes `pattern` off the start of `text` as often as it is there, up to a point. */
+function strip(text: string, pattern: RegExp): string {
+	let rest = text;
+	for (let i = 0; i < 20; i++) {
+		const shorter = rest.replace(pattern, "");
+		if (shorter === rest) break;
+		rest = shorter;
+	}
+	return rest;
+}
 
 /**
  * A subject as threads compare it: decoded, without the prefixes replies and forwards add, in one
@@ -59,11 +74,13 @@ export function subjectKey(subject: string | null): string {
 	} catch {
 		text = subject;
 	}
-	text = text.normalize("NFKC").replace(/\s+/g, " ").trim();
-	for (let i = 0; i < 20; i++) {
-		const shorter = text.replace(PREFIX, "");
-		if (shorter === text) break;
-		text = shorter;
-	}
-	return text.toLowerCase();
+	return strip(text.normalize("NFKC").replace(/\s+/g, " ").trim(), PREFIX).toLowerCase();
+}
+
+/**
+ * A decoded subject as a thread's line shows it: without the "Re:" and "Fwd:" in front, otherwise
+ * as written. List tags stay, as they say where the mail came from.
+ */
+export function threadSubject(subject: string): string {
+	return strip(subject, REPLY).trim();
 }

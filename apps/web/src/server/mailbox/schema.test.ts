@@ -100,6 +100,26 @@ describe("migrate", () => {
 		expect(db.prepare("SELECT bytes FROM held").get()).toEqual({ bytes: 30 });
 	});
 
+	it("gives a thread to a message stored without one, as code from before threads does", () => {
+		const { db, storage: store } = storage();
+		migrate(store);
+		// Stored as the first version stores, after a rollback.
+		db.prepare(
+			`INSERT INTO message (id, state, delivery_key, object, size, arrived_at, envelope_from,
+				envelope_to)
+			VALUES ('loose', 'stored', 'key', 'w/m/x.eml', 10, 5, 'a@x', 'b@y')`,
+		).run();
+
+		migrate(store);
+
+		expect(db.prepare("SELECT thread_id AS threadId FROM message").get()).toEqual({
+			threadId: "loose",
+		});
+		expect(db.prepare("SELECT id, first_at, latest_at, count FROM thread").all()).toEqual([
+			{ id: "loose", first_at: 5, latest_at: 5, count: 1 },
+		]);
+	});
+
 	it("leaves an object as it was when a migration fails", () => {
 		const { db, storage: store } = storage();
 		MIGRATIONS[0]?.(store.sql);

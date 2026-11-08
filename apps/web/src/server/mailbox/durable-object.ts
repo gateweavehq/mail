@@ -18,11 +18,11 @@ export const PENDING_MS = 15 * 60 * 1000;
 /** The most messages or threads one listing returns. */
 export const MAX_LISTED = 100;
 
-/** The most messages a thread shows: its newest. */
-export const MAX_THREAD_MESSAGES = 200;
-
 /** The most senders a thread's listing names. */
 const MAX_SENDERS = 5;
+
+/** How many of a thread's first messages its listing looks through for senders. */
+const SENDERS_READ = 200;
 
 /** What `email()` knows of a message before storing it. */
 export interface Arrival {
@@ -37,10 +37,12 @@ export interface Arrival {
 	subject: string | null;
 	date: string | null;
 	messageId: string | null;
+	// These two are missing from a Worker older than threads, which can still be running while a
+	// deploy reaches every place, and the message is stored without them then.
 	/** The id in `messageId`, from `ownId`. */
-	ownId: string | null;
+	ownId?: string | null;
 	/** The ids it replies to or follows, from `referencedIds`. */
-	references: string[];
+	references?: string[];
 	/** Cloudflare's DMARC verdict, from `cloudflareVerdict`. */
 	dmarc: string | null;
 	/** The domain the message is proved to come from, from `verifiedDomain`. */
@@ -88,12 +90,25 @@ export interface ThreadSummary {
 	id: string;
 	latestAt: number;
 	count: number;
-	/** The first message's. */
+	/**
+	 * The newest message's, like the proved domain beside it: anyone who knows a message's id and
+	 * subject can start its thread, and their subject mustn't seem to come from whoever was proved.
+	 */
 	subject: string | null;
-	/** The From headers of its messages, each once, in the order they first wrote. */
+	/** The From headers of its first messages, each once, in the order they first wrote. */
 	senders: (string | null)[];
 	/** The domain its newest message is proved to come from. */
 	latestVerifiedDomain: string | null;
+}
+
+/** A page of a thread. */
+export interface ThreadMessages {
+	/** How many messages it has, on every page. */
+	count: number;
+	/** Its newest message's, as in `ThreadSummary`. */
+	subject: string | null;
+	/** Newest first. */
+	messages: StoredSummary[];
 }
 
 const SUMMARY = `id, thread_id AS threadId, arrived_at AS arrivedAt, size, from_header AS "from",
@@ -151,10 +166,10 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			arrival.messageId,
 			arrival.dmarc,
 			arrival.verifiedDomain,
-			arrival.ownId,
+			arrival.ownId ?? null,
 			subjectKey(arrival.subject),
 		);
-		for (const ref of arrival.references.slice(-MAX_REFERENCES)) {
+		for (const ref of (arrival.references ?? []).slice(-MAX_REFERENCES)) {
 			sql.exec("INSERT OR IGNORE INTO message_reference (message, ref) VALUES (?, ?)", id, ref);
 		}
 		if ((await this.ctx.storage.getAlarm()) === null) {
@@ -232,10 +247,11 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 	}
 
 	/**
-	 * Stores a pending message in a thread. It joins one when it names a stored message here, or a
-	 * stored message names it, and their subjects are the same once `Re:` and its kin are off. A
-	 * subject alone never joins a thread, as anyone can write one. A message that links threads
-	 * merges them into the one that began first.
+	 * Stores a pending message in a thread. It joins one when it names a stored message here, a
+	 * stored message names it, or the two name the same message, which may be one this mailbox never
+	 * got, such as mail its people sent from elsewhere. Their subjects must be the same, too, once
+	 * `Re:` and its kin are off. A subject alone never joins a thread, as anyone can write one. A
+	 * message that links threads merges them into the one that began first.
 	 */
 	#store(id: string): "stored" | "gone" {
 		const sql = this.ctx.storage.sql;
@@ -248,30 +264,30 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 				)
 				.toArray()[0];
 			if (!me) return "gone";
-			const linked = sql
-				.exec<{ threadId: string }>(
-					`SELECT DISTINCT thread_id AS threadId FROM message
-					WHERE state = 'stored' AND subject_key = ? AND (
-						own_id IN (SELECT ref FROM message_reference WHERE message = ?)
-						OR id IN (SELECT message FROM message_reference WHERE ref = ?)
-					)`,
+			// However many threads it links, the query has the same few values: SQLite takes at most a
+			// hundred, and a stranger can make as many threads as they send messages.
+			const [first, ...others] = sql
+				.exec<{ id: string }>(
+					`SELECT id FROM thread WHERE id IN (
+						SELECT thread_id FROM message
+						WHERE state = 'stored' AND subject_key = ? AND (
+							own_id IN (SELECT ref FROM message_reference WHERE message = ?)
+							OR id IN (SELECT message FROM message_reference WHERE ref = ?)
+							OR id IN (
+								SELECT message FROM message_reference
+								WHERE ref IN (SELECT ref FROM message_reference WHERE message = ?)
+							)
+						)
+					)
+					ORDER BY first_at, id`,
 					me.subjectKey,
 					id,
 					// A message with no id of its own can't be named; null matches nothing.
 					me.ownId,
+					id,
 				)
 				.toArray()
-				.map((row) => row.threadId);
-			const first =
-				linked.length === 0
-					? undefined
-					: sql
-							.exec<{ id: string }>(
-								`SELECT id FROM thread WHERE id IN (${linked.map(() => "?").join(", ")})
-								ORDER BY first_at, id LIMIT 1`,
-								...linked,
-							)
-							.toArray()[0]?.id;
+				.map((row) => row.id);
 			const threadId = first ?? crypto.randomUUID();
 			if (!first) {
 				sql.exec(
@@ -281,8 +297,7 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 					me.arrivedAt,
 				);
 			}
-			for (const other of linked) {
-				if (other === threadId) continue;
+			for (const other of others) {
 				sql.exec("UPDATE message SET thread_id = ? WHERE thread_id = ?", threadId, other);
 				sql.exec("DELETE FROM thread WHERE id = ?", other);
 			}
@@ -355,56 +370,71 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 					)
 		).toArray();
 		return rows.map((thread) => {
-			const first = sql
-				.exec<{ subject: string | null }>(
-					`SELECT subject FROM message WHERE thread_id = ? AND state = 'stored'
-					ORDER BY arrived_at, id LIMIT 1`,
-					thread.id,
-				)
-				.toArray()[0];
-			const latest = sql
-				.exec<{ verifiedDomain: string | null }>(
-					`SELECT verified_domain AS verifiedDomain FROM message
-					WHERE thread_id = ? AND state = 'stored' ORDER BY arrived_at DESC, id DESC LIMIT 1`,
-					thread.id,
-				)
-				.toArray()[0];
+			const latest = this.#newest(thread.id);
+			// From its first messages only, so that a long thread costs no more than a short one.
 			const senders = sql
 				.exec<{ from: string | null }>(
-					`SELECT from_header AS "from" FROM message WHERE thread_id = ? AND state = 'stored'
-					GROUP BY from_header ORDER BY min(arrived_at) LIMIT ?`,
+					`SELECT "from" FROM (
+						SELECT from_header AS "from", arrived_at FROM message
+						WHERE thread_id = ? AND state = 'stored' ORDER BY arrived_at, id LIMIT ?
+					)
+					GROUP BY "from" ORDER BY min(arrived_at) LIMIT ?`,
 					thread.id,
+					SENDERS_READ,
 					MAX_SENDERS,
 				)
 				.toArray()
 				.map((row) => row.from);
 			return {
 				...thread,
-				subject: first?.subject ?? null,
+				subject: latest?.subject ?? null,
 				senders,
 				latestVerifiedDomain: latest?.verifiedDomain ?? null,
 			};
 		});
 	}
 
-	/**
-	 * A thread's messages, oldest first: its newest `MAX_THREAD_MESSAGES`, and whether there were
-	 * more. Null when there is no such thread here.
-	 */
-	thread(threadId: string): { messages: StoredSummary[]; cut: boolean } | null {
-		const rows = this.ctx.storage.sql
-			.exec<StoredSummary>(
-				`SELECT ${SUMMARY} FROM message WHERE thread_id = ? AND state = 'stored'
-				ORDER BY arrived_at DESC, id DESC LIMIT ?`,
+	/** A thread's newest message, which its line in a listing speaks for. */
+	#newest(threadId: string) {
+		return this.ctx.storage.sql
+			.exec<{ subject: string | null; verifiedDomain: string | null }>(
+				`SELECT subject, verified_domain AS verifiedDomain FROM message
+				WHERE thread_id = ? AND state = 'stored' ORDER BY arrived_at DESC, id DESC LIMIT 1`,
 				threadId,
-				MAX_THREAD_MESSAGES + 1,
 			)
-			.toArray();
-		if (rows.length === 0) return null;
-		return {
-			messages: rows.slice(0, MAX_THREAD_MESSAGES).reverse(),
-			cut: rows.length > MAX_THREAD_MESSAGES,
-		};
+			.toArray()[0];
+	}
+
+	/**
+	 * A thread's messages, newest first, after `before` when given, with how many it has and its
+	 * newest message's subject. Null when there is no such thread here.
+	 */
+	thread(threadId: string, before: Cursor | null, limit: number): ThreadMessages | null {
+		const sql = this.ctx.storage.sql;
+		const row = sql
+			.exec<{ count: number }>("SELECT count FROM thread WHERE id = ?", threadId)
+			.toArray()[0];
+		if (!row) return null;
+		const take = Math.min(Math.max(1, limit), MAX_LISTED);
+		const messages = (
+			before
+				? sql.exec<StoredSummary>(
+						`SELECT ${SUMMARY} FROM message
+						WHERE thread_id = ? AND state = 'stored' AND (arrived_at, id) < (?, ?)
+						ORDER BY arrived_at DESC, id DESC LIMIT ?`,
+						threadId,
+						before.arrivedAt,
+						before.id,
+						take,
+					)
+				: sql.exec<StoredSummary>(
+						`SELECT ${SUMMARY} FROM message WHERE thread_id = ? AND state = 'stored'
+						ORDER BY arrived_at DESC, id DESC LIMIT ?`,
+						threadId,
+						take,
+					)
+		).toArray();
+		return { count: row.count, subject: this.#newest(threadId)?.subject ?? null, messages };
 	}
 
 	/** One stored message, or null when there is no such message here. */

@@ -41,7 +41,10 @@ export interface ListedThread {
 	latestAt: number;
 	/** How many messages it has. */
 	count: number;
-	/** The first message's subject. */
+	/**
+	 * Its newest message's subject, without "Re:" and its kin. It is the newest message's, like the
+	 * proved domain beside it, since anyone who knows a message's id can start its thread.
+	 */
 	subject: string;
 	/** Who wrote in it, each once, in the order they first wrote. The first few only. */
 	senders: Person[];
@@ -65,13 +68,15 @@ export interface ThreadsPage {
 export interface ThreadPage {
 	/** The mailbox's name. */
 	mailbox: string;
-	/** The first message's subject. */
+	/** As in `ListedThread`. */
 	subject: string;
-	/** Oldest first. A very long thread has only its newest messages here. */
+	/** How many messages the whole thread has. */
+	count: number;
+	/** A page of them, oldest first. The first page has the newest. */
 	messages: ListedMessage[];
-	/** True when older messages were left out. */
-	cut: boolean;
-	/** Its newest message, opened. */
+	/** Where the page before this one, of older messages, starts, or null when there is none. */
+	older: MessageCursor | null;
+	/** The newest message on this page, opened. */
 	latest: OpenedMessage | null;
 }
 
@@ -131,12 +136,19 @@ export const getThreads = createServerFn({ method: "GET" })
 		return listThreads(data.workspace, data.mailbox, data.before);
 	});
 
-/** A thread, with its newest message opened, or null when there is no such thread the caller can see. */
+/** A page of a thread, or null when there is no such thread the caller can see. */
 export const getThread = createServerFn({ method: "GET" })
-	.validator(z.object({ workspace: Slug, mailbox: Id, thread: Id }))
+	.validator(
+		z.object({
+			workspace: Slug,
+			mailbox: Id,
+			thread: Id,
+			before: z.object({ arrivedAt: z.number().int().nonnegative(), id: Id }).nullable(),
+		}),
+	)
 	.handler(async ({ data }): Promise<ThreadPage | null> => {
 		const { openThread } = await import("#/server/mailbox/read");
-		return openThread(data.workspace, data.mailbox, data.thread);
+		return openThread(data.workspace, data.mailbox, data.thread, data.before);
 	});
 
 /** One message, parsed, or null when there is no such message the caller can see. */

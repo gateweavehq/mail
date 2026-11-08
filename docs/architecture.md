@@ -78,18 +78,23 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     limit, a message gets a temporary refusal, so it arrives if room is made before the sender
     gives up. Owners and admins can delete a message, which frees its space.
   - **Threads.** A message joins a thread when it is stored, if it names a stored message of the
-    mailbox in `In-Reply-To` or `References`, or a stored message names it, **and** their subjects
-    are the same once `Re:`, `Fwd:`, list tags and their kin are off. A subject alone never joins
-    a thread, as anyone can write one. A reply that arrives before the message it answers is taken
-    in when that message comes, and a message that links two threads merges them into the one that
-    began first. Someone who knows a message's id and subject can still add to its thread, as in
-    any mail program; their message shows under its own sender, proved or not. A `thread` row keeps
-    the count and the newest arrival, so a page of threads is one indexed read; the object brings it
-    up to date as messages are stored and deleted. The object's schema has versions, kept in a
-    table, since Durable Objects have no `PRAGMA user_version` (`schema.ts`); messages stored
-    before threads became a thread each.
+    mailbox in `In-Reply-To` or `References`, a stored message names it, or the two name the same
+    message, which the mailbox may never have got (mail its people sent from elsewhere), **and**
+    their subjects are the same once `Re:`, `Fwd:`, list tags and their kin are off. A subject
+    alone never joins a thread, as anyone can write one. A reply that arrives before the message it
+    answers is taken in when that message comes, and a message that links threads merges them into
+    the one that began first. The query that finds them has the same few values however many
+    threads a message links, as SQLite takes at most a hundred. `References` is read from its end,
+    keeping the newest 50 ids. Someone who knows a message's id and subject can still add to its
+    thread, as in any mail program; their message shows under its own sender, proved or not. So a
+    thread's line shows its newest message's subject, the one the proved domain beside it speaks
+    for. A `thread` row keeps the count and the first and newest arrival, so a page of threads is
+    one indexed read; the object brings it up to date as messages are stored and deleted. The
+    object's schema has versions, kept in a table, since Durable Objects have no
+    `PRAGMA user_version` (`schema.ts`); messages stored before threads became a thread each, and
+    so does any message stored without one, as code from before threads would after a rollback.
   - **Reading.** A mailbox's page lists its threads, newest news first, and a thread's page shows
-    its messages oldest first, with the newest open. The same are at
+    its messages oldest first, 50 at a time from the newest, with the newest open. The same are at
     `/api/mail/<workspace>/<mailbox>/threads` and `…/threads/<thread>`, beside the messages, newest
     first, at `/api/mail/<workspace>/<mailbox>`. A message is parsed with postal-mime when someone
     opens it, and only its text is shown: HTML waits until it can be shown without running what it

@@ -1,6 +1,7 @@
 import { createFileRoute, Link, useNavigate, useRouter } from "@tanstack/react-router";
 import { ChevronDown, ChevronRight, ShieldCheck } from "lucide-react";
-import { useId, useState } from "react";
+import { useId, useRef, useState } from "react";
+import { z } from "zod";
 import { MessageView, senderName } from "#/components/mail/message-view";
 import { Button } from "#/components/ui/button";
 import { useWorkspace } from "#/components/workspace/context";
@@ -9,20 +10,38 @@ import { formatDateTime, formatShortDate } from "#/lib/dates";
 import { getMessage, getThread, type ListedMessage, type OpenedMessage } from "#/lib/mailbox";
 import { useDocumentTitle } from "#/lib/title";
 
+const Search = z.object({
+	// Where a page of older messages starts: the oldest message of the page after it.
+	beforeAt: z.number().int().nonnegative().optional().catch(undefined),
+	beforeId: z.string().max(100).optional().catch(undefined),
+});
+
 export const Route = createFileRoute("/$workspace/mailboxes/$mailbox/threads/$thread")({
-	loader: ({ params }) =>
+	validateSearch: Search,
+	loaderDeps: ({ search }) => search,
+	loader: ({ params, deps }) =>
 		getThread({
-			data: { workspace: params.workspace, mailbox: params.mailbox, thread: params.thread },
+			data: {
+				workspace: params.workspace,
+				mailbox: params.mailbox,
+				thread: params.thread,
+				before:
+					deps.beforeAt !== undefined && deps.beforeId
+						? { arrivedAt: deps.beforeAt, id: deps.beforeId }
+						: null,
+			},
 		}),
 	component: ThreadPage,
 });
 
 function ThreadPage() {
 	const { slug } = useWorkspace();
-	const { mailbox } = Route.useParams();
+	const { mailbox, thread } = Route.useParams();
+	const search = Route.useSearch();
 	const page = Route.useLoaderData();
 	const router = useRouter();
 	const navigate = useNavigate();
+	const heading = useRef<HTMLHeadingElement>(null);
 	useDocumentTitle(page?.subject || "Thread");
 
 	if (!page) {
@@ -43,15 +62,18 @@ function ThreadPage() {
 	}
 
 	const deleted = async () => {
-		if (page.messages.length <= 1) {
+		if (page.count <= 1) {
 			await navigate({
 				to: "/$workspace/mailboxes/$mailbox",
 				params: { workspace: slug, mailbox },
 			});
 		} else {
 			await router.invalidate();
+			// The deleted message had the focus, so it goes somewhere that says where the reader is.
+			heading.current?.focus();
 		}
 	};
+	const newer = search.beforeId !== undefined;
 
 	return (
 		<div className="mx-auto max-w-4xl space-y-6 px-4 py-10 sm:px-6">
@@ -63,30 +85,55 @@ function ThreadPage() {
 				>
 					{page.mailbox}
 				</Link>
-				<h1 className="min-w-0 break-words text-xl font-semibold tracking-tight">
+				<h1
+					ref={heading}
+					tabIndex={-1}
+					className="min-w-0 break-words text-xl font-semibold tracking-tight focus-visible:outline-none"
+				>
 					{page.subject || "(no subject)"}
 				</h1>
 				<p className="text-sm text-muted-foreground">
-					{page.messages.length === 1 ? "1 message" : `${page.messages.length} messages`}
+					{page.count === 1 ? "1 message" : `${page.count} messages`}
 				</p>
 			</header>
 
-			{page.cut && (
-				<p className="text-sm text-muted-foreground">
-					This thread is long, so only its newest {page.messages.length} messages are shown.
-				</p>
+			{page.older && (
+				<Button asChild size="sm" variant="outline">
+					<Link
+						to="/$workspace/mailboxes/$mailbox/threads/$thread"
+						params={{ workspace: slug, mailbox, thread }}
+						search={{ beforeAt: page.older.arrivedAt, beforeId: page.older.id }}
+					>
+						Older messages
+					</Link>
+				</Button>
 			)}
 
 			<ol aria-label="Messages in this thread" className="space-y-3">
-				{page.messages.map((listed) => (
-					<ThreadMessage
-						key={listed.id}
-						listed={listed}
-						opened={listed.id === page.latest?.id ? page.latest : null}
-						onDeleted={deleted}
-					/>
-				))}
+				{page.messages.map((listed) => {
+					const opened = listed.id === page.latest?.id ? page.latest : null;
+					return (
+						<ThreadMessage
+							// A message that becomes the newest, when the one after it is deleted, opens.
+							key={opened ? `${listed.id}:opened` : listed.id}
+							listed={listed}
+							opened={opened}
+							onDeleted={deleted}
+						/>
+					);
+				})}
 			</ol>
+
+			{newer && (
+				<Button asChild size="sm" variant="outline">
+					<Link
+						to="/$workspace/mailboxes/$mailbox/threads/$thread"
+						params={{ workspace: slug, mailbox, thread }}
+					>
+						Newest messages
+					</Link>
+				</Button>
+			)}
 		</div>
 	);
 }

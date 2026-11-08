@@ -43,8 +43,9 @@ tools that run on Cloudflare, next to [Gateweave Track](https://github.com/gatew
   twice, up to 1 GiB per mailbox.
 - **Reading mail.** Members of a workspace see its mailboxes' threads, newest news first, and read
   their messages' text, with the attachments listed and the original to download. Replies join
-  the thread of the message they answer when their subject matches it. A sender's domain shows
-  as proved only when the message passed DMARC for it. Owners and admins can delete a message.
+  the thread of the message they answer, or of other replies to it, when their subject matches.
+  A sender's domain shows as proved only when the message passed DMARC for it. Owners and admins
+  can delete a message.
 
 ## What it is planned to become
 

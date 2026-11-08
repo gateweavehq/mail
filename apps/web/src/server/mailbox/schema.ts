@@ -109,5 +109,12 @@ export function migrate(storage: MigratedStorage): void {
 			MIGRATIONS[version]?.(sql);
 			sql.exec("INSERT INTO schema_migration (version) VALUES (?)", version + 1);
 		}
+		// Code from before threads stores messages without one, should it run again after version 2,
+		// as in a rollback. Such a message becomes a thread of its own. An index finds them.
+		sql.exec(
+			`INSERT OR IGNORE INTO thread (id, first_at, latest_at, count)
+			SELECT id, arrived_at, arrived_at, 1 FROM message WHERE thread_id IS NULL AND state = 'stored'`,
+		);
+		sql.exec("UPDATE message SET thread_id = id WHERE thread_id IS NULL AND state = 'stored'");
 	});
 }
