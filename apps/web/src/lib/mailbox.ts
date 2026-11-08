@@ -101,8 +101,10 @@ export interface OpenedMessage {
 	text: string;
 	/** True when the text was cut short to keep the page small. */
 	textCut: boolean;
-	/** The message has an HTML version, which Mail doesn't show yet. */
+	/** The message has an HTML version, shown in a sandboxed frame from `htmlUrl`. */
 	hasHtml: boolean;
+	/** Its HTML seems to load images from elsewhere, which show only when asked for. */
+	remoteImages: boolean;
 	attachments: { name: string | null; type: string; size: number }[];
 }
 
@@ -174,6 +176,13 @@ export const messageUrl = (workspace: string, mailbox: string, message: string) 
 /** Where a message's raw mail can be downloaded, for those who can see it. */
 export const originalUrl = (workspace: string, mailbox: string, message: string) =>
 	`${messageUrl(workspace, mailbox, message)}/original`;
+
+/**
+ * Where a message's HTML is, as a page for a sandboxed frame. Remote images load only with
+ * `images`, since loading them tells the sender the message was opened.
+ */
+export const htmlUrl = (workspace: string, mailbox: string, message: string, images = false) =>
+	`${messageUrl(workspace, mailbox, message)}/html${images ? "?images=1" : ""}`;
 
 /** Deletes a message, for an owner or admin. Says why when it couldn't. */
 export async function deleteMessage(

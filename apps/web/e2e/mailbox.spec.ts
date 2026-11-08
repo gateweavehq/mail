@@ -270,3 +270,74 @@ test("searching a mailbox finds the threads with every word", async ({
 	await expect(all.getByRole("link")).toHaveCount(2);
 	await expect(box).toHaveValue("");
 });
+
+test("a message's HTML shows in a frame that runs nothing and loads only what is asked for", async ({
+	page,
+	request,
+	baseURL,
+}) => {
+	const { slug, mailboxId, to, deliver } = await supportMailbox(page, request, baseURL);
+	await deliver("news@example.org", [
+		"From: Shop News <news@example.org>",
+		`To: ${to}`,
+		"Subject: This week's offers",
+		`Message-ID: <${Date.now()}.news@example.org>`,
+		"MIME-Version: 1.0",
+		"Content-Type: text/html; charset=utf-8",
+		"",
+		'<h1 style="color: teal">Offers</h1><p>Half price kettles.</p>',
+		'<img src="https://images.example/logo.png" alt="Shop logo">',
+		'<a href="https://shop.example/offers">See the offers</a>',
+		"",
+	]);
+	// Stands in for the sender's server, which would learn that the message was opened.
+	const asked: string[] = [];
+	await page.route("https://images.example/**", (route) => {
+		asked.push(route.request().url());
+		return route.fulfill({ contentType: "image/png", body: Buffer.from(PIXEL, "base64") });
+	});
+
+	await page.goto(`/${slug}/mailboxes/${mailboxId}`);
+	await waitForHydration(page);
+	await page.getByRole("link", { name: /This week's offers/ }).click();
+	const framed = page.getByTitle("The message, as its sender formatted it");
+	await expect(framed).toHaveAttribute("sandbox", "allow-popups allow-popups-to-escape-sandbox");
+	const message = page.frameLocator('iframe[title="The message, as its sender formatted it"]');
+	await expect(message.getByRole("heading", { name: "Offers" })).toBeVisible();
+	await expect(message.getByRole("link", { name: "See the offers" })).toHaveAttribute(
+		"target",
+		"_blank",
+	);
+
+	// An opaque origin, so none of the app's cookies, and no script runs, even one put there later.
+	const frame = await (await framed.elementHandle())?.contentFrame();
+	const inside = await frame?.evaluate(() => {
+		const script = document.createElement("script");
+		script.textContent = "document.body.dataset.ran = 'yes'";
+		document.body.append(script);
+		let cookies = "";
+		try {
+			cookies = document.cookie;
+		} catch {
+			cookies = "refused";
+		}
+		return { origin: window.origin, ran: document.body.dataset.ran ?? "no", cookies };
+	});
+	expect(inside).toEqual({ origin: "null", ran: "no", cookies: "refused" });
+
+	expect(asked).toEqual([]);
+	await page.getByRole("button", { name: "Show remote images" }).click();
+	await expect.poll(() => asked).toEqual(["https://images.example/logo.png"]);
+	await expect(page.getByRole("button", { name: "Show remote images" })).toHaveCount(0);
+
+	// The text made from it is a click away.
+	await page.getByRole("button", { name: "Show as text" }).click();
+	await expect(page.getByText(/Half price kettles\./)).toBeVisible();
+	await expect(framed).toHaveCount(0);
+	await page.getByRole("button", { name: "Show formatted" }).click();
+	await expect(message.getByRole("heading", { name: "Offers" })).toBeVisible();
+});
+
+/** A one-pixel PNG. */
+const PIXEL =
+	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";

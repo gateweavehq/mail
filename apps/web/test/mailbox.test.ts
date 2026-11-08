@@ -51,6 +51,7 @@ interface Opened {
 	dmarc: string | null;
 	text: string;
 	hasHtml: boolean;
+	remoteImages: boolean;
 	attachments: { name: string | null; type: string; size: number }[];
 }
 
@@ -1173,5 +1174,176 @@ describe("search", () => {
 		const second = await find(box.slug, box.mailboxId, "pagedword", after(first));
 		expect(subjects(second)).toEqual(["Found 0"]);
 		expect(second.next).toBeNull();
+	});
+});
+
+describe("a message's HTML", () => {
+	const html = (body: string) => ({
+		extra: ["MIME-Version: 1.0", "Content-Type: text/html; charset=utf-8"],
+		body,
+	});
+
+	async function htmlOf(box: { slug: string; mailboxId: string }, id: string, query = "") {
+		return mail.fetch(`${origin}/api/mail/${box.slug}/${box.mailboxId}/${id}/html${query}`, {
+			headers: owner.headers,
+		});
+	}
+
+	async function delivered(body: Parameters<typeof message>[1]) {
+		const box = await mailboxWithAddress();
+		await kept(box.address, message(box.address, body));
+		const [listed] = (await messages(box.slug, box.mailboxId)).messages;
+		return { box, id: listed?.id ?? "" };
+	}
+
+	it("is a page that runs nothing and loads nothing from elsewhere", async () => {
+		const { box, id } = await delivered(
+			html(
+				[
+					'<html lang="en"><head><meta http-equiv="refresh" content="0;url=https://away.example/">',
+					'<base href="https://away.example/"><link rel="stylesheet" href="https://away.example/s.css">',
+					"<title>Inside</title><style>p { color: teal }</style></head>",
+					'<body bgcolor="#eeeeee" onload="parent.document.title=1">',
+					'<p class="lead" onclick="steal()">Your order shipped.</p>',
+					"<script>parent.document.title='ran'</script>",
+					'<noscript><img src="https://away.example/noscript.gif"></noscript>',
+					'<img src="https://tracker.example/open.gif" alt="Logo" width="10">',
+					'<img src="//tracker.example/relative.gif">',
+					'<div style="background: url(https://tracker.example/bg.gif)">Styled</div>',
+					'<a href="javascript:steal()">Bad</a> <a href="&#106;avascript:steal()">Hidden</a>',
+					'<a href="https://shop.example/track?a=1&amp;b=2" ping="https://away.example/">Track it</a>',
+					'<a href="#top">Top</a> <a href="/relative">Relative</a>',
+					'<form action="https://away.example/"><input name="password"><button>Send</button></form>',
+					'<iframe src="https://away.example/"></iframe><object data="https://away.example/x"></object>',
+					"<xmp><meta http-equiv=refresh content=0></xmp>",
+					'<svg><script>steal()</script><image href="https://away.example/i.png"/></svg>',
+					"<o:p>Outlook kept</o:p><!-- a comment -->",
+					"</body></html>",
+				].join("\r\n"),
+			),
+		);
+		const response = await htmlOf(box, id);
+		expect(response.status).toBe(200);
+		expect(response.headers.get("content-type")).toBe("text/html; charset=utf-8");
+		const policy = (response.headers.get("content-security-policy") ?? "").split("; ");
+		expect(policy).toEqual([
+			"sandbox allow-popups allow-popups-to-escape-sandbox",
+			"default-src 'none'",
+			"img-src data:",
+			"style-src 'unsafe-inline'",
+			"font-src data:",
+			"frame-ancestors 'self'",
+			"base-uri 'none'",
+			"form-action 'none'",
+		]);
+		// The app's own policy and its frame ban stay off it.
+		expect(response.headers.get("x-frame-options")).toBeNull();
+		expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+		expect(response.headers.get("cache-control")).toBe("private, no-store");
+		expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+
+		const page = await response.text();
+		expect(page.startsWith("<!doctype html>")).toBe(true);
+		expect(page).toContain('<p class="lead">Your order shipped.</p>');
+		expect(page).toContain('<body bgcolor="#eeeeee">');
+		expect(page).toContain("<style>p { color: teal }</style>");
+		expect(page).toContain('<img alt="Logo" width="10">');
+		expect(page).toContain("<img>");
+		expect(page).toContain(
+			'<div style="background: url(https://tracker.example/bg.gif)">Styled</div>',
+		);
+		expect(page).toContain("<a>Bad</a> <a>Hidden</a>");
+		expect(page).toContain(
+			'<a href="https://shop.example/track?a=1&amp;b=2" target="_blank" rel="noopener noreferrer">Track it</a>',
+		);
+		expect(page).toContain('<a href="#top">Top</a> <a>Relative</a>');
+		expect(page).toContain("Send");
+		expect(page).toContain("Outlook kept");
+		for (const gone of [
+			"<script",
+			"<noscript",
+			"onclick",
+			"onload",
+			"http-equiv",
+			"<base",
+			"<link",
+			"<title",
+			"<form",
+			"<input",
+			"<button",
+			"<iframe",
+			"<object",
+			"<xmp",
+			"<svg",
+			"<o:p",
+			"<!--",
+			"javascript",
+			"steal",
+			"ping",
+			"tracker.example/open",
+			"relative.gif",
+			"away.example",
+		]) {
+			expect(page, gone).not.toContain(gone);
+		}
+	});
+
+	it("shows remote images when asked", async () => {
+		const { box, id } = await delivered(
+			html('<p>Hi</p><img src="https://images.example/logo.png" alt="Logo">'),
+		);
+		expect((await open(box.slug, box.mailboxId, id)).remoteImages).toBe(true);
+		const response = await htmlOf(box, id, "?images=1");
+		expect(response.headers.get("content-security-policy")).toContain("img-src data: https: http:");
+		expect(await response.text()).toContain(
+			'<img src="https://images.example/logo.png" alt="Logo">',
+		);
+	});
+
+	it("shows the message's own images where it names them", async () => {
+		const pixel =
+			"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+		const boundary = "rel1";
+		const { box, id } = await delivered({
+			extra: ["MIME-Version: 1.0", `Content-Type: multipart/related; boundary="${boundary}"`],
+			body: [
+				`--${boundary}`,
+				"Content-Type: text/html; charset=utf-8",
+				"",
+				'<p>Logo:</p><img src="cid:logo%40shop.example" alt="Logo"><img src="cid:drawing@shop.example"><img src="cid:missing@shop.example">',
+				`--${boundary}`,
+				"Content-Type: image/png",
+				"Content-ID: <logo@shop.example>",
+				"Content-Transfer-Encoding: base64",
+				"",
+				pixel,
+				`--${boundary}`,
+				"Content-Type: image/svg+xml",
+				"Content-ID: <drawing@shop.example>",
+				"",
+				'<svg xmlns="http://www.w3.org/2000/svg"></svg>',
+				`--${boundary}--`,
+			].join("\r\n"),
+		});
+		const opened = await open(box.slug, box.mailboxId, id);
+		expect(opened.hasHtml).toBe(true);
+		expect(opened.remoteImages).toBe(false);
+		const page = await (await htmlOf(box, id)).text();
+		expect(page).toContain(`<img src="data:image/png;base64,${pixel}" alt="Logo">`);
+		// Not an image type that is shown, and not a part of this message.
+		expect(page).toContain("<img><img>");
+	});
+
+	it("is not there for a message without HTML, or for anyone who can't see it", async () => {
+		const text = await delivered({});
+		expect((await htmlOf(text.box, text.id)).status).toBe(404);
+
+		const { box, id } = await delivered(html("<p>Private</p>"));
+		const path = `${origin}/api/mail/${box.slug}/${box.mailboxId}/${id}/html`;
+		expect((await mail.fetch(path, { headers: outsider.headers })).status).toBe(404);
+		expect((await mail.fetch(path)).status).toBe(404);
+		const theirs = await mailboxWithAddress(outsider);
+		const through = `${origin}/api/mail/${theirs.slug}/${box.mailboxId}/${id}/html`;
+		expect((await mail.fetch(through, { headers: outsider.headers })).status).toBe(404);
 	});
 });

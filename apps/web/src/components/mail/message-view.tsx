@@ -1,14 +1,20 @@
-import { Paperclip, ShieldAlert, ShieldCheck, Trash2 } from "lucide-react";
+import { ImageOff, Paperclip, ShieldAlert, ShieldCheck, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { Button } from "#/components/ui/button";
 import { ConfirmDialog } from "#/components/workspace/confirm-dialog";
 import { isAdminRole, useMyRole } from "#/components/workspace/context";
 import { formatDateTime } from "#/lib/dates";
-import { deleteMessage, type OpenedMessage, originalUrl, type Person } from "#/lib/mailbox";
+import {
+	deleteMessage,
+	htmlUrl,
+	type OpenedMessage,
+	originalUrl,
+	type Person,
+} from "#/lib/mailbox";
 
 /**
- * A message's headers, who sent it as far as anything proves, its text and attachments, and what
- * can be done with it. The page around it gives the subject.
+ * A message's headers, who sent it as far as anything proves, its HTML or text and attachments, and
+ * what can be done with it. The page around it gives the subject.
  */
 export function MessageView({
 	workspace,
@@ -55,19 +61,7 @@ export function MessageView({
 				<Sender message={message} />
 			</div>
 
-			<pre className="whitespace-pre-wrap break-words rounded-lg border p-4 font-sans text-sm">
-				{message.text || <span className="text-muted-foreground">(no text)</span>}
-			</pre>
-			{message.textCut && (
-				<p className="text-sm text-muted-foreground">
-					The text is too long to show in full. Download the original for the rest.
-				</p>
-			)}
-			{message.hasHtml && (
-				<p className="text-sm text-muted-foreground">
-					This message also has a formatted version, which Mail doesn't show yet.
-				</p>
-			)}
+			<Body workspace={workspace} mailbox={mailbox} message={message} />
 
 			{message.attachments.length > 0 && (
 				<section aria-label="Attachments" className="space-y-2">
@@ -107,6 +101,76 @@ export function MessageView({
 					/>
 				)}
 			</div>
+		</div>
+	);
+}
+
+/**
+ * The message as its sender formatted it, when it has HTML, or its text. The HTML is a page of its
+ * own in a frame that runs nothing and, until the reader asks, loads nothing from elsewhere; see
+ * `server/mailbox/html.ts`. A frame without scripts can't say how tall it is, so it has a height of
+ * its own, which the reader can drag.
+ */
+function Body({
+	workspace,
+	mailbox,
+	message,
+}: {
+	workspace: string;
+	mailbox: string;
+	message: OpenedMessage;
+}) {
+	const [asText, setAsText] = useState(false);
+	const [images, setImages] = useState(false);
+
+	if (message.hasHtml && !asText) {
+		return (
+			<div className="space-y-2">
+				<div className="flex flex-wrap items-center gap-2">
+					<Button size="sm" variant="outline" onClick={() => setAsText(true)}>
+						Show as text
+					</Button>
+					{message.remoteImages && !images && (
+						<>
+							<Button size="sm" variant="outline" onClick={() => setImages(true)}>
+								Show remote images
+							</Button>
+							<p className="flex items-center gap-2 text-sm text-muted-foreground">
+								<ImageOff className="size-4 shrink-0" aria-hidden />
+								Remote images are off, so the sender can't tell you opened this.
+							</p>
+						</>
+					)}
+				</div>
+				<div className="h-[70vh] min-h-80 resize-y overflow-hidden rounded-lg border bg-white">
+					<iframe
+						title="The message, as its sender formatted it"
+						src={htmlUrl(workspace, mailbox, message.id, images)}
+						// The same as the page's own policy says; either one is enough.
+						sandbox="allow-popups allow-popups-to-escape-sandbox"
+						referrerPolicy="no-referrer"
+						className="size-full"
+					/>
+				</div>
+			</div>
+		);
+	}
+
+	return (
+		<div className="space-y-2">
+			{message.hasHtml && (
+				<Button size="sm" variant="outline" onClick={() => setAsText(false)}>
+					Show formatted
+				</Button>
+			)}
+			<pre className="whitespace-pre-wrap break-words rounded-lg border p-4 font-sans text-sm">
+				{message.text || <span className="text-muted-foreground">(no text)</span>}
+			</pre>
+			{message.textCut && (
+				<p className="text-sm text-muted-foreground">
+					The text is too long to show in full. Download the original for the rest.
+				</p>
+			)}
 		</div>
 	);
 }
