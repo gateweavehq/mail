@@ -101,10 +101,20 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     `/api/mail/<workspace>/<mailbox>/threads` and `…/threads/<thread>`, beside the messages, newest
     first, at `/api/mail/<workspace>/<mailbox>`. A message is parsed with postal-mime when someone
     opens it. The original downloads from `/api/mail/<workspace>/<mailbox>/<message>/original`, as
-    a file, never as a page. Every member of a workspace can read its mailboxes for now. A
+    a file, never as a page. Who reads it is decided per mailbox (below). Anyone else, a
     non-member, or a mailbox of another workspace, gets the same "not found" as a missing one, and
     the mailbox is checked against the caller's workspace in D1 before its object is asked
     anything.
+  - **Who reads a mailbox.** Owners and admins read every one. Anyone else reads one they were
+    given (`mailbox_access`, a row per membership and mailbox), or one open to everyone
+    (`mailbox.everyone`) when they are a person: an agent counts only with a grant of its own, and
+    so does a role this version doesn't know, which `toRole` reads as an agent's. `canReadMailbox` in `lib/roles.ts` is the rule and `openMailbox` in
+    `read.ts`, which every route to mail goes through, the one place it is applied; the directory
+    lists only the mailboxes the caller can read. A grant belongs to the membership, not the
+    person, so it goes when they leave and doesn't come back if they join again. Triggers refuse
+    one whose member and mailbox are in different workspaces (`0007_mailbox_access_rules.sql`).
+    A new mailbox is for owners and admins until one of them opens it to everyone or gives it to
+    people; the mailboxes there were before this rule stayed open to everyone.
   - **HTML.** A message's HTML is a page of its own, at `…/<message>/html`, which the message's
     page shows in a frame; its text, or the text made from its HTML, is a click away. What makes
     it safe is the policy it is served with (`framePolicy` in `html.ts`): `sandbox` without
@@ -259,7 +269,6 @@ Not built. This is where it is going, and it may change.
 - **One Worker.** The UI, the API, auth and `email()` stay together.
 - **D1 for accounts and the address directory**, a Durable Object per mailbox and R2 for raw mail,
   as above.
-- **Who may read a mailbox**, decided per mailbox, rather than every member of the workspace.
 - **Remote images per sender**, remembered for those the reader trusts, where now they are asked
   for each time.
 - **Sending and replying**, through Cloudflare Email Service, and addresses and aliases an agent

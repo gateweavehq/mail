@@ -26,7 +26,11 @@ let counter = 0;
 
 interface Listed {
 	domains: { id: string; proof: { value: string } | null }[];
-	mailboxes: { id: string; name: string }[];
+	mailboxes: {
+		id: string;
+		name: string;
+		access: { everyone: boolean; memberIds: string[] } | null;
+	}[];
 }
 
 interface Page {
@@ -99,9 +103,10 @@ async function addMailbox(
 	person: typeof owner,
 	domainId: string,
 	address: string,
+	everyone = false,
 ): Promise<string> {
 	const name = `Box ${++counter}`;
-	await directory(slug, person.headers, { action: "add-mailbox", name });
+	await directory(slug, person.headers, { action: "add-mailbox", name, everyone });
 	const made = (await directory(slug, person.headers)).mailboxes.find((box) => box.name === name);
 	if (!made) throw new Error("expected a mailbox");
 	const localPart = address.split("@")[0];
@@ -401,19 +406,224 @@ describe("who sent it", () => {
 	});
 });
 
+/** Someone new in the workspace, with this role, and the id of their membership. */
+async function join(workspaceId: string, role = "member", person?: typeof owner) {
+	const who = person ?? (await signUp(mail, origin, `Reader${++counter}`));
+	const memberId = crypto.randomUUID();
+	await mail.db
+		.prepare(
+			"INSERT INTO member (id, organization_id, user_id, role, created_at) VALUES (?, ?, ?, ?, ?)",
+		)
+		.bind(memberId, workspaceId, who.userId, role, Date.now())
+		.run();
+	return { ...who, memberId };
+}
+
+function changeDirectory(slug: string, headers: Record<string, string>, action: unknown) {
+	return mail.fetch(`${origin}/api/directory/${slug}`, {
+		method: "POST",
+		headers: { ...headers, origin },
+		body: JSON.stringify(action),
+	});
+}
+
+async function giveAccess(
+	box: { slug: string; mailboxId: string },
+	access: { everyone?: boolean; memberIds?: string[] },
+) {
+	const response = await changeDirectory(box.slug, owner.headers, {
+		action: "set-mailbox-access",
+		mailboxId: box.mailboxId,
+		everyone: access.everyone ?? false,
+		memberIds: access.memberIds ?? [],
+	});
+	expect(response.status).toBe(200);
+}
+
+/** The status of every way into a mailbox and its one message, for this person. */
+async function reach(box: { slug: string; mailboxId: string }, person: typeof owner) {
+	const [listed] = (await messages(box.slug, box.mailboxId)).messages;
+	const id = listed?.id ?? "";
+	const base = `${origin}/api/mail/${box.slug}/${box.mailboxId}`;
+	const threads = await mail.fetch(`${base}/threads`, { headers: owner.headers });
+	const [thread] = ((await threads.json()) as { threads: { id: string }[] }).threads;
+	const paths = [
+		"",
+		"/threads",
+		`/threads/${thread?.id}`,
+		`/${id}`,
+		`/${id}/original`,
+		`/${id}/html`,
+	];
+	const statuses = [];
+	for (const path of paths) {
+		statuses.push((await mail.fetch(`${base}${path}`, { headers: person.headers })).status);
+	}
+	return statuses;
+}
+
+const opened = [200, 200, 200, 200, 200, 200];
+const hidden = [404, 404, 404, 404, 404, 404];
+
 describe("who can read a mailbox", () => {
-	it("is every member of its workspace", async () => {
+	it("is its owners and admins, until others are given it", async () => {
+		const box = await mailboxWithAddress();
+		await kept(box.address, message(box.address, { extra: ["Content-Type: text/html"] }));
+		const reader = await join(box.workspaceId);
+		const admin = await join(box.workspaceId, "admin");
+
+		expect(await reach(box, owner)).toEqual(opened);
+		expect(await reach(box, admin)).toEqual(opened);
+		expect(await reach(box, reader)).toEqual(hidden);
+		// The directory doesn't name it to them either, nor its addresses.
+		expect((await directory(box.slug, reader.headers)).mailboxes).toEqual([]);
+		expect((await directory(box.slug, owner.headers)).mailboxes).toEqual([
+			expect.objectContaining({
+				id: box.mailboxId,
+				access: { everyone: false, memberIds: [] },
+			}),
+		]);
+	});
+
+	it("is someone given it, until it's taken back", async () => {
+		const box = await mailboxWithAddress();
+		await kept(box.address, message(box.address, { extra: ["Content-Type: text/html"] }));
+		const reader = await join(box.workspaceId);
+		const other = await join(box.workspaceId);
+
+		await giveAccess(box, { memberIds: [reader.memberId] });
+		expect(await reach(box, reader)).toEqual(opened);
+		expect(await reach(box, other)).toEqual(hidden);
+		const theirs = (await directory(box.slug, reader.headers)).mailboxes;
+		expect(theirs.map((m) => m.id)).toEqual([box.mailboxId]);
+		// Who else reads it is for those who can change it.
+		expect(theirs[0]?.access).toBeNull();
+		const [seen] = (await directory(box.slug, owner.headers)).mailboxes;
+		expect(seen?.access).toEqual({ everyone: false, memberIds: [reader.memberId] });
+
+		await giveAccess(box, { memberIds: [other.memberId] });
+		expect(await reach(box, reader)).toEqual(hidden);
+		expect(await reach(box, other)).toEqual(opened);
+
+		// Made an admin, they read it anyway, so their grant isn't counted among those chosen.
+		await mail.db
+			.prepare("UPDATE member SET role = 'admin' WHERE id = ?")
+			.bind(other.memberId)
+			.run();
+		const [after] = (await directory(box.slug, owner.headers)).mailboxes;
+		expect(after?.access).toEqual({ everyone: false, memberIds: [] });
+		expect(await reach(box, other)).toEqual(opened);
+	});
+
+	// "Everyone" means people. An agent, or a role this version doesn't know, reads a mailbox only
+	// when it is given that one, and gets no more than that.
+	it("isn't an agent's, nor an unknown role's, unless it is given them", async () => {
+		const box = await mailboxWithAddress();
+		await kept(box.address, message(box.address, { extra: ["Content-Type: text/html"] }));
+		await giveAccess(box, { everyone: true });
+		const person = await join(box.workspaceId);
+		const agent = await join(box.workspaceId, "agent");
+		const unknown = await join(box.workspaceId, "viewer");
+
+		expect(await reach(box, person)).toEqual(opened);
+		expect(await reach(box, agent)).toEqual(hidden);
+		expect(await reach(box, unknown)).toEqual(hidden);
+		expect((await directory(box.slug, agent.headers)).mailboxes).toEqual([]);
+
+		await giveAccess(box, { everyone: true, memberIds: [agent.memberId] });
+		expect(await reach(box, agent)).toEqual(opened);
+		expect(await reach(box, unknown)).toEqual(hidden);
+		for (const who of [agent, unknown]) {
+			const write = await changeDirectory(box.slug, who.headers, {
+				action: "add-mailbox",
+				name: "Theirs",
+			});
+			expect(write.status).toBe(403);
+		}
+	});
+
+	it("is everyone in the workspace, when the mailbox is open to them", async () => {
+		const box = await mailboxWithAddress();
+		await kept(box.address, message(box.address, { extra: ["Content-Type: text/html"] }));
+		const reader = await join(box.workspaceId);
+
+		await giveAccess(box, { everyone: true });
+		expect(await reach(box, reader)).toEqual(opened);
+		await giveAccess(box, { everyone: false });
+		expect(await reach(box, reader)).toEqual(hidden);
+
+		const open = await addMailbox(box.slug, owner, box.domainId, `open@${box.domain}`, true);
+		await kept(`open@${box.domain}`, message(`open@${box.domain}`));
+		expect((await messages(box.slug, open, reader)).messages).toHaveLength(1);
+		expect((await directory(box.slug, reader.headers)).mailboxes.map((m) => m.id)).toEqual([open]);
+	});
+
+	// Access belongs to the membership, so whoever leaves loses it with the rest of the workspace.
+	it("ends when they leave, and doesn't come back when they join again", async () => {
 		const box = await mailboxWithAddress();
 		await kept(box.address, message(box.address));
-		const reader = await signUp(mail, origin, `Reader${++counter}`);
-		await mail.db
-			.prepare(
-				"INSERT INTO member (id, organization_id, user_id, role, created_at) VALUES (?, ?, ?, 'member', ?)",
-			)
-			.bind(crypto.randomUUID(), box.workspaceId, reader.userId, Date.now())
-			.run();
-		const [listed] = (await messages(box.slug, box.mailboxId, reader)).messages;
-		expect((await open(box.slug, box.mailboxId, listed?.id ?? "", reader)).subject).toBe("Hello");
+		const reader = await join(box.workspaceId);
+		await giveAccess(box, { memberIds: [reader.memberId] });
+		expect((await messages(box.slug, box.mailboxId, reader)).messages).toHaveLength(1);
+
+		await mail.db.prepare("DELETE FROM member WHERE id = ?").bind(reader.memberId).run();
+		const grants = await mail.db
+			.prepare("SELECT count(*) AS total FROM mailbox_access WHERE mailbox_id = ?")
+			.bind(box.mailboxId)
+			.first<{ total: number }>();
+		expect(grants?.total).toBe(0);
+
+		const back = await join(box.workspaceId, "member", reader);
+		expect((await readMailbox(box.slug, box.mailboxId, back.headers)).status).toBe(404);
+	});
+
+	it("takes only people in the mailbox's workspace", async () => {
+		const box = await mailboxWithAddress();
+		const reader = await join(box.workspaceId);
+		const elsewhere = await mailboxWithAddress(outsider);
+		const stranger = await mail.db
+			.prepare("SELECT id FROM member WHERE organization_id = ? AND user_id = ?")
+			.bind(elsewhere.workspaceId, outsider.userId)
+			.first<{ id: string }>();
+		if (!stranger) throw new Error("expected the outsider's membership");
+
+		for (const memberIds of [[stranger.id], [reader.memberId, stranger.id], ["no-such-member"]]) {
+			const refused = await changeDirectory(box.slug, owner.headers, {
+				action: "set-mailbox-access",
+				mailboxId: box.mailboxId,
+				everyone: false,
+				memberIds,
+			});
+			expect(refused.status).toBe(409);
+		}
+		const [seen] = (await directory(box.slug, owner.headers)).mailboxes;
+		expect(seen?.access).toEqual({ everyone: false, memberIds: [] });
+
+		// However a grant comes to be written, the database holds to it too.
+		await expect(
+			mail.db
+				.prepare("INSERT INTO mailbox_access (mailbox_id, member_id, created_at) VALUES (?, ?, ?)")
+				.bind(box.mailboxId, stranger.id, Date.now())
+				.run(),
+		).rejects.toThrow(/one workspace/);
+	});
+
+	it("is changed only by an owner or admin, and only in their workspace", async () => {
+		const box = await mailboxWithAddress();
+		const reader = await join(box.workspaceId);
+		const action = {
+			action: "set-mailbox-access",
+			mailboxId: box.mailboxId,
+			everyone: false,
+			memberIds: [reader.memberId],
+		};
+		expect((await changeDirectory(box.slug, reader.headers, action)).status).toBe(403);
+
+		const theirs = await mailboxWithAddress(outsider);
+		const across = await changeDirectory(theirs.slug, outsider.headers, action);
+		expect(across.status).toBe(404);
+		await kept(box.address, message(box.address, { extra: ["Content-Type: text/html"] }));
+		expect(await reach(box, reader)).toEqual(hidden);
 	});
 
 	it("is nobody else, who finds nothing there", async () => {
@@ -584,14 +794,10 @@ describe("deleting a message", () => {
 		await kept(box.address, message(box.address));
 		const [listed] = (await messages(box.slug, box.mailboxId)).messages;
 		const id = listed?.id ?? "";
-		const reader = await signUp(mail, origin, `Member${++counter}`);
-		await mail.db
-			.prepare(
-				"INSERT INTO member (id, organization_id, user_id, role, created_at) VALUES (?, ?, ?, 'member', ?)",
-			)
-			.bind(crypto.randomUUID(), box.workspaceId, reader.userId, Date.now())
-			.run();
-
+		const reader = await join(box.workspaceId);
+		// Without the mailbox, a member finds nothing to delete; with it, they still may not.
+		expect((await remove(box.slug, box.mailboxId, id, reader.headers)).status).toBe(404);
+		await giveAccess(box, { memberIds: [reader.memberId] });
 		expect((await remove(box.slug, box.mailboxId, id, reader.headers)).status).toBe(403);
 		expect(
 			(

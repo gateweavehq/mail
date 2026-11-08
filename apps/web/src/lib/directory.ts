@@ -25,6 +25,11 @@ export interface DirectoryMailbox {
 	id: string;
 	name: string;
 	addresses: DirectoryAddress[];
+	/**
+	 * Who else may read it, besides owners and admins: everyone, and these memberships. Only for
+	 * owners and admins, who can change it.
+	 */
+	access: { everyone: boolean; memberIds: string[] } | null;
 }
 
 export interface Directory {
@@ -41,9 +46,8 @@ export const getDirectory = createServerFn({ method: "GET" })
 		if (!member) return null;
 		const { db } = await import("#/server/auth");
 		const { listDirectory } = await import("#/server/directory");
-		const { isAdminRole } = await import("#/lib/roles");
-		const { workspaceId, role } = member.membership;
-		return listDirectory(db, workspaceId, { admin: isAdminRole(role) });
+		const { workspaceId, memberId, role } = member.membership;
+		return listDirectory(db, workspaceId, { memberId, role });
 	});
 
 export type DirectoryAnswer<T = object> = ({ ok: true } & T) | { ok: false; error: string };

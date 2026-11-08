@@ -102,7 +102,9 @@ These are load-bearing. Breaking one breaks users' data or security, usually sil
     the same sandbox; never in one of the app's pages. Serve the original only as a download.
 12. **A mailbox's Durable Object has no public route.** Only `email()`, after looking the address
     up, and server code, after checking membership and that the mailbox is in the caller's
-    workspace, reach it. Every R2 object is named by the mailbox's object, as pending, before it is
+    workspace, reach it. Mail is read only through `openMailbox`
+    (`apps/web/src/server/mailbox/read.ts`), which applies `canReadMailbox`: being in the workspace
+    is not enough. Every R2 object is named by the mailbox's object, as pending, before it is
     written, so R2 never holds mail a mailbox doesn't know about.
 
 ## Code style

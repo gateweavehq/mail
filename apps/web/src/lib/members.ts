@@ -1,7 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { getRequestHeaders } from "@tanstack/react-start/server";
 import { z } from "zod";
-import type { MemberRole } from "./roles";
+import { isAdminRole, type MemberRole, type PersonRole } from "./roles";
 
 /**
  * The invitation behind an invitation link, and who is signed in, if anyone. Works signed out,
@@ -41,7 +41,7 @@ export interface WorkspaceMember {
 export interface PendingInvitation {
 	id: string;
 	email: string;
-	role: MemberRole;
+	role: PersonRole;
 	expiresAt: number;
 }
 
@@ -54,7 +54,7 @@ export const getWorkspaceMembers = createServerFn({ method: "GET" })
 	.handler(async ({ data: slug }) => {
 		const { getAuth, db, emailEnabled } = await import("#/server/auth");
 		const auth = getAuth();
-		const { findMembership, toRole } = await import("#/server/workspaces");
+		const { findMembership, toPersonRole, toRole } = await import("#/server/workspaces");
 		const headers = getRequestHeaders();
 		const session = await auth.api.getSession({ headers });
 		const membership = session && (await findMembership(db, slug, session.user.id));
@@ -65,7 +65,7 @@ export const getWorkspaceMembers = createServerFn({ method: "GET" })
 			query: { organizationId, limit: 1000 },
 			headers,
 		});
-		const canInvite = membership.role !== "member";
+		const canInvite = isAdminRole(membership.role);
 		const invitations = canInvite
 			? await auth.api.listInvitations({ query: { organizationId }, headers })
 			: [];
@@ -94,7 +94,7 @@ export const getWorkspaceMembers = createServerFn({ method: "GET" })
 					(invitation): PendingInvitation => ({
 						id: invitation.id,
 						email: invitation.email,
-						role: toRole(invitation.role ?? "member"),
+						role: toPersonRole(invitation.role ?? "member"),
 						expiresAt: new Date(invitation.expiresAt).getTime(),
 					}),
 				)
@@ -112,4 +112,5 @@ export const ROLE_LABELS: Record<MemberRole, string> = {
 	owner: "Owner",
 	admin: "Admin",
 	member: "Member",
+	agent: "Agent",
 };

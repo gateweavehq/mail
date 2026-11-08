@@ -12,7 +12,7 @@ import type {
 	ThreadsPage,
 } from "../../lib/mailbox";
 import { MAX_QUERY_SENT } from "../../lib/mailbox";
-import { isAdminRole } from "../../lib/roles";
+import { canReadMailbox, isAdminRole } from "../../lib/roles";
 import { currentMember } from "../access";
 import { db } from "../auth";
 import { schema } from "../db";
@@ -30,24 +30,33 @@ export const PAGE_SIZE = 50;
 export const MAX_SHOWN_TEXT = 200_000;
 
 /**
- * The mailbox with this id in the workspace with this slug, for a member of it. Every member of a
- * workspace can read its mailboxes for now. Null for anyone else, and for a mailbox of another
- * workspace, so its id gives nothing away.
+ * The mailbox with this id in the workspace with this slug, for a member who may read it (see
+ * `canReadMailbox`). Every route to a mailbox's mail comes through here. Null for anyone else, and
+ * for a mailbox of another workspace, so its id gives nothing away.
  */
 async function openMailbox(slug: string, mailboxId: string) {
 	const member = await currentMember(slug);
 	if (!member) return null;
+	const { memberId, workspaceId, role } = member.membership;
+	const { mailbox, mailboxAccess } = schema;
 	const box = await db
-		.select({ id: schema.mailbox.id, name: schema.mailbox.name })
-		.from(schema.mailbox)
-		.where(
-			and(
-				eq(schema.mailbox.id, mailboxId),
-				eq(schema.mailbox.organizationId, member.membership.workspaceId),
-			),
+		.select({
+			id: mailbox.id,
+			name: mailbox.name,
+			everyone: mailbox.everyone,
+			granted: mailboxAccess.memberId,
+		})
+		.from(mailbox)
+		.leftJoin(
+			mailboxAccess,
+			and(eq(mailboxAccess.mailboxId, mailbox.id), eq(mailboxAccess.memberId, memberId)),
 		)
+		.where(and(eq(mailbox.id, mailboxId), eq(mailbox.organizationId, workspaceId)))
 		.get();
-	return box ? { ...box, member, stub: mailboxStub(box.id) } : null;
+	if (!box || !canReadMailbox(role, { everyone: box.everyone, granted: box.granted !== null })) {
+		return null;
+	}
+	return { id: box.id, name: box.name, member, stub: mailboxStub(box.id) };
 }
 
 /** A header as people read it. A word that won't decode is left as sent. */

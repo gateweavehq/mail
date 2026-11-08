@@ -25,8 +25,8 @@ tools that run on Cloudflare, next to [Gateweave Track](https://github.com/gatew
 [Gateweave Agents](https://github.com/gateweavehq/agents).
 
 > **Status: early development.** Mail receives and keeps mail, but does not send it yet. What exists
-> is sign-in, workspaces, a directory of domains and addresses, and mailboxes whose messages members
-> can read as text. Expect breaking changes until 1.0; see [CHANGELOG.md](CHANGELOG.md).
+> is sign-in, workspaces, a directory of domains and addresses, and mailboxes whose messages the
+> people given them can read. Expect breaking changes until 1.0; see [CHANGELOG.md](CHANGELOG.md).
 
 ## What works today
 
@@ -37,11 +37,12 @@ tools that run on Cloudflare, next to [Gateweave Track](https://github.com/gatew
 - **Workspaces.** Create one, invite people by link or email, and give them roles (owner, admin
   or member).
 - **Domains, mailboxes and addresses.** Prove a domain with a DNS record, make mailboxes, and give
-  them addresses, for good or for a set number of days.
+  them addresses, for good or for a set number of days. Owners and admins read every mailbox and
+  choose who else reads each one: everyone in the workspace, or the people they pick.
 - **Receiving mail.** The Worker's `email()` handler looks up each message's address and refuses
   one that doesn't exist. Mail for one that does is kept in its mailbox, once even when it arrives
   twice, up to 1 GiB per mailbox.
-- **Reading mail.** Members of a workspace see its mailboxes' threads, newest news first, and read
+- **Reading mail.** Whoever may read a mailbox sees its threads, newest news first, and reads
   their messages, with the attachments listed and the original to download. HTML mail shows in a
   sandbox that runs nothing and loads remote images only when asked. Replies join
   the thread of the message they answer, or of other replies to it, when their subject matches.
@@ -54,7 +55,7 @@ tools that run on Cloudflare, next to [Gateweave Track](https://github.com/gatew
 
 None of this exists yet; it is the direction, and it may change.
 
-- Mailboxes for people and for AI agents, in a workspace, with who may read each one.
+- AI agents as members of a workspace, each reading the mailboxes it is given.
 - Sending and replying.
 - Addresses an agent can make for itself.
 - Aliases that point at a mailbox.

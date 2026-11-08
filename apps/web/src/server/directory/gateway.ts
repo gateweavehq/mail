@@ -13,9 +13,11 @@ import {
 	addMailbox,
 	checkDomain,
 	listDirectory,
+	MAX_MAILBOX_READERS,
 	removeAddress,
 	removeDomain,
 	removeMailbox,
+	setMailboxAccess,
 } from "./index";
 
 const Id = z.string().min(1).max(64);
@@ -24,7 +26,17 @@ const Action = z.discriminatedUnion("action", [
 	z.object({ action: z.literal("add-domain"), name: z.string().max(300) }),
 	z.object({ action: z.literal("check-domain"), id: Id }),
 	z.object({ action: z.literal("remove-domain"), id: Id }),
-	z.object({ action: z.literal("add-mailbox"), name: z.string().max(300) }),
+	z.object({
+		action: z.literal("add-mailbox"),
+		name: z.string().max(300),
+		everyone: z.boolean().default(false),
+	}),
+	z.object({
+		action: z.literal("set-mailbox-access"),
+		mailboxId: Id,
+		everyone: z.boolean(),
+		memberIds: z.array(Id).max(MAX_MAILBOX_READERS),
+	}),
 	z.object({ action: z.literal("remove-mailbox"), id: Id }),
 	z.object({
 		action: z.literal("add-address"),
@@ -36,7 +48,7 @@ const Action = z.discriminatedUnion("action", [
 	z.object({ action: z.literal("remove-address"), id: Id }),
 ]);
 
-export type DirectoryAction = z.infer<typeof Action>;
+export type DirectoryAction = z.input<typeof Action>;
 
 /** No caching: this holds who a workspace is, and what it says can change at any moment. */
 function answer(body: unknown, status = 200): Response {
@@ -49,8 +61,8 @@ const notFound = () => answer({ ok: false, error: "Not found" }, 404);
 export async function readDirectory(slug: string): Promise<Response> {
 	const member = await currentMember(slug);
 	if (!member) return notFound();
-	const { workspaceId, role } = member.membership;
-	return answer(await listDirectory(db, workspaceId, { admin: isAdminRole(role) }));
+	const { workspaceId, memberId, role } = member.membership;
+	return answer(await listDirectory(db, workspaceId, { memberId, role }));
 }
 
 export async function changeDirectory(request: Request, slug: string): Promise<Response> {
@@ -94,7 +106,9 @@ async function run(action: DirectoryAction, workspaceId: string, userId: string)
 		case "remove-domain":
 			return removeDomain(db, workspaceId, action.id);
 		case "add-mailbox":
-			return addMailbox(db, workspaceId, action.name);
+			return addMailbox(db, workspaceId, action.name, action.everyone);
+		case "set-mailbox-access":
+			return setMailboxAccess(db, workspaceId, userId, action);
 		case "remove-mailbox": {
 			const result = await removeMailbox(db, workspaceId, action.id);
 			if (result.ok) await removeMailboxes(workspaceId, [action.id]);
