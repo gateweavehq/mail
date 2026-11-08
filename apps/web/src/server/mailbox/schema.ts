@@ -179,6 +179,8 @@ ALTER TABLE outgoing ADD COLUMN provider TEXT NOT NULL DEFAULT 'cloudflare';
 ALTER TABLE outgoing ADD COLUMN workspace_id TEXT;
 ALTER TABLE outgoing ADD COLUMN idempotency_key TEXT;
 ALTER TABLE outgoing ADD COLUMN detail TEXT;
+ALTER TABLE outgoing ADD COLUMN maybe_sent INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE outgoing ADD COLUMN key_version TEXT;
 `;
 
 /** Each brings the schema from the version before it. Append only: objects keep what they ran. */

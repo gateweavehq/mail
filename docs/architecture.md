@@ -245,7 +245,14 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
       have gone (its own failure, a timeout, the same key still in progress, or a try the alarm
       finds still `sending`) is tried again on the busy waits, and is `uncertain` only when they
       run out. A refusal keeps Resend's own words (`outgoing.detail`) for the page, and spends the
-      key, as Resend would only refuse it again: the next try, after a fix, gets a new one.
+      key, as Resend would only refuse it again: the next try, after a fix, gets a new one. Not
+      after a try that may have gone (`outgoing.maybe_sent`), though: Resend checks the API key
+      before it looks for what the idempotency key sent, so a refusal then doesn't say that try
+      didn't go. The message keeps its key and ends `uncertain`, as it does when its tries run out
+      or its key is gone. Resend also knows an idempotency key only in the account that sent it,
+      so each try notes which saving of the workspace's key it used (`outgoing.key_version`, a
+      digest of the sealed value), and after a try that may have gone, a different one stops it
+      as `uncertain` (`resend:key_changed`). Someone who then sends it again takes the new key.
     - **States** (`outgoing.state`). `held` for an agent's message that waits for approval, as
       above. `sending`, then `sent`. `waiting` when Email Service is busy
       (its rate or daily limit): the object's alarm tries again after 15 seconds, 1, 5 and 30

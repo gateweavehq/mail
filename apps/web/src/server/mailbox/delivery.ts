@@ -65,11 +65,23 @@ export function outcomeOf(error: unknown, attempts: number, now: number): Outcom
  * What a failed try through Resend means. Resend knows each message by its key for a day, so one
  * that may have gone is tried again too, and only when the tries run out is it uncertain. One that
  * stayed busy or over quota until then is refused, since nothing went.
+ *
+ * Unless an earlier try under the same key may have sent it (`earlierMaybeSent`): then a refusal or
+ * the end of the tries leaves it uncertain, since Resend checks a key before it looks for what that
+ * key sent, and a refusal now doesn't say the earlier try didn't go.
  */
-export function resendOutcome(failure: ResendFailure, attempts: number, now: number): Outcome {
+export function resendOutcome(
+	failure: ResendFailure,
+	attempts: number,
+	now: number,
+	earlierMaybeSent = false,
+): Outcome {
 	const { kind, code } = failure;
-	if (kind === "refused") return { state: "refused", code };
+	const stop: Outcome =
+		earlierMaybeSent || kind === "unsure"
+			? { state: "uncertain", code }
+			: { state: "refused", code };
+	if (kind === "refused") return stop;
 	const wait = WAITS_MS[kind === "daily" ? "daily" : "busy"][attempts - 1];
-	if (wait !== undefined) return { state: "waiting", code, nextAt: now + wait };
-	return kind === "unsure" ? { state: "uncertain", code } : { state: "refused", code };
+	return wait === undefined ? stop : { state: "waiting", code, nextAt: now + wait };
 }

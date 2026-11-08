@@ -75,7 +75,11 @@ export async function removeProviderKey(
 }
 
 export type OpenedKey =
-	| { ok: true; key: string }
+	/**
+	 * `version` tells this saved key from any saved before or after it, the same key saved again
+	 * too: Resend knows a message's idempotency key only in the account that sent it.
+	 */
+	| { ok: true; key: string; version: string }
 	/** `no_key`: the workspace has none. `key_unreadable`: it won't open with this deployment's `SECRETS_KEY`. */
 	| { ok: false; code: "no_key" | "key_unreadable" };
 
@@ -95,11 +99,18 @@ export async function openProviderKey(
 	if (!row) return { ok: false, code: "no_key" };
 	const sealer = await sealerFor(secretsKey, workspaceId);
 	if (!isSealer(sealer)) return { ok: false, code: "key_unreadable" };
+	let key: string;
 	try {
-		return { ok: true, key: await sealer.open(place(provider), row.sealed) };
+		key = await sealer.open(place(provider), row.sealed);
 	} catch {
 		return { ok: false, code: "key_unreadable" };
 	}
+	// Each sealing is new, so its digest names this saving of the key.
+	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(row.sealed));
+	const version = [...new Uint8Array(digest).slice(0, 12)]
+		.map((byte) => byte.toString(16).padStart(2, "0"))
+		.join("");
+	return { ok: true, key, version };
 }
 
 /**

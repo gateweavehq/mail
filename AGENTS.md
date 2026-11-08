@@ -121,8 +121,11 @@ These are load-bearing. Breaking one breaks users' data or security, usually sil
     idempotency key, so a send that failed without a code, with its own failure, or that nothing
     finished, is `uncertain`, and only a person's "Send again" sends it again. Through Resend, the
     one exception, every try of a message carries its `outgoing.idempotency_key`, which Resend
-    keeps for a day, so the alarm may try it again; change that key only after Resend has refused
-    it. A draft's id makes a second send of it the first. The copy and its `outgoing` row are
+    keeps for a day, so the alarm may try it again. Change that key only after Resend has refused
+    it and no earlier try under it may have gone (`outgoing.maybe_sent`), and after such a try,
+    never end it as `refused` or send it through another saving of the key
+    (`outgoing.key_version`): Resend checks a key before the message, and knows an idempotency
+    key only in its own account. A draft's id makes a second send of it the first. The copy and its `outgoing` row are
     written in one transaction before anything is called, each change of state is made only from
     the state it was found in, and the message's own id goes in its `References`, so its thread
     doesn't depend on the `Message-ID` the provider gives it.

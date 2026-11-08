@@ -84,6 +84,8 @@ describe("migrate", () => {
 				workspace_id: null,
 				idempotency_key: null,
 				detail: null,
+				maybe_sent: 0,
+				key_version: null,
 			},
 		]);
 		sent("held");

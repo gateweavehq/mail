@@ -10,6 +10,9 @@ const origin = "https://mail.test";
 /** Keys the stand-in takes: one that may do anything, and one that may only send. */
 const FULL_KEY = "re_FullAccess_1234567890abcd";
 const SENDING_KEY = "re_SendingOnly_0987654321wxyz";
+/** A sending-only key the stand-in takes until a test revokes it, as someone may in Resend. */
+const REVOCABLE_KEY = "re_Revocable_5555555555rvkd";
+const revocable = { active: true };
 
 /** One request the stand-in got for `POST /emails`. */
 interface ResendRequest {
@@ -39,9 +42,10 @@ const tries = new Map<string, number>();
 async function resend(request: Request): Promise<Response> {
 	const url = new URL(request.url);
 	const key = request.headers.get("authorization")?.replace(/^Bearer /, "") ?? "";
+	const sendingOnly = key === SENDING_KEY || (key === REVOCABLE_KEY && revocable.active);
 	if (url.pathname === "/domains") {
 		if (key === FULL_KEY) return Response.json({ data: [] });
-		if (key === SENDING_KEY) {
+		if (sendingOnly) {
 			return Response.json(
 				{ name: "restricted_api_key", message: "This API key is restricted to only send emails" },
 				{ status: 401 },
@@ -64,7 +68,8 @@ async function resend(request: Request): Promise<Response> {
 		userAgent: request.headers.get("user-agent"),
 		body,
 	});
-	if (key !== FULL_KEY && key !== SENDING_KEY) {
+	// A key is checked before Resend looks for what was sent with the idempotency key.
+	if (key !== FULL_KEY && !sendingOnly) {
 		return Response.json(
 			{ name: "validation_error", message: "API key is invalid" },
 			{ status: 401 },
@@ -443,6 +448,53 @@ describe("a domain that sends through Resend", () => {
 		expect(tried).toHaveLength(2);
 		expect(tried.map((one) => one.idempotencyKey)).toEqual([message.id, message.id]);
 		expect([...sent.values()].filter((one) => one.body.includes(to))).toHaveLength(1);
+	});
+
+	it("keeps the idempotency key of a try that may have gone, so a refusal after it leaves the message uncertain and sending again can't send it twice", {
+		timeout: 60_000,
+	}, async () => {
+		const box = await mailboxWithAddress();
+		expect((await setKey(box, REVOCABLE_KEY)).status).toBe(200);
+		expect((await sendWith(box, "resend")).status).toBe(200);
+		const to = `went-1@${box.slug}.example.org`;
+		const message = await send(box, to);
+		expect(message).toMatchObject({ state: "waiting", code: "resend:application_error" });
+		// Revoked before the next try, which Resend then refuses without looking for the message.
+		revocable.active = false;
+		try {
+			const stopped = await until(box, message, "uncertain");
+			expect(stopped).toMatchObject({ state: "uncertain", code: "resend:validation_error" });
+		} finally {
+			revocable.active = true;
+		}
+		const again = await outbox(box, { action: "send-again", message: message.id });
+		expect(await again.json()).toMatchObject({ state: "sent" });
+		const tried = requestsTo(to);
+		expect(tried.map((one) => one.idempotencyKey)).toEqual([message.id, message.id, message.id]);
+		expect([...sent.values()].filter((one) => one.body.includes(to))).toHaveLength(1);
+	});
+
+	it("stops rather than send through a replaced key what may have gone through the one before", {
+		timeout: 60_000,
+	}, async () => {
+		const box = await resendBox();
+		const to = `went-1@${box.slug}.example.org`;
+		const message = await send(box, to);
+		expect(message).toMatchObject({ state: "waiting", code: "resend:application_error" });
+		// Resend knows an idempotency key only in the account that sent it.
+		expect((await setKey(box, FULL_KEY)).status).toBe(200);
+		const stopped = await until(box, message, "uncertain");
+		expect(stopped).toMatchObject({ state: "uncertain", code: "resend:key_changed" });
+		expect(requestsTo(to)).toHaveLength(1);
+		// Someone who sends it again, having read why it stopped, sends it through the new key.
+		const again = await outbox(box, { action: "send-again", message: message.id });
+		expect(await again.json()).toMatchObject({ state: "sent" });
+		const [, second, ...more] = requestsTo(to);
+		expect(more).toEqual([]);
+		expect(second).toMatchObject({
+			authorization: `Bearer ${FULL_KEY}`,
+			idempotencyKey: message.id,
+		});
 	});
 
 	it("reads the key at each try, so one that no longer opens refuses it", {

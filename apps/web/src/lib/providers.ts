@@ -31,6 +31,24 @@ export type ResendAccess = "full" | "sending";
 /** The prefix of Mail's codes for Resend's answers, as `resend:validation_error`. */
 export const RESEND_CODE = "resend:";
 
+/** Mail's code for tries stopped because the workspace's Resend key changed after one may have gone. */
+export const KEY_CHANGED = `${RESEND_CODE}key_changed`;
+
+/** Resend's answers, and Mail's, that leave it unknown whether a message went. */
+const MAYBE_WENT = new Set([
+	"unreachable",
+	"application_error",
+	"internal_server_error",
+	"service_unavailable",
+	"concurrent_idempotent_requests",
+]);
+
+/** Whether a try that ended with this code may have sent the message. */
+export function resendMaybeWent(code: string): boolean {
+	const name = code.slice(RESEND_CODE.length);
+	return MAYBE_WENT.has(name) || /^5\d\d$/.test(name);
+}
+
 /** Why a message to go through Resend isn't sent, in words, from Mail's code and Resend's message. */
 export function resendReason(code: string, detail: string | null): string {
 	const name = code.slice(RESEND_CODE.length);
@@ -40,9 +58,11 @@ export function resendReason(code: string, detail: string | null): string {
 			return "Its domain sends through Resend, and this workspace has no Resend key. An admin can add one in Settings, under Domains.";
 		case "key_unreadable":
 			return "This workspace's Resend key can't be read on this server any more. An admin can add it again in Settings, under Domains.";
+		case "key_unavailable":
+			return "The workspace's Resend key couldn't be read when Mail last tried.";
 		case "rate_limit_exceeded":
 		case "daily_quota_exceeded":
-			return "Resend stayed busy or over its daily quota, so it wasn't sent.";
+			return "Resend stayed busy or over its daily quota until Mail's tries ran out.";
 		case "monthly_quota_exceeded":
 			return "The Resend account has used its monthly quota.";
 		case "validation_error":

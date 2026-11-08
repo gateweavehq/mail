@@ -107,4 +107,21 @@ describe("resendOutcome", () => {
 			code: "resend:busy",
 		});
 	});
+
+	it("never refuses what an earlier try may have sent: a refusal now doesn't say that one didn't go", () => {
+		expect(resendOutcome(failure("refused", "resend:restricted_api_key"), 2, now, true)).toEqual({
+			state: "uncertain",
+			code: "resend:restricted_api_key",
+		});
+		expect(resendOutcome(failure("busy"), WAITS_MS.busy.length + 1, now, true)).toEqual({
+			state: "uncertain",
+			code: "resend:busy",
+		});
+		// While there are tries left, it still waits for the next.
+		expect(resendOutcome(failure("busy"), 2, now, true)).toEqual({
+			state: "waiting",
+			code: "resend:busy",
+			nextAt: now + (WAITS_MS.busy[1] ?? 0),
+		});
+	});
 });
