@@ -17,6 +17,12 @@ export const MAX_QUERY = 200;
 /** The most words a query looks for. */
 export const MAX_QUERY_WORDS = 10;
 
+/**
+ * How long the last word must be to also find the words it starts. A shorter one starts so many
+ * that a big mailbox would read most of its index for it.
+ */
+export const MIN_PREFIX = 2;
+
 /** What a message is found by, as the index's columns take it. */
 export interface Searchable {
 	subject: string;
@@ -36,6 +42,14 @@ function decoded(value: string | null): string {
 }
 
 /**
+ * Text as both the index and a query take it, with look-alike forms made plain: full-width and
+ * half-width letters and digits, ligatures. Either side may be written in them.
+ */
+function plain(text: string): string {
+	return text.normalize("NFKC");
+}
+
+/**
  * What a stored message is found by: its subject and From always, and its text and attachments'
  * names when the start of its mail parses. A message that doesn't parse is still found by its
  * headers, so it can't hold up the rest. Reading R2 may throw, for the alarm to try again.
@@ -45,8 +59,8 @@ export async function searchable(
 	message: { object: string; size: number; subject: string | null; from: string | null },
 ): Promise<Searchable> {
 	const found = {
-		subject: decoded(message.subject),
-		sender: decoded(message.from),
+		subject: plain(decoded(message.subject)),
+		sender: plain(decoded(message.from)),
 		attachments: "",
 		body: "",
 	};
@@ -58,11 +72,13 @@ export async function searchable(
 	try {
 		const email = await PostalMime.parse(start);
 		const text = email.text ?? (email.html ? (await textOfHtml(email.html)).text : "");
-		found.body = text.slice(0, MAX_SEARCHED_TEXT);
-		found.attachments = email.attachments
-			.map((attachment) => attachment.filename ?? "")
-			.filter((name) => name.length > 0)
-			.join(" ");
+		found.body = plain(text.slice(0, MAX_SEARCHED_TEXT));
+		found.attachments = plain(
+			email.attachments
+				.map((attachment) => attachment.filename ?? "")
+				.filter((name) => name.length > 0)
+				.join(" "),
+		);
 	} catch {
 		// Its headers are enough to find it by.
 	}
@@ -73,12 +89,12 @@ export async function searchable(
  * What someone typed, as an FTS5 query, or null when it has nothing to look for. Each word is
  * quoted, so that what FTS5 would read as syntax (`OR`, `NEAR`, `*`, `column:`) is only text, and
  * a message must have them all. The last word also finds the words it starts, as it may be half
- * typed. A word with no letter or digit in it has nothing to find, and is left out.
+ * typed, when it is long enough. A word with no letter or digit in it has nothing to find, and is
+ * left out. Control characters part words: FTS5 would end a quoted word at a NUL.
  */
 export function ftsQuery(typed: string): string | null {
-	const words = typed
-		.slice(0, MAX_QUERY)
-		.normalize("NFKC")
+	const words = plain(typed.slice(0, MAX_QUERY))
+		.replace(/\p{Cc}/gu, " ")
 		.split(/\s+/)
 		.filter((word) => /[\p{L}\p{N}]/u.test(word))
 		.slice(0, MAX_QUERY_WORDS);
@@ -86,7 +102,8 @@ export function ftsQuery(typed: string): string | null {
 	return words
 		.map((word, at) => {
 			const quoted = `"${word.replaceAll('"', '""')}"`;
-			return at === words.length - 1 ? `${quoted}*` : quoted;
+			const last = at === words.length - 1;
+			return last && [...word].length >= MIN_PREFIX ? `${quoted}*` : quoted;
 		})
 		.join(" ");
 }

@@ -107,17 +107,26 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     the mailbox is checked against the caller's workspace in D1 before its object is asked
     anything.
   - **Search.** A mailbox's page, and `…/threads?q=`, list the threads with a message that has
-    every word typed, the last also as the start of one, newest news first. An FTS5 table in the
-    mailbox's object indexes each message's subject, sender, attachment names and text, with
-    accents set aside. Each word is quoted, so what FTS5 would read as syntax (`OR`, `NEAR`,
-    `column:`, `*`) is only text, and at most 10 words of the first 200 characters count. The
-    object's alarm indexes messages a second after they are stored, 20 at a time and the oldest
-    first, so a delivery never waits for its mail to be parsed, and mail that has just arrived can
-    take a moment to be found. It reads a message's first 2 MiB from R2 and indexes up to 100,000
-    characters of its text, or of its HTML made text; a message postal-mime can't parse is found by
-    its subject and sender. The table is contentless: it holds the words' places, not the mail, and
-    a trigger takes a message's entry out with the message. Messages stored before search are
-    indexed when their object next starts.
+    every word typed, newest news first. The last word also finds the words it starts, when it
+    has two characters or more: one starts so many that a big mailbox would read most of its index.
+    An FTS5 table in the mailbox's object indexes each message's subject, sender, attachment names
+    and text, with accents set aside. Both the index and a query make look-alike forms plain
+    (NFKC: full-width letters and digits, half-width katakana, ligatures), so either side may be
+    written in them. Each word is quoted, so what FTS5 would read as syntax (`OR`, `NEAR`,
+    `column:`, `*`) is only text, and control characters part words, as FTS5 would end a quoted
+    word at a NUL. At most 10 words of the first 200 characters count. The tokenizer
+    (`unicode61`) takes a run of Chinese or Japanese characters as one word, so a search finds such
+    text by the start of a run only; a trigram index would find any part, at a larger size.
+    The object's alarm indexes messages a second after they are stored, 20 at a time and the
+    newest first, so a delivery never waits for its mail to be parsed and new mail is found soon
+    even while older mail waits, as after an upgrade. It reads a message's first 2 MiB from R2 and
+    indexes up to 100,000 characters of its text, or of its HTML made text; a message postal-mime
+    can't parse is found by its subject and sender. When R2 fails, indexing stops for a minute
+    without failing the alarm, which also expires deliveries. The table is contentless: it holds
+    the words' places, not the mail, and a trigger takes a message's entry out with the message.
+    Messages stored before search are indexed when their object next starts. A search is in its
+    page's URL, so it can be shared and reloaded; Workers Logs, when on, keep URLs, and so what
+    members searched for, as long as they keep logs.
   - **Who sent it.** A message shows as from a domain only when Cloudflare's own
     `Authentication-Results` says `dmarc=pass` for that domain (`header.from`), and the message
     has one `From` holding one address on it. Cloudflare adds its headers at the top, below its

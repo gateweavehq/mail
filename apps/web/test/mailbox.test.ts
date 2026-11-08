@@ -1001,8 +1001,8 @@ describe("search", () => {
 	}
 
 	/**
-	 * Searches until it finds `count` threads. The alarm indexes a message a moment after it is
-	 * stored, the oldest first, so finding the last one delivered means the rest are indexed too.
+	 * Searches until it finds `count` threads, as the alarm indexes a message a moment after it is
+	 * stored, the newest first.
 	 */
 	async function eventually(slug: string, mailboxId: string, q: string, count: number) {
 		const until = Date.now() + 15_000;
@@ -1052,12 +1052,15 @@ describe("search", () => {
 		// The thread with both messages, once.
 		const parcel = await eventually(box.slug, box.mailboxId, "late", 1);
 		expect(parcel.threads.map((one) => [one.subject, one.count])).toEqual([["Invoice 42", 2]]);
+		expect(subjects(await eventually(box.slug, box.mailboxId, "receipt-42.pdf", 1))).toEqual([
+			"Invoice 42",
+		]);
+		expect(subjects(await eventually(box.slug, box.mailboxId, "LUNCH noo", 1))).toEqual(["Lunch"]);
+		// All three are indexed from here on.
 		expect(subjects(await find(box.slug, box.mailboxId, "parcel"))).toEqual(["Invoice 42"]);
-		expect(subjects(await find(box.slug, box.mailboxId, "receipt-42.pdf"))).toEqual(["Invoice 42"]);
 		expect(subjects(await find(box.slug, box.mailboxId, "orders@shop.example"))).toEqual([
 			"Invoice 42",
 		]);
-		expect(subjects(await find(box.slug, box.mailboxId, "LUNCH noo"))).toEqual(["Lunch"]);
 		// Every word, not any.
 		expect(subjects(await find(box.slug, box.mailboxId, "parcel noon"))).toEqual([]);
 		// Nothing to look for finds nothing, rather than everything.
@@ -1078,6 +1081,28 @@ describe("search", () => {
 		expect(subjects(await find(box.slug, box.mailboxId, "scriptword"))).toEqual([]);
 	});
 
+	it("finds text written in full-width or half-width forms, by plain words or pasted ones", async () => {
+		const box = await mailboxWithAddress();
+		await kept(
+			box.address,
+			message(box.address, {
+				// "Ｉｎｖｏｉｃｅ", in full-width letters.
+				subject: "=?UTF-8?B?77yp772O772W772P772J772D772F?=",
+				extra: ["MIME-Version: 1.0", "Content-Type: text/plain; charset=utf-8"],
+				body: "ｶﾀｶﾅ and the ﬁnance report for ２０２６",
+			}),
+		);
+		const [thread] = (await eventually(box.slug, box.mailboxId, "invoice", 1)).threads;
+		expect(thread).toBeDefined();
+		for (const q of ["Ｉｎｖｏｉｃｅ", "finance", "ﬁnance", "2026", "ｶﾀｶﾅ", "カタカナ"]) {
+			const found = await find(box.slug, box.mailboxId, q);
+			expect(
+				found.threads.map((one) => one.id),
+				q,
+			).toEqual([thread?.id]);
+		}
+	});
+
 	it("takes what FTS5 would read as syntax as words to look for", async () => {
 		const box = await mailboxWithAddress();
 		await kept(
@@ -1085,10 +1110,22 @@ describe("search", () => {
 			message(box.address, { subject: "Plans", body: "Or near the station" }),
 		);
 		expect(subjects(await eventually(box.slug, box.mailboxId, "or near", 1))).toEqual(["Plans"]);
-		for (const q of ['"', "OR", "NEAR(station", "subject:plans", "*", "station OR x", "^near"]) {
-			expect((await search(box.slug, box.mailboxId, q)).status, q).toBe(200);
+		for (const q of [
+			'"',
+			"OR",
+			"NEAR(station",
+			"subject:plans",
+			"*",
+			"station OR x",
+			"^near",
+			"a\u0000b",
+			"station\u0000",
+		]) {
+			expect((await search(box.slug, box.mailboxId, q)).status, JSON.stringify(q)).toBe(200);
 		}
 		expect(subjects(await find(box.slug, box.mailboxId, "station OR x"))).toEqual([]);
+		// A NUL parts words, as a space does.
+		expect(subjects(await find(box.slug, box.mailboxId, "near\u0000station"))).toEqual(["Plans"]);
 	});
 
 	it("no longer finds a message once it is deleted", async () => {
@@ -1120,18 +1157,20 @@ describe("search", () => {
 		for (let n = 0; n < 51; n++) {
 			await kept(box.address, message(box.address, { subject: `Found ${n}`, body: "pagedword" }));
 		}
-		await kept(box.address, message(box.address, { subject: "Last", body: "lastword" }));
-		await eventually(box.slug, box.mailboxId, "lastword", 1);
+		// Until the alarm has indexed all 51, over several runs.
+		const after = (page: Found) => `&beforeAt=${page.next?.latestAt}&beforeId=${page.next?.id}`;
+		const until = Date.now() + 15_000;
+		for (;;) {
+			const first = await find(box.slug, box.mailboxId, "pagedword");
+			const second = first.next && (await find(box.slug, box.mailboxId, "pagedword", after(first)));
+			if (second?.threads.length === 1 || Date.now() > until) break;
+			await new Promise((resolve) => setTimeout(resolve, 200));
+		}
 
 		const first = await find(box.slug, box.mailboxId, "pagedword");
 		expect(first.threads).toHaveLength(50);
 		expect(first.threads[0]?.subject).toBe("Found 50");
-		const second = await find(
-			box.slug,
-			box.mailboxId,
-			"pagedword",
-			`&beforeAt=${first.next?.latestAt}&beforeId=${first.next?.id}`,
-		);
+		const second = await find(box.slug, box.mailboxId, "pagedword", after(first));
 		expect(subjects(second)).toEqual(["Found 0"]);
 		expect(second.next).toBeNull();
 	});

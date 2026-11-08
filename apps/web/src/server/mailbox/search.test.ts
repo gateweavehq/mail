@@ -1,10 +1,22 @@
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
-import { ftsQuery, MAX_QUERY_WORDS } from "./search";
+import { ftsQuery, MAX_QUERY_WORDS, searchable } from "./search";
 
 describe("ftsQuery", () => {
 	it("quotes each word, and lets the last be the start of one", () => {
 		expect(ftsQuery("invoice  shipp")).toBe('"invoice" "shipp"*');
+	});
+
+	it("lets the last word find longer ones only when it is long enough", () => {
+		expect(ftsQuery("invoice a")).toBe('"invoice" "a"');
+		expect(ftsQuery("会")).toBe('"会"');
+		expect(ftsQuery("会議")).toBe('"会議"*');
+	});
+
+	it("parts words at control characters", () => {
+		expect(ftsQuery("a\u0000b")).toBe('"a" "b"');
+		expect(ftsQuery("invoice\u0000")).toBe('"invoice"*');
+		expect(ftsQuery("\u0000\u0007")).toBeNull();
 	});
 
 	it("is null when there is nothing to look for", () => {
@@ -58,11 +70,79 @@ describe("ftsQuery", () => {
 			"-invoice",
 			"^lunch",
 			"{subject}: lunch",
+			"a\u0000b",
+			"invoice\u0000",
+			'"\u0000"',
 		]) {
 			expect(() => found(typed), typed).not.toThrow();
 		}
 		expect(found("invoice OR lunch")).toEqual([]);
 		expect(found("or near")).toEqual([2]);
 		expect(found("subject:lunch")).toEqual([]);
+	});
+});
+
+describe("searchable", () => {
+	/** A bucket that holds one message's mail. */
+	const holding = (raw: string) =>
+		({
+			get: async () => ({ arrayBuffer: async () => new TextEncoder().encode(raw).buffer }),
+		}) as unknown as Parameters<typeof searchable>[0];
+
+	it("makes look-alike forms plain, so that plain words and pasted ones both find them", async () => {
+		const raw = [
+			"MIME-Version: 1.0",
+			"Content-Type: text/plain; charset=utf-8",
+			"",
+			"ｶﾀｶﾅ and the ﬁnance report for ２０２６",
+			"",
+		].join("\r\n");
+		const found = await searchable(holding(raw), {
+			object: "w/m/x.eml",
+			size: raw.length,
+			subject: "=?UTF-8?B?77yp772O772W772P772J772D772F?=",
+			from: "Ｓｈｏｐ <shop@example.org>",
+		});
+		expect(found).toEqual({
+			subject: "Invoice",
+			sender: "Shop <shop@example.org>",
+			attachments: "",
+			body: "カタカナ and the finance report for 2026\n",
+		});
+
+		const db = new DatabaseSync(":memory:");
+		db.exec(
+			"CREATE VIRTUAL TABLE s USING fts5(subject, sender, attachments, body, tokenize = 'unicode61 remove_diacritics 2')",
+		);
+		db.prepare(
+			"INSERT INTO s (rowid, subject, sender, attachments, body) VALUES (1, ?, ?, ?, ?)",
+		).run(found.subject, found.sender, found.attachments, found.body);
+		for (const typed of [
+			"invoice",
+			"Ｉｎｖｏｉｃｅ",
+			"finance",
+			"ﬁnance",
+			"2026",
+			"ｶﾀｶﾅ",
+			"カタカナ",
+		]) {
+			const query = ftsQuery(typed) ?? "";
+			expect(db.prepare("SELECT rowid FROM s WHERE s MATCH ?").all(query), typed).toHaveLength(1);
+		}
+	});
+
+	it("throws when R2 can't give it the mail, rather than index the message without it", async () => {
+		const found = await searchable(
+			{
+				get: async () => ({
+					arrayBuffer: async () => {
+						throw new TypeError("not mail");
+					},
+				}),
+			} as unknown as Parameters<typeof searchable>[0],
+			{ object: "w/m/x.eml", size: 10, subject: "Lunch", from: "a@example.org" },
+		).catch((error: unknown) => error);
+		// Unlike mail that doesn't parse: the mailbox tries it again later.
+		expect(found).toBeInstanceOf(TypeError);
 	});
 });

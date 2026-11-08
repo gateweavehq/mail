@@ -121,6 +121,14 @@ function MailboxPage() {
 					)}
 				</form>
 			</search>
+			{/* Said once a search's page is shown, as the focus stays in the box. */}
+			<p role="status" className="sr-only">
+				{query
+					? page.threads.length === 0
+						? "No thread matches."
+						: `${page.threads.length}${page.next ? " or more" : ""} ${page.threads.length === 1 && !page.next ? "thread matches" : "threads match"}.`
+					: ""}
+			</p>
 
 			{page.threads.length === 0 ? (
 				<p className="rounded-lg border p-6 text-sm text-muted-foreground">

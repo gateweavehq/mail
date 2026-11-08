@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { bodyHash } from "./body";
 import { LINKED_THREADS, migrate } from "./schema";
-import { ftsQuery, searchable } from "./search";
+import { ftsQuery, type Searchable, searchable } from "./search";
 import { MAX_REFERENCES, messageIds, subjectKey } from "./thread";
 
 /** How much one mailbox may hold unless `MAILBOX_BYTES` says otherwise, counting messages on their way in. */
@@ -30,6 +30,9 @@ export const INDEX_BATCH = 20;
 
 /** How long after a message is stored the alarm indexes it, so that a burst is indexed together. */
 const INDEX_DELAY_MS = 1000;
+
+/** How long indexing waits after R2 failed to give it a message's mail. */
+const INDEX_RETRY_MS = 60_000;
 
 /** What `email()` knows of a message before storing it. */
 export interface Arrival {
@@ -544,8 +547,11 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 		if (set === null || set > at) await this.ctx.storage.setAlarm(at);
 	}
 
-	/** Indexes a few stored messages for search, the oldest first. True when more wait. */
-	async #index(): Promise<boolean> {
+	/**
+	 * Indexes a few stored messages for search, the newest first, so that new mail can be found
+	 * soon even while a mailbox's older mail waits. Says whether more wait, or reading R2 failed.
+	 */
+	async #index(): Promise<"done" | "more" | "failed"> {
 		const sql = this.ctx.storage.sql;
 		const waiting = sql
 			.exec<{
@@ -556,12 +562,21 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 				from: string | null;
 			}>(
 				`SELECT id, object, size, subject, from_header AS "from" FROM message
-				WHERE state = 'stored' AND search_id IS NULL ORDER BY arrived_at, id LIMIT ?`,
+				WHERE state = 'stored' AND search_id IS NULL ORDER BY arrived_at DESC, id DESC LIMIT ?`,
 				INDEX_BATCH + 1,
 			)
 			.toArray();
 		for (const message of waiting.slice(0, INDEX_BATCH)) {
-			const found = await searchable(this.env.RAW_MAIL, message);
+			let found: Searchable;
+			try {
+				found = await searchable(this.env.RAW_MAIL, message);
+			} catch (error) {
+				// Later, and without failing the alarm, which also expires deliveries.
+				console.error("mailbox: reading a message to index it failed; it will be tried again", {
+					name: error instanceof Error ? error.name : "unknown",
+				});
+				return "failed";
+			}
 			this.ctx.storage.transactionSync(() => {
 				// Read again: it may have been deleted while its mail was read.
 				const still = sql
@@ -586,7 +601,7 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 				sql.exec("UPDATE message SET search_id = ? WHERE id = ?", searchId, message.id);
 			});
 		}
-		return waiting.length > INDEX_BATCH;
+		return waiting.length > INDEX_BATCH ? "more" : "done";
 	}
 
 	/**
@@ -613,7 +628,7 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			await this.env.RAW_MAIL.delete(chunk.map((row) => row.object));
 			for (const row of chunk) sql.exec("DELETE FROM message WHERE id = ?", row.id);
 		}
-		const more = await this.#index();
+		const indexed = await this.#index();
 		const next = sql
 			.exec<{ at: number | null }>(
 				"SELECT min(arrived_at) AS at FROM message WHERE state = 'pending'",
@@ -622,7 +637,7 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 		// A delivery may have set the alarm while this ran, and the soonest wins.
 		const times = [
 			next.at === null ? null : next.at + PENDING_MS,
-			more ? Date.now() : null,
+			indexed === "more" ? Date.now() : indexed === "failed" ? Date.now() + INDEX_RETRY_MS : null,
 			await this.ctx.storage.getAlarm(),
 		].filter((at): at is number => at !== null);
 		if (times.length > 0) await this.ctx.storage.setAlarm(Math.min(...times));

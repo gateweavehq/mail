@@ -255,10 +255,14 @@ test("searching a mailbox finds the threads with every word", async ({
 	await expect(found.getByRole("link", { name: /Broken kettle/ })).toBeVisible();
 	await expect(found.getByRole("link")).toHaveCount(1);
 	await expect(box).toHaveValue("heat");
+	// Said to a screen reader, as the focus stays in the box.
+	const said = page.getByRole("status").filter({ hasText: /match/ });
+	await expect(said).toHaveText("1 thread matches.");
 
 	await box.fill("kettle shipped");
 	await page.getByRole("button", { name: "Search", exact: true }).click();
 	await expect(page.getByText(/No thread has all of those words/)).toBeVisible();
+	await expect(said).toHaveText("No thread matches.");
 
 	await page.getByRole("link", { name: "Clear" }).click();
 	await expect(page).not.toHaveURL(/q=/);
