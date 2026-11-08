@@ -82,8 +82,13 @@ describe("threadSubject", () => {
 			"Invoice 42",
 			"Re: [Pay to IBAN XX00 1234 instead] [Reply within 24h] Invoice 42",
 			"  fwd :  RE[3]: invoice   42 ",
+			// Forms that only look like brackets and prefixes, which are compared as what they look like.
+			"［Pay to IBAN XX00 1234 instead］ Invoice 42",
+			"﹇Pay to IBAN XX00 1234 instead﹈ Invoice 42",
+			"Ｒｅ： Invoice 42",
 		]) {
 			expect(threadSubject(subject).toLowerCase(), subject).toBe(subjectKey(subject));
+			expect(threadSubject(subject), subject).not.toMatch(/IBAN|Re/);
 		}
 	});
 });

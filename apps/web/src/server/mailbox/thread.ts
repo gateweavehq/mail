@@ -63,8 +63,19 @@ function strip(text: string, pattern: RegExp): string {
 }
 
 /**
- * A subject as threads compare it: decoded, without the prefixes replies and forwards add, in one
- * case, with its spaces collapsed. "Re: [team] AW: Invoice 42" and "Invoice  42" are the same.
+ * A decoded subject's words, in the case they were written in: forms that only look like letters
+ * or brackets made plain, as with full-width ones, spaces collapsed, and the prefixes replies,
+ * forwards and lists add taken off. A thread's line shows these, and threads compare them in one
+ * case, so the line has the same words for every message of the thread, and whoever wrote its
+ * newest can't put words of their own there, in a list tag or otherwise.
+ */
+export function threadSubject(subject: string): string {
+	return strip(subject.normalize("NFKC").replace(/\s+/g, " ").trim(), PREFIX);
+}
+
+/**
+ * A subject as threads compare it: `threadSubject` of it decoded, in one case.
+ * "Re: [team] AW: Invoice 42" and "Invoice  42" are the same.
  */
 export function subjectKey(subject: string | null): string {
 	if (!subject) return "";
@@ -74,14 +85,5 @@ export function subjectKey(subject: string | null): string {
 	} catch {
 		text = subject;
 	}
-	return strip(text.normalize("NFKC").replace(/\s+/g, " ").trim(), PREFIX).toLowerCase();
-}
-
-/**
- * A decoded subject as a thread's line shows it: what `subjectKey` compares, in the case it was
- * written in. Every message of a thread has the same words here, so whoever wrote its newest can't
- * put words of their own on its line, in a list tag or otherwise.
- */
-export function threadSubject(subject: string): string {
-	return strip(subject.replace(/\s+/g, " ").trim(), PREFIX);
+	return threadSubject(text).toLowerCase();
 }
