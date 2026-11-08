@@ -2,6 +2,7 @@ import { and, asc, count, eq, gt, inArray, isNotNull, isNull, or, sql } from "dr
 import { parseDomainName, parseLocalPart, splitRecipient } from "../../lib/addresses";
 import type { Directory, MailRoute } from "../../lib/directory";
 import { canReadMailbox, isAdminRole, type MemberRole } from "../../lib/roles";
+import { isAgentMembership } from "../auth/agents";
 import type { Database } from "../db";
 import { schema } from "../db";
 import { toRole } from "../workspaces";
@@ -78,9 +79,11 @@ export async function findAddress(db: Database, recipient: string, now: Date) {
 }
 
 /** Who reads a mailbox besides owners and admins: people and agents apart, as they are chosen. */
-function accessOf(everyone: boolean, grants: { memberId: string; role: MemberRole }[]) {
+function accessOf(everyone: boolean, grants: { memberId: string; role: string }[]) {
 	const ids = (agents: boolean) =>
-		grants.filter((grant) => (grant.role === "agent") === agents).map((grant) => grant.memberId);
+		grants
+			.filter((grant) => isAgentMembership(grant.role) === agents)
+			.map((grant) => grant.memberId);
 	return { everyone, memberIds: ids(false), agentIds: ids(true) };
 }
 
@@ -148,9 +151,7 @@ export async function listDirectory(
 					.innerJoin(member, eq(member.id, mailboxAccess.memberId))
 					.where(eq(mailbox.organizationId, workspaceId))
 					.orderBy(asc(mailboxAccess.memberId))
-			)
-				.map((grant) => ({ ...grant, role: toRole(grant.role) }))
-				.filter((grant) => !isAdminRole(grant.role))
+			).filter((grant) => !isAdminRole(toRole(grant.role)))
 		: [];
 	const byMailbox = Map.groupBy(addresses, (address) => address.mailboxId);
 	const readers = Map.groupBy(grants, (grant) => grant.mailboxId);

@@ -121,10 +121,14 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     `agents.invalid` that nobody can sign up, sign in or be invited with, and no password or
     session. It reads with a key, `gwm_` and 256 random bits, of which only a SHA-256 hash and the
     first characters are kept, sent as `Authorization: Bearer`. `currentCaller` in `access.ts`
-    takes a request with that header as the agent's alone: a key that doesn't work, or works for
-    another workspace, gets "not found", and the cookies that came with it are never tried
-    instead. Only reading takes a caller (`openMailbox`, and listing the directory, which shows an
-    agent the mailboxes it was given); every change takes `currentMember`, a person signed in.
+    takes a request with a bearer token as the agent's alone: a key that doesn't work, or works
+    for another workspace, gets "not found", and the cookies that came with it are never tried
+    instead. Another scheme, such as Basic auth from a proxy in front of the app, carries no key,
+    so the session decides. Only reading takes a caller (`openMailbox`, and listing the directory,
+    which shows an agent the mailboxes it was given); every change takes `currentMember`, a person
+    signed in. Making an agent or a key takes a sign-in from the last day, since a key outlives
+    the session that made it. The plugin manages only accounts it made, under `agents.invalid`:
+    a person who was given the `agent` role by hand is never listed, keyed or deleted as one.
     Agents are kept off the members page and out of Better Auth's role and removal endpoints;
     deleting one, from its own page, takes its keys and grants, and a deleted workspace takes its
     agents.

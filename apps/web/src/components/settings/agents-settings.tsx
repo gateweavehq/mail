@@ -26,6 +26,17 @@ import type { AgentInfo, AgentKeyInfo } from "#/lib/agents";
 import { authClient } from "#/lib/auth-client";
 import { formatDateTime, formatRelative, formatShortDate } from "#/lib/dates";
 
+/** What to say about a refusal, where the server's own words are not for people. */
+function failure(
+	error: { code?: string | undefined; message?: string | undefined },
+	fallback: string,
+) {
+	if (error.code === "SESSION_NOT_FRESH") {
+		return "Making a key needs a recent sign-in. Sign out and sign in again, then try again.";
+	}
+	return error.message || fallback;
+}
+
 /** A key just made, shown once. */
 interface NewKey {
 	agentName: string;
@@ -101,7 +112,7 @@ function CreateAgentForm({ onCreated }: { onCreated: (key: NewKey) => void }) {
 		const result = await authClient.agents.create({ organizationId, name: name.trim() });
 		setPending(false);
 		if (result.error || !result.data) {
-			setError(result.error?.message ?? "Could not create the agent");
+			setError(failure(result.error ?? {}, "Could not create the agent"));
 			return;
 		}
 		onCreated({ agentName: result.data.agent.name, secret: result.data.key });
@@ -214,7 +225,9 @@ function AgentRow({ agent, onNewKey }: { agent: AgentInfo; onNewKey: (key: NewKe
 	async function newKey() {
 		const result = await authClient.agents.createKey({ agentId: agent.id });
 		if (result.error || !result.data) {
-			toast.error("Could not make a key", { description: result.error?.message });
+			toast.error("Could not make a key", {
+				description: failure(result.error ?? {}, "Something went wrong"),
+			});
 			return;
 		}
 		onNewKey({ agentName: agent.name, secret: result.data.secret });

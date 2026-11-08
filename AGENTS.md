@@ -107,9 +107,9 @@ These are load-bearing. Breaking one breaks users' data or security, usually sil
     (`apps/web/src/server/mailbox/read.ts`), which applies `canReadMailbox`: being in the workspace
     is not enough. Every R2 object is named by the mailbox's object, as pending, before it is
     written, so R2 never holds mail a mailbox doesn't know about.
-13. **A key is an agent's, and it only reads.** A request with an `Authorization` header is
-    decided by its key alone (`currentCaller` in `apps/web/src/server/access.ts`), never by the
-    cookies that come with it. Only reading takes `currentCaller`; whatever changes something takes
+13. **A key is an agent's, and it only reads.** A request with a bearer token is decided by its
+    key alone (`currentCaller` in `apps/web/src/server/access.ts`), never by the cookies that come
+    with it. Only reading takes `currentCaller`; whatever changes something takes
     `currentMember`, a person signed in. Keep only a key's hash, and never log a key.
 
 ## Code style

@@ -543,6 +543,16 @@ describe("who can read a mailbox", () => {
 			});
 			expect(write.status).toBe(403);
 		}
+
+		// Admins see them sorted by the role they were given: an unknown one isn't an agent's.
+		await giveAccess(box, { everyone: true, memberIds: [agent.memberId, unknown.memberId] });
+		expect(await reach(box, unknown)).toEqual(opened);
+		const [seen] = (await directory(box.slug, owner.headers)).mailboxes;
+		expect(seen?.access).toEqual({
+			everyone: true,
+			memberIds: [unknown.memberId],
+			agentIds: [agent.memberId],
+		});
 	});
 
 	it("is everyone in the workspace, when the mailbox is open to them", async () => {
@@ -696,6 +706,13 @@ async function makeAgent(workspaceId: string, name = "Sorter") {
 	return { ...agent, key, headers: { authorization: `Bearer ${key}` } };
 }
 
+/** The workspace's agents, as its owner sees them in settings. */
+async function agentsOf(workspaceId: string) {
+	const response = await auth(`/agents/list?organizationId=${workspaceId}`, owner);
+	expect(response.status).toBe(200);
+	return (await response.json()) as { id: string; name: string; keys: { id: string }[] }[];
+}
+
 describe("an agent", () => {
 	it("reads with its key only the mailboxes it is given, never through everyone", async () => {
 		const box = await mailboxWithAddress();
@@ -734,8 +751,8 @@ describe("an agent", () => {
 			`Bearer ${agent.key}x`,
 			`Bearer gwm_${"A".repeat(43)}`,
 			`Bearer ${strangers.key}`,
-			"Basic b3duZXI6cGFzc3dvcmQ=",
 			"Bearer",
+			"bearer ",
 		];
 		for (const authorization of turnedAway) {
 			// The owner's cookie would open it, but a request with a key is the key's alone.
@@ -743,6 +760,14 @@ describe("an agent", () => {
 			expect((await readMailbox(box.slug, box.mailboxId, headers)).status).toBe(404);
 		}
 		expect((await readMailbox(box.slug, box.mailboxId, agent.headers)).status).toBe(200);
+		const lowercase = { authorization: `bearer ${agent.key}` };
+		expect((await readMailbox(box.slug, box.mailboxId, lowercase)).status).toBe(200);
+		// Another scheme carries no key, such as Basic auth from a proxy in front of the app: the
+		// session decides, and without one nobody is let in.
+		const basic = { authorization: "Basic b3duZXI6cGFzc3dvcmQ=" };
+		const withCookie = { ...owner.headers, ...basic };
+		expect((await readMailbox(box.slug, box.mailboxId, withCookie)).status).toBe(200);
+		expect((await readMailbox(box.slug, box.mailboxId, basic)).status).toBe(404);
 		// Its key works only in its own workspace.
 		const across = { headers: agent.headers };
 		expect((await readMailbox(elsewhere.slug, elsewhere.mailboxId, across.headers)).status).toBe(
@@ -808,11 +833,14 @@ describe("an agent", () => {
 	it("is made, keyed and managed only by owners and admins", async () => {
 		const box = await mailboxWithAddress();
 		const agent = await makeAgent(box.workspaceId);
+		const keyId = (await agentsOf(box.workspaceId))[0]?.keys[0]?.id;
 		const member = await join(box.workspaceId);
 		const asMember = [
 			auth(`/agents/list?organizationId=${box.workspaceId}`, member),
 			auth("/agents/create", member, { organizationId: box.workspaceId, name: "Mine" }),
 			auth("/agents/create-key", member, { agentId: agent.id }),
+			auth("/agents/update", member, { agentId: agent.id, name: "Mine" }),
+			auth("/agents/revoke-key", member, { keyId }),
 			auth("/agents/delete", member, { agentId: agent.id }),
 		];
 		for (const response of await Promise.all(asMember)) expect(response.status).toBe(403);
@@ -830,8 +858,72 @@ describe("an agent", () => {
 			}),
 		];
 		for (const response of await Promise.all(asPerson)) expect(response.status).toBe(403);
-		const listed = await auth(`/agents/list?organizationId=${box.workspaceId}`, owner);
-		expect(((await listed.json()) as { id: string }[]).map((a) => a.id)).toEqual([agent.id]);
+		const [listed] = await agentsOf(box.workspaceId);
+		expect(listed).toMatchObject({ id: agent.id, name: "Sorter", keys: [{ id: keyId }] });
+	});
+
+	it("is out of reach for an admin of another workspace", async () => {
+		const box = await mailboxWithAddress();
+		const agent = await makeAgent(box.workspaceId);
+		const keyId = (await agentsOf(box.workspaceId))[0]?.keys[0]?.id;
+		const elsewhere = await mailboxWithAddress();
+		const stranger = await join(elsewhere.workspaceId, "admin");
+		const attempts = [
+			auth(`/agents/list?organizationId=${box.workspaceId}`, stranger),
+			auth("/agents/create", stranger, { organizationId: box.workspaceId, name: "Theirs" }),
+			auth("/agents/create-key", stranger, { agentId: agent.id }),
+			auth("/agents/update", stranger, { agentId: agent.id, name: "Theirs" }),
+			auth("/agents/revoke-key", stranger, { keyId }),
+			auth("/agents/delete", stranger, { agentId: agent.id }),
+		];
+		for (const response of await Promise.all(attempts)) expect(response.status).toBe(403);
+		const [listed] = await agentsOf(box.workspaceId);
+		expect(listed).toMatchObject({ id: agent.id, name: "Sorter", keys: [{ id: keyId }] });
+		expect((await directory(box.slug, agent.headers)).mailboxes).toEqual([]);
+	});
+
+	it("needs a recent sign-in to be made or given a key", async () => {
+		const box = await mailboxWithAddress();
+		const agent = await makeAgent(box.workspaceId);
+		const admin = await join(box.workspaceId, "admin");
+		await mail.db
+			.prepare("UPDATE session SET created_at = ? WHERE user_id = ?")
+			.bind(Date.now() - 2 * 24 * 60 * 60 * 1000, admin.userId)
+			.run();
+		// A key outlives the session that made it, so an old or stolen cookie can't leave one behind.
+		const refused = [
+			await auth("/agents/create", admin, { organizationId: box.workspaceId, name: "Late" }),
+			await auth("/agents/create-key", admin, { agentId: agent.id }),
+		];
+		for (const response of refused) {
+			expect(response.status).toBe(403);
+			expect(((await response.json()) as { code?: string }).code).toBe("SESSION_NOT_FRESH");
+		}
+		// What makes no key still works on an older sign-in.
+		expect((await auth("/agents/update", admin, { agentId: agent.id, name: "Kept" })).status).toBe(
+			200,
+		);
+		const listed = await agentsOf(box.workspaceId);
+		expect(listed.map((a) => [a.name, a.keys.length])).toEqual([["Kept", 1]]);
+	});
+
+	it("is only an account made as one, never a person's given the role", async () => {
+		const box = await mailboxWithAddress();
+		const person = await join(box.workspaceId, "agent");
+		const attempts = [
+			auth("/agents/create-key", owner, { agentId: person.userId }),
+			auth("/agents/update", owner, { agentId: person.userId, name: "Renamed" }),
+			auth("/agents/delete", owner, { agentId: person.userId }),
+		];
+		for (const response of await Promise.all(attempts)) expect(response.status).toBe(404);
+		expect(await agentsOf(box.workspaceId)).toEqual([]);
+		const kept = await mail.db
+			.prepare(
+				"SELECT u.name AS name, (SELECT count(*) FROM agent_key WHERE user_id = u.id) AS keys FROM user u WHERE u.id = ?",
+			)
+			.bind(person.userId)
+			.first<{ name: string; keys: number }>();
+		expect(kept).toEqual({ name: expect.not.stringMatching(/^Renamed$/), keys: 0 });
 	});
 
 	it("has an address nobody can sign up, sign in or be invited under", async () => {

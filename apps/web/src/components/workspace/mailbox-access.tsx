@@ -111,11 +111,18 @@ export function MailboxAccessDialog({
 		setError(null);
 		const picked = (list: Reader[]) =>
 			list.filter((reader) => chosen.has(reader.memberId)).map((reader) => reader.memberId);
+		// A grant to someone listed in neither, such as a role this version doesn't know, stays.
+		const listed = new Set([...readers.people, ...readers.agents].map((r) => r.memberId));
+		const unlisted = [...chosen].filter((memberId) => !listed.has(memberId));
 		const result = await changeDirectory(slug, {
 			action: "set-mailbox-access",
 			mailboxId: box.id,
 			everyone,
-			memberIds: [...(everyone ? [] : picked(readers.people)), ...picked(readers.agents)],
+			memberIds: [
+				...(everyone ? [] : picked(readers.people)),
+				...picked(readers.agents),
+				...unlisted,
+			],
 		});
 		if (result.ok) {
 			await router.invalidate();

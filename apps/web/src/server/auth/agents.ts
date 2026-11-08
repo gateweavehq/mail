@@ -4,6 +4,7 @@ import {
 	APIError,
 	createAuthEndpoint,
 	createAuthMiddleware,
+	freshSessionMiddleware,
 	sessionMiddleware,
 } from "better-auth/api";
 import { and, asc, count, eq, like, notExists, or } from "drizzle-orm";
@@ -167,13 +168,22 @@ export function agentMembers({ db }: { db: Database }) {
 		}
 	}
 
-	/** An agent and its workspace, for an admin of that workspace. */
+	/**
+	 * An agent and its workspace, for an admin of that workspace. Only an account this plugin made,
+	 * under an agent's address: deleting an agent deletes its account, which must never be a person's.
+	 */
 	async function agentForAdmin(agentId: string, userId: string) {
 		const agent = await db
 			.select({ id: user.id, name: user.name, organizationId: member.organizationId })
 			.from(member)
 			.innerJoin(user, eq(member.userId, user.id))
-			.where(and(eq(member.userId, agentId), eq(member.role, AGENT_ROLE)))
+			.where(
+				and(
+					eq(member.userId, agentId),
+					eq(member.role, AGENT_ROLE),
+					like(user.email, `%@${AGENT_EMAIL_DOMAIN}`),
+				),
+			)
 			.get();
 		if (!agent) throw new APIError("NOT_FOUND", { message: "That agent was deleted" });
 		await requireAdmin(agent.organizationId, userId);
@@ -248,7 +258,13 @@ export function agentMembers({ db }: { db: Database }) {
 						.from(member)
 						.innerJoin(user, eq(member.userId, user.id))
 						.leftJoin(agentKey, eq(agentKey.userId, user.id))
-						.where(and(eq(member.organizationId, organizationId), eq(member.role, AGENT_ROLE)))
+						.where(
+							and(
+								eq(member.organizationId, organizationId),
+								eq(member.role, AGENT_ROLE),
+								like(user.email, `%@${AGENT_EMAIL_DOMAIN}`),
+							),
+						)
 						.orderBy(asc(user.name), asc(agentKey.createdAt))
 						.all();
 					const agents = new Map<string, AgentInfo>();
@@ -279,7 +295,9 @@ export function agentMembers({ db }: { db: Database }) {
 				{
 					method: "POST",
 					body: z.object({ organizationId: id, name: agentName }),
-					use: [sessionMiddleware],
+					// A key reads mail until it is revoked, even after the session that made it is gone,
+					// so making one takes a recent sign-in: a stolen cookie can't leave a key behind.
+					use: [freshSessionMiddleware],
 				},
 				async (ctx) => {
 					const { organizationId, name } = ctx.body;
@@ -351,7 +369,7 @@ export function agentMembers({ db }: { db: Database }) {
 				{
 					method: "POST",
 					body: z.object({ agentId: id }),
-					use: [sessionMiddleware],
+					use: [freshSessionMiddleware],
 				},
 				async (ctx) => {
 					const agent = await agentForAdmin(ctx.body.agentId, ctx.context.session.user.id);
