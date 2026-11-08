@@ -65,11 +65,15 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
   sending-only key received mail and webhooks. The first such domain makes the workspace's webhook
   in that Resend account (`POST /webhooks`, for `email.received`), at
   `/api/inbound/resend/<channel>`, a random id per workspace, and keeps its id and signing secret,
-  sealed as the key is, in `resend_inbound`. The last one to stop removes it. Choosing Resend again
-  makes it again when Resend no longer has it, as after the key was replaced with one from another
-  account. Resend's webhook carries no content, only the email's id. Mail checks the delivery's
-  Svix signature, then asks Resend for the email (`GET /emails/receiving/<id>`), takes its To, Cc,
-  Bcc and `received_for`, keeps the addresses on this workspace's proved domains that receive with
+  sealed as the key is, in `resend_inbound`. The last one to stop removes it. Choosing Resend again,
+  or "Check the webhook" on the Domains page, makes it again when Resend no longer has it, as after
+  the key was replaced with one from another account, and turns it back on when Resend turned it
+  off. Resend's webhook carries no content, only the email's id. Mail checks the delivery's Svix
+  signature, then asks Resend for the email (`GET /emails/receiving/<id>`) and takes its `to`.
+  Resend keeps one email for each recipient of the envelope and names that one there, whatever the
+  To header says; its `cc` is the Cc header and `received_for` is read from `Received` headers,
+  which the sender writes, so neither counts, as a Bcc's copy keeps the other addresses in its
+  headers. Mail keeps the address when it is on this workspace's proved domains that receive with
   Resend, downloads the raw mail from the signed address the answer gives, and stores it through
   the same path as `email()`, one copy for each mailbox. Resend took the mail already, so an
   address that doesn't exist can't be refused: it is left out. Mail answers 503 to anything that

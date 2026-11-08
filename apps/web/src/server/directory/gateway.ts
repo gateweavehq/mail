@@ -7,7 +7,7 @@ import { db } from "../auth";
 import { removeMailboxes } from "../mailbox";
 import { appOrigin } from "../origin";
 import { allowDomainCheck } from "../rate-limit";
-import { dropUnusedReceivingWebhook, setDomainReceiving } from "../resend-inbound";
+import { dropUnusedReceivingWebhook, mendReceiving, setDomainReceiving } from "../resend-inbound";
 import { DEFAULT_DNS_RESOLVER, dnsLookup } from "./dns";
 import {
 	addAddress,
@@ -29,6 +29,7 @@ const Action = z.discriminatedUnion("action", [
 	z.object({ action: z.literal("add-domain"), name: z.string().max(300) }),
 	z.object({ action: z.literal("check-domain"), id: Id }),
 	z.object({ action: z.literal("remove-domain"), id: Id }),
+	z.object({ action: z.literal("check-receiving") }),
 	z.object({
 		action: z.literal("set-domain-sending"),
 		id: Id,
@@ -128,6 +129,8 @@ async function run(action: z.output<typeof Action>, workspaceId: string, userId:
 			return setDomainSending(db, workspaceId, action.id, action.sendsWith);
 		case "set-domain-receiving":
 			return setDomainReceiving(db, workspaceId, action.id, action.receivesWith, appOrigin());
+		case "check-receiving":
+			return mendReceiving(db, workspaceId, appOrigin());
 		case "add-mailbox":
 			return addMailbox(db, workspaceId, action.name, action.everyone);
 		case "set-mailbox-access":

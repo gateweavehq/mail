@@ -99,6 +99,13 @@ export function receivingTrouble(code: string): string {
 			return "The workspace's Resend key can't be read on this server any more, so mail Resend received couldn't be fetched. Add it again.";
 		case "restricted_api_key":
 			return "The workspace's Resend key can only send, so mail Resend received couldn't be fetched. Add a key with full access; Resend tries again for about a day.";
+		case "missing_api_key":
+		case "invalid_api_key":
+		case "401":
+		case "403":
+			return "Resend didn't take the workspace's key, so mail Resend received couldn't be fetched. Add a working key with full access; Resend tries again for about a day.";
+		case "unreadable":
+			return "Resend's answer about a message it received couldn't be read, so it wasn't stored. It is still in Resend.";
 		case "not_found":
 			return "Resend said the account behind the workspace's key doesn't have a message its webhook named, as when the key is from another Resend account.";
 		case "too_large":
@@ -112,6 +119,6 @@ export function receivingTrouble(code: string): string {
 		case "unreachable":
 			return "Resend couldn't be reached to fetch a message it received. Resend tries again for about a day.";
 		default:
-			return `Resend refused to give Mail a message it received (${name}). Resend tries again for about a day.`;
+			return `Resend didn't give Mail a message it received (${name}).`;
 	}
 }

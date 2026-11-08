@@ -19,6 +19,7 @@ interface Webhook {
 	endpoint: string;
 	events: string[];
 	secret: string;
+	status: "enabled" | "disabled";
 }
 
 /** What one received email holds, as Resend's API gives it. */
@@ -34,6 +35,10 @@ interface Received {
 	raw: string;
 	/** Resend gave no download for it, as its answer may. */
 	withoutRaw?: boolean;
+	/** The download comes without a length, as a compressed or streamed one would. */
+	unsized?: boolean;
+	/** Resend's answer about it is one Mail can't read. */
+	garbled?: boolean;
 }
 
 /** The Resend account each key belongs to. */
@@ -49,6 +54,8 @@ const received = new Map<string, Received>();
 const failingDownloads = new Map<string, number>();
 const brokenDownloads = new Map<string, number>();
 const fetched: string[] = [];
+/** How each received email was asked for, by its id. */
+const askedAs = new Map<string, string>();
 
 const restricted = () =>
 	Response.json(
@@ -74,7 +81,14 @@ async function resend(request: Request): Promise<Response> {
 		const body = (await request.json()) as { endpoint: string; events: string[] };
 		const id = crypto.randomUUID();
 		const secret = `whsec_${randomBytes(24).toString("base64")}`;
-		webhooks.set(id, { id, account, endpoint: body.endpoint, events: body.events, secret });
+		webhooks.set(id, {
+			id,
+			account,
+			endpoint: body.endpoint,
+			events: body.events,
+			secret,
+			status: "enabled",
+		});
 		return Response.json({ object: "webhook", id, signing_secret: secret }, { status: 201 });
 	}
 	const webhook = /^\/webhooks\/([^/]+)$/.exec(url.pathname)?.[1];
@@ -82,13 +96,19 @@ async function resend(request: Request): Promise<Response> {
 		const found = webhooks.get(webhook);
 		if (!found || found.account !== account) return notFound("Webhook");
 		if (request.method === "DELETE") webhooks.delete(webhook);
-		return Response.json({ object: "webhook", id: webhook });
+		if (request.method === "PATCH") {
+			const body = (await request.json()) as { status?: "enabled" | "disabled" };
+			if (body.status) found.status = body.status;
+		}
+		return Response.json({ object: "webhook", id: webhook, status: found.status });
 	}
 	const email = /^\/emails\/receiving\/([^/]+)$/.exec(url.pathname)?.[1];
 	if (email) {
 		fetched.push(email);
+		askedAs.set(email, url.search);
 		const found = received.get(email);
 		if (!found || found.account !== account) return notFound("Email");
+		if (found.garbled) return Response.json({ object: "email", to: "not a list" });
 		return Response.json({
 			object: "email",
 			id: found.id,
@@ -125,6 +145,21 @@ function download(request: Request): Response {
 	const email = received.get(id);
 	if (!email) return new Response("Not Found", { status: 404 });
 	const bytes = new TextEncoder().encode(email.raw);
+	if (email.unsized) {
+		// In pieces, with no length up front.
+		let at = 0;
+		const body = new ReadableStream<Uint8Array>({
+			pull(controller) {
+				if (at >= bytes.byteLength) {
+					controller.close();
+					return;
+				}
+				controller.enqueue(bytes.slice(at, at + 1000));
+				at += 1000;
+			},
+		});
+		return new Response(body, { headers: { "content-type": "message/rfc822" } });
+	}
 	return new Response(bytes, {
 		headers: { "content-type": "message/rfc822", "content-length": String(bytes.byteLength) },
 	});
@@ -208,6 +243,16 @@ async function workspace(key: string | null = FULL_KEY) {
 }
 
 type Box = Awaited<ReturnType<typeof workspace>>;
+
+/** Another mailbox in the box's workspace, with this address on its first domain. */
+async function secondMailbox(box: Box, localPart: string) {
+	const name = `Other ${++counter}`;
+	await directory(box.slug, { action: "add-mailbox", name });
+	const made = (await directory(box.slug)).body.mailboxes.find((one) => one.name === name);
+	if (!made) throw new Error("expected a mailbox");
+	await addAddress({ ...box, mailboxId: made.id }, 0, localPart);
+	return made.id;
+}
 
 async function addDomain(
 	box: { slug: string; domains: { id: string; name: string }[] },
@@ -452,6 +497,9 @@ describe("receiving through Resend", () => {
 			{ dmarc: "fail" },
 		);
 		expect((await deliver(webhook, eventFor(forged))).status).toBe(200);
+		// Resend passed a From other than the one the mail shows.
+		const swapped = receivedFor(box, { subject: "Swapped" }, { from: "ceo@bank.example" });
+		expect((await deliver(webhook, eventFor(swapped))).status).toBe(200);
 
 		const listed = await messages(box);
 		const first = listed.find((one) => one.subject === "Proved");
@@ -463,6 +511,9 @@ describe("receiving through Resend", () => {
 			verifiedDomain: null,
 		});
 		expect(await opened(box, first?.id ?? "")).toMatchObject({ dmarc: "pass" });
+		expect(listed.find((one) => one.subject === "Swapped")?.verifiedDomain).toBeNull();
+		// Inline images are asked for as attachments, which keeps Resend's answer small.
+		expect(new URLSearchParams(askedAs.get(proved.id)).get("html_format")).toBe("cid");
 		expect((await directory(box.slug)).body.resendReceiving?.receivedAt).toEqual(
 			expect.any(Number),
 		);
@@ -483,6 +534,8 @@ describe("receiving through Resend", () => {
 		const changed = body.replace(email.id, crypto.randomUUID());
 		expect((await deliver(webhook, changed, signed(webhook.secret, body))).status).toBe(401);
 		expect((await deliver(webhook, body, {} as ReturnType<typeof signed>)).status).toBe(401);
+		const huge = JSON.stringify({ type: "email.received", pad: "x".repeat(300 * 1024) });
+		expect((await deliver(webhook, huge)).status).toBe(413);
 		const unknown = webhook.endpoint.replace(/[a-f0-9]{32}$/, "0".repeat(32));
 		expect(
 			(await mail.fetch(unknown, { method: "POST", body, headers: signed(webhook.secret, body) }))
@@ -525,19 +578,46 @@ describe("receiving through Resend", () => {
 		expect(await messages(box)).toHaveLength(0);
 		expect(await messages(other)).toHaveLength(0);
 
-		// Bcc and the addresses it was forwarded for count, and a mailbox gets one copy.
+		// Two of its addresses on one mailbox get one copy, and another mailbox its own.
 		await addAddress(box, 0, "sales");
+		const second = await secondMailbox(box, "billing");
+		const ours = box.domains[0]?.name;
+		const both = receivedFor(
+			box,
+			{ subject: "Both" },
+			{ to: [`help@${ours}`, `Sales <SALES@${ours}>`, `billing@${ours}`] },
+		);
+		expect((await deliver(webhook, eventFor(both))).status).toBe(200);
+		expect((await messages(box)).filter((one) => one.subject === "Both")).toHaveLength(1);
+		expect((await messages(box, second)).filter((one) => one.subject === "Both")).toHaveLength(1);
+	});
+
+	// Resend keeps one email for each envelope recipient and names it in `to`. Its `cc` is the Cc
+	// header, and `received_for` comes from Received headers, which the sender writes.
+	it("stores it only for the envelope's recipient, never for addresses only in its headers", async () => {
+		const box = await workspace();
+		const webhook = await receiving(box);
+		const ours = `help@${box.domains[0]?.name}`;
 		const hidden = receivedFor(
 			box,
-			{ subject: "Hidden", to: "someone@else.example" },
-			{
-				to: ["someone@else.example"],
-				bcc: [`Sales <SALES@${box.domains[0]?.name}>`],
-				received_for: [`help@${box.domains[0]?.name}`],
-			},
+			{ subject: "Headers only", to: ours },
+			{ to: ["someone@else.example"], cc: [ours], bcc: [ours], received_for: [ours] },
 		);
 		expect((await deliver(webhook, eventFor(hidden))).status).toBe(200);
-		expect((await messages(box)).filter((one) => one.subject === "Hidden")).toHaveLength(1);
+		expect(await messages(box)).toHaveLength(0);
+	});
+
+	it("finds the workspace's address among many others, and past odd entries", async () => {
+		const box = await workspace();
+		const webhook = await receiving(box);
+		const others = Array.from({ length: 1_500 }, (_, n) => `person${n}@else.example`);
+		const crowded = receivedFor(
+			box,
+			{ subject: "Crowded" },
+			{ to: [...others, "x".repeat(5_000), `help@${box.domains[0]?.name}`] },
+		);
+		expect((await deliver(webhook, eventFor(crowded))).status).toBe(200);
+		expect((await messages(box)).map((one) => one.subject)).toEqual(["Crowded"]);
 	});
 
 	it("asks Resend to try again when the mail can't be had yet, and says why", async () => {
@@ -569,6 +649,25 @@ describe("receiving through Resend", () => {
 		bare.withoutRaw = false;
 		expect((await deliver(webhook, eventFor(bare))).status).toBe(200);
 		expect(await messages(box)).toHaveLength(3);
+	});
+
+	it("stores mail downloaded without a length", async () => {
+		const box = await workspace();
+		const webhook = await receiving(box);
+		const email = receivedFor(
+			box,
+			{ subject: "Unsized", body: "y".repeat(20_000) },
+			{ unsized: true },
+		);
+		expect((await deliver(webhook, eventFor(email))).status).toBe(200);
+		const [stored] = await messages(box);
+		expect(stored?.subject).toBe("Unsized");
+		const raw = await mail.fetch(
+			`${origin}/api/mail/${box.slug}/${box.mailboxId}/${stored?.id ?? ""}/original`,
+			{ headers: owner.headers },
+		);
+		expect(raw.status).toBe(200);
+		expect(await raw.text()).toBe(email.raw);
 	});
 
 	it("keeps Resend trying while the key can only send, or the mailbox is full", async () => {
@@ -604,6 +703,38 @@ describe("receiving through Resend", () => {
 		expect((await deliver(webhook, eventFor(elsewhere))).status).toBe(200);
 		expect((await directory(box.slug)).body.resendReceiving?.trouble).toBe("resend:not_found");
 		expect(await messages(box)).toHaveLength(0);
+
+		// Mail for nobody here says nothing about receiving, so the trouble stays.
+		const nobody = receivedFor(box, { subject: "Nobody" }, { to: ["someone@else.example"] });
+		expect((await deliver(webhook, eventFor(nobody))).status).toBe(200);
+		expect((await directory(box.slug)).body.resendReceiving?.trouble).toBe("resend:not_found");
+
+		// An answer Mail can't read won't read better later.
+		const garbled = receivedFor(box, { subject: "Garbled" }, { garbled: true });
+		expect((await deliver(webhook, eventFor(garbled))).status).toBe(200);
+		expect((await directory(box.slug)).body.resendReceiving?.trouble).toBe("resend:unreadable");
+		expect(await messages(box)).toHaveLength(0);
+	});
+
+	it("turns the webhook back on, or makes it again, when the Domains page checks it", async () => {
+		const box = await workspace();
+		expect((await directory(box.slug, { action: "check-receiving" })).status).toBe(409);
+		const webhook = await receiving(box);
+		webhook.status = "disabled";
+		expect((await directory(box.slug, { action: "check-receiving" })).status).toBe(200);
+		expect(webhook.status).toBe("enabled");
+		// Choosing Resend again does the same.
+		webhook.status = "disabled";
+		expect((await receiveWith(box, "resend")).status).toBe(200);
+		expect(webhook.status).toBe("enabled");
+
+		webhooks.delete(webhook.id);
+		expect((await directory(box.slug, { action: "check-receiving" })).status).toBe(200);
+		const again = [...webhooks.values()].find((one) => one.endpoint === webhook.endpoint);
+		expect(again?.status).toBe("enabled");
+		const email = receivedFor(box, { subject: "Mended" });
+		expect((await deliver(again as Webhook, eventFor(email))).status).toBe(200);
+		expect(await messages(box)).toHaveLength(1);
 	});
 
 	it("makes the webhook again when Resend no longer has it, as after a key from another account", async () => {

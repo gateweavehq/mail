@@ -43,12 +43,13 @@ export const judgedByCloudflare: Judge = (headers) => {
 };
 
 /**
- * For mail that came through Resend: the DMARC result its API gives, which its MX computed. Nothing
- * in the mail itself counts, as a sender can write anything there, Cloudflare's headers too.
+ * For mail that came through Resend: the DMARC result its API gives, which its MX computed, for
+ * the From it read (`from`). Nothing in the mail itself counts, as a sender can write anything
+ * there, Cloudflare's headers too.
  */
 export const judgedByResend =
-	(dmarc: string | null): Judge =>
-	(headers) => ({ dmarc, verifiedDomain: resendVerifiedDomain(headers, dmarc) });
+	(dmarc: string | null, from: string | null): Judge =>
+	(headers) => ({ dmarc, verifiedDomain: resendVerifiedDomain(headers, dmarc, from) });
 
 /** The mailbox has no room for the message, which may change by the time the sender tries again. */
 export class MailboxFullError extends Error {

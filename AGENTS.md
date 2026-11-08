@@ -140,7 +140,9 @@ These are load-bearing. Breaking one breaks users' data or security, usually sil
     minutes, proves Resend sent it (`apps/web/src/server/resend-inbound.ts`). The webhook's body
     names an email and nothing more is taken from it: who the mail is for, Resend's DMARC result
     and the raw mail come from Resend's API with the workspace's key. Mail is stored only for that
-    workspace's addresses on proved domains set to receive with Resend. Answer with a success only
+    workspace's addresses on proved domains set to receive with Resend, and only for the envelope's
+    recipient, which Resend names in the email's `to`: never for an address that is only in its
+    headers (`cc`, `received_for`), which the sender writes. Answer with a success only
     once it is stored, or when trying again can't help; otherwise answer 503, and Resend tries
     again for about a day.
 

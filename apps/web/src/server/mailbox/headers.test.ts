@@ -201,11 +201,22 @@ describe("verifiedDomain", () => {
 const CRLF = "\r\n";
 
 describe("resendVerifiedDomain", () => {
-	const domainOf = (lines: string[], dmarc: string | null) =>
-		resendVerifiedDomain(parseHeaders(lines.join(CRLF)), dmarc);
+	const domainOf = (lines: string[], dmarc: string | null, from: string | null = "a@example.org") =>
+		resendVerifiedDomain(parseHeaders(lines.join(CRLF)), dmarc, from);
 
 	it("is the From's domain when Resend's DMARC check passed", () => {
 		expect(domainOf(["From: A Person <a@Example.ORG>", "Subject: hi"], "pass")).toBe("example.org");
+		expect(domainOf(["From: a@example.org"], "pass", "Someone <b@EXAMPLE.org.>")).toBe(
+			"example.org",
+		);
+	});
+
+	// Resend's check was of the From it read, which must be the one the mail shows.
+	it("is nothing when Resend read another From than the mail's", () => {
+		expect(domainOf(["From: a@example.org"], "pass", "x@bank.example")).toBeNull();
+		expect(domainOf(["From: a@example.org"], "pass", "a@mail.example.org")).toBeNull();
+		expect(domainOf(["From: a@example.org"], "pass", null)).toBeNull();
+		expect(domainOf(["From: a@example.org"], "pass", "no address")).toBeNull();
 	});
 
 	it("is nothing when the check didn't pass, or Resend didn't say", () => {

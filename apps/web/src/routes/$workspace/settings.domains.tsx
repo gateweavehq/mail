@@ -230,14 +230,31 @@ const RECEIVES_WITH_WORDS: Record<ReceivesWith, string> = {
 
 /** How receiving through Resend went for the workspace. */
 function ReceivingStatus({ state, inUse }: { state: ResendReceiving; inUse: boolean }) {
+	const { slug } = useWorkspace();
+	const router = useRouter();
+	const [pending, setPending] = useState(false);
+	const [said, setSaid] = useState<string | null>(null);
+	const [error, setError] = useState<string | null>(null);
 	if (!inUse) return null;
+
+	async function check() {
+		setPending(true);
+		setSaid(null);
+		setError(null);
+		const result = await changeDirectory(slug, { action: "check-receiving" });
+		if (result.ok) {
+			setSaid("The webhook is in Resend and on.");
+			await router.invalidate();
+		} else setError(result.error);
+		setPending(false);
+	}
+
 	return (
-		<div className="space-y-1 rounded-lg border p-4 text-sm">
+		<div className="space-y-2 rounded-lg border p-4 text-sm">
 			<p className="font-medium">Receiving through Resend</p>
 			{!state.ready && (
 				<p className="text-destructive">
-					The webhook in Resend isn't made, so no mail comes through it. Choose Resend for one of
-					the domains again.
+					The webhook in Resend isn't made, so no mail comes through it. Check it to make it again.
 				</p>
 			)}
 			{state.trouble && (
@@ -249,8 +266,25 @@ function ReceivingStatus({ state, inUse }: { state: ResendReceiving; inUse: bool
 			<p className="text-muted-foreground">
 				{state.receivedAt === null
 					? "No mail has come through it yet."
-					: `Mail last came through it ${formatDateTime(state.receivedAt)}.`}
+					: `Mail last came through it ${formatDateTime(state.receivedAt)}.`}{" "}
+				Resend turns off a webhook whose deliveries keep failing; checking it turns it back on, and
+				makes it again if Resend no longer has it.
 			</p>
+			<div className="flex flex-wrap items-center gap-3">
+				<LiveButton size="sm" variant="outline" disabled={pending} onClick={check}>
+					{pending ? "Checking…" : "Check the webhook"}
+				</LiveButton>
+				{said && (
+					<p role="status" className="text-muted-foreground">
+						{said}
+					</p>
+				)}
+				{error && (
+					<p role="alert" className="text-destructive">
+						{error}
+					</p>
+				)}
+			</div>
 		</div>
 	);
 }

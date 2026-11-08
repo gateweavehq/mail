@@ -234,10 +234,20 @@ export function verifiedDomain(headers: Header[], verdict: Verdict | null): stri
 /**
  * The same for mail that came through Resend, whose DMARC result comes from its API rather than
  * from a header. DMARC checks the domain of `From`, and with only one address there, that is the
- * domain it passed.
+ * domain it passed, as long as it is also the From Resend read (`from`), so that Mail and Resend
+ * can't have read two different ones.
  */
-export function resendVerifiedDomain(headers: Header[], dmarc: string | null): string | null {
-	return dmarc === "pass" ? soleFromDomain(headers) : null;
+export function resendVerifiedDomain(
+	headers: Header[],
+	dmarc: string | null,
+	from: string | null,
+): string | null {
+	if (dmarc !== "pass" || !from) return null;
+	const domain = soleFromDomain(headers);
+	const at = from.lastIndexOf("@");
+	return domain && at > 0 && normalDomain(from.slice(at + 1).replace(/>\s*$/, "")) === domain
+		? domain
+		: null;
 }
 
 /**
