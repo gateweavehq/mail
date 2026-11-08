@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { bodyHash } from "./body";
-import { migrate } from "./schema";
-import { MAX_REFERENCES, subjectKey } from "./thread";
+import { LINKED_THREADS, migrate } from "./schema";
+import { MAX_REFERENCES, messageIds, subjectKey } from "./thread";
 
 /** How much one mailbox may hold unless `MAILBOX_BYTES` says otherwise, counting messages on their way in. */
 export const MAILBOX_BYTES = 1024 * 1024 * 1024;
@@ -38,7 +38,8 @@ export interface Arrival {
 	date: string | null;
 	messageId: string | null;
 	// These two are missing from a Worker older than threads, which can still be running while a
-	// deploy reaches every place, and the message is stored without them then.
+	// deploy reaches every place. The object then finds the message's own id in `messageId`, and it
+	// is stored without references.
 	/** The id in `messageId`, from `ownId`. */
 	ownId?: string | null;
 	/** The ids it replies to or follows, from `referencedIds`. */
@@ -166,7 +167,7 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			arrival.messageId,
 			arrival.dmarc,
 			arrival.verifiedDomain,
-			arrival.ownId ?? null,
+			arrival.ownId ?? messageIds(arrival.messageId)[0] ?? null,
 			subjectKey(arrival.subject),
 		);
 		for (const ref of (arrival.references ?? []).slice(-MAX_REFERENCES)) {
@@ -264,22 +265,9 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 				)
 				.toArray()[0];
 			if (!me) return "gone";
-			// However many threads it links, the query has the same few values: SQLite takes at most a
-			// hundred, and a stranger can make as many threads as they send messages.
 			const [first, ...others] = sql
 				.exec<{ id: string }>(
-					`SELECT id FROM thread WHERE id IN (
-						SELECT thread_id FROM message
-						WHERE state = 'stored' AND subject_key = ? AND (
-							own_id IN (SELECT ref FROM message_reference WHERE message = ?)
-							OR id IN (SELECT message FROM message_reference WHERE ref = ?)
-							OR id IN (
-								SELECT message FROM message_reference
-								WHERE ref IN (SELECT ref FROM message_reference WHERE message = ?)
-							)
-						)
-					)
-					ORDER BY first_at, id`,
+					LINKED_THREADS,
 					me.subjectKey,
 					id,
 					// A message with no id of its own can't be named; null matches nothing.
@@ -407,9 +395,15 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 
 	/**
 	 * A thread's messages, newest first, after `before` when given, with how many it has and its
-	 * newest message's subject. Null when there is no such thread here.
+	 * newest message's subject. Null when there is no such thread here. The defaults are for a
+	 * Worker from before a thread had pages, which can still be running while a deploy reaches
+	 * every place.
 	 */
-	thread(threadId: string, before: Cursor | null, limit: number): ThreadMessages | null {
+	thread(
+		threadId: string,
+		before: Cursor | null = null,
+		limit = MAX_LISTED,
+	): ThreadMessages | null {
 		const sql = this.ctx.storage.sql;
 		const row = sql
 			.exec<{ count: number }>("SELECT count FROM thread WHERE id = ?", threadId)

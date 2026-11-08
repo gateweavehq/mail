@@ -71,6 +71,26 @@ INSERT INTO thread (id, first_at, latest_at, count)
 	SELECT id, arrived_at, arrived_at, 1 FROM message WHERE state = 'stored';
 `;
 
+/**
+ * The threads a pending message links, the one that began first first. Its values are the
+ * message's subject key, its id, its own id and its id again: the same few however many threads it
+ * links, as SQLite takes at most a hundred and a stranger can make a thread of every message they
+ * send. `+state` keeps SQLite off the index on `state`, which would have it read every stored
+ * message; without that index, each part of the `OR` is looked up by an index of its own.
+ */
+export const LINKED_THREADS = `SELECT id FROM thread WHERE id IN (
+	SELECT thread_id FROM message
+	WHERE +state = 'stored' AND subject_key = ? AND (
+		own_id IN (SELECT ref FROM message_reference WHERE message = ?)
+		OR id IN (SELECT message FROM message_reference WHERE ref = ?)
+		OR id IN (
+			SELECT message FROM message_reference
+			WHERE ref IN (SELECT ref FROM message_reference WHERE message = ?)
+		)
+	)
+)
+ORDER BY first_at, id`;
+
 /** Each brings the schema from the version before it. Append only: objects keep what they ran. */
 export const MIGRATIONS: ((sql: SqlStorage) => void)[] = [
 	(sql) => sql.exec(VERSION_1),

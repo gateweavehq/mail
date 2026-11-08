@@ -1,6 +1,6 @@
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { describe, expect, it } from "vitest";
-import { MIGRATIONS, type MigratedStorage, migrate } from "./schema";
+import { LINKED_THREADS, MIGRATIONS, type MigratedStorage, migrate } from "./schema";
 
 /**
  * A Durable Object's storage, as far as migrating goes, over Node's SQLite: `exec` runs a script
@@ -118,6 +118,20 @@ describe("migrate", () => {
 		expect(db.prepare("SELECT id, first_at, latest_at, count FROM thread").all()).toEqual([
 			{ id: "loose", first_at: 5, latest_at: 5, count: 1 },
 		]);
+	});
+
+	it("finds a message's threads through indexes, not by reading every stored message", () => {
+		const { db, storage: store } = storage();
+		migrate(store);
+		const plan = (
+			db.prepare(`EXPLAIN QUERY PLAN ${LINKED_THREADS}`).all("key", "id", "own", "id") as {
+				detail: string;
+			}[]
+		)
+			.map((row) => row.detail)
+			.join("\n");
+		expect(plan).not.toMatch(/message_listed|SCAN message\b/);
+		expect(plan).toMatch(/MULTI-INDEX OR/);
 	});
 
 	it("leaves an object as it was when a migration fails", () => {

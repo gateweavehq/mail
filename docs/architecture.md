@@ -87,8 +87,10 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     threads a message links, as SQLite takes at most a hundred. `References` is read from its end,
     keeping the newest 50 ids. Someone who knows a message's id and subject can still add to its
     thread, as in any mail program; their message shows under its own sender, proved or not. So a
-    thread's line shows its newest message's subject, the one the proved domain beside it speaks
-    for. A `thread` row keeps the count and the first and newest arrival, so a page of threads is
+    thread's line shows its newest message's subject, which the proved domain beside it speaks for,
+    and without `Re:`, list tags and their kin: those are all that may differ between a thread's
+    subjects, so no sender's own words reach the line. The query that finds a message's threads
+    keeps SQLite off the index on `state`, which would read every stored message. A `thread` row keeps the count and the first and newest arrival, so a page of threads is
     one indexed read; the object brings it up to date as messages are stored and deleted. The
     object's schema has versions, kept in a table, since Durable Objects have no
     `PRAGMA user_version` (`schema.ts`); messages stored before threads became a thread each, and

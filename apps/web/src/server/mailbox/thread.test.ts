@@ -70,11 +70,21 @@ describe("the ids a message names", () => {
 });
 
 describe("threadSubject", () => {
-	it("takes off what replies and forwards add, and keeps the rest as written", () => {
+	it("takes off what replies, forwards and lists add, and keeps the case", () => {
 		expect(threadSubject("Re: AW: Invoice 42")).toBe("Invoice 42");
-		expect(threadSubject("RE: [billing] invoice  42")).toBe("[billing] invoice  42");
+		expect(threadSubject("RE: [billing] invoice  42")).toBe("invoice 42");
 		expect(threadSubject("Reply needed")).toBe("Reply needed");
 		expect(threadSubject("Re:")).toBe("");
+	});
+
+	it("has the words subjectKey compares, so a thread's messages all show the same", () => {
+		for (const subject of [
+			"Invoice 42",
+			"Re: [Pay to IBAN XX00 1234 instead] [Reply within 24h] Invoice 42",
+			"  fwd :  RE[3]: invoice   42 ",
+		]) {
+			expect(threadSubject(subject).toLowerCase(), subject).toBe(subjectKey(subject));
+		}
 	});
 });
 

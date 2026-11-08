@@ -78,9 +78,10 @@ export function subjectKey(subject: string | null): string {
 }
 
 /**
- * A decoded subject as a thread's line shows it: without the "Re:" and "Fwd:" in front, otherwise
- * as written. List tags stay, as they say where the mail came from.
+ * A decoded subject as a thread's line shows it: what `subjectKey` compares, in the case it was
+ * written in. Every message of a thread has the same words here, so whoever wrote its newest can't
+ * put words of their own on its line, in a list tag or otherwise.
  */
 export function threadSubject(subject: string): string {
-	return strip(subject, REPLY).trim();
+	return strip(subject.replace(/\s+/g, " ").trim(), PREFIX);
 }

@@ -42,8 +42,9 @@ export interface ListedThread {
 	/** How many messages it has. */
 	count: number;
 	/**
-	 * Its newest message's subject, without "Re:" and its kin. It is the newest message's, like the
-	 * proved domain beside it, since anyone who knows a message's id can start its thread.
+	 * Its newest message's subject, like the proved domain beside it, without "Re:", list tags and
+	 * their kin. Those are what may differ between a thread's messages, so the words are the same
+	 * whoever wrote which of them.
 	 */
 	subject: string;
 	/** Who wrote in it, each once, in the order they first wrote. The first few only. */

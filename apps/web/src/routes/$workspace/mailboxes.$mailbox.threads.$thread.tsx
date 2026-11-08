@@ -61,19 +61,28 @@ function ThreadPage() {
 		);
 	}
 
+	// Read as the loader reads it: a page of older messages has both.
+	const newer = search.beforeAt !== undefined && Boolean(search.beforeId);
 	const deleted = async () => {
 		if (page.count <= 1) {
 			await navigate({
 				to: "/$workspace/mailboxes/$mailbox",
 				params: { workspace: slug, mailbox },
 			});
+			return;
+		}
+		if (newer && page.messages.length <= 1) {
+			// That page has nothing left, so the reader goes back to the newest.
+			await navigate({
+				to: "/$workspace/mailboxes/$mailbox/threads/$thread",
+				params: { workspace: slug, mailbox, thread },
+			});
 		} else {
 			await router.invalidate();
-			// The deleted message had the focus, so it goes somewhere that says where the reader is.
-			heading.current?.focus();
 		}
+		// The deleted message had the focus, so it goes somewhere that says where the reader is.
+		heading.current?.focus();
 	};
-	const newer = search.beforeId !== undefined;
 
 	return (
 		<div className="mx-auto max-w-4xl space-y-6 px-4 py-10 sm:px-6">

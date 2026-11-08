@@ -59,7 +59,8 @@ function MailboxPage() {
 		);
 	}
 
-	const older = search.beforeId !== undefined;
+	// Read as the loader reads it: a page of older threads has both.
+	const older = search.beforeAt !== undefined && Boolean(search.beforeId);
 
 	return (
 		<div className="mx-auto max-w-4xl space-y-6 px-4 py-10 sm:px-6">

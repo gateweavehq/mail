@@ -1,14 +1,12 @@
+import type { APIRequestContext, Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
 import { startWorkspace, waitForHydration } from "./helpers";
 
 // The app reads this resolver from `DNS_RESOLVER_URL`, which `server.mjs` sets to the same port.
 const dnsStandIn = `http://localhost:${(Number(process.env.MAIL_E2E_PORT) || 4752) + 20}`;
 
-test("mail that arrives at an address shows in its mailbox, and opens as text", async ({
-	page,
-	request,
-	baseURL,
-}) => {
+/** A new workspace with a proved domain and a mailbox, "Support", that has an address there. */
+async function supportMailbox(page: Page, request: APIRequestContext, baseURL: string | undefined) {
 	const { slug } = await startWorkspace(page);
 	const domain = `inbox-${Date.now().toString(36)}.example.com`;
 
@@ -44,7 +42,6 @@ test("mail that arrives at an address shows in its mailbox, and opens as text", 
 
 	// Delivered as Email Routing would, through the local runtime's stand-in for it.
 	const to = `help@${domain}`;
-	const firstId = `<${Date.now()}@example.org>`;
 	const deliver = async (from: string, lines: string[]) => {
 		const answer = await request.post(
 			`/cdn-cgi/local/email?from=${from}&to=${encodeURIComponent(to)}`,
@@ -52,6 +49,16 @@ test("mail that arrives at an address shows in its mailbox, and opens as text", 
 		);
 		expect(answer.status()).toBe(200);
 	};
+	return { slug, mailboxId: box?.id ?? "", to, deliver };
+}
+
+test("mail that arrives at an address shows in its mailbox, and opens as text", async ({
+	page,
+	request,
+	baseURL,
+}) => {
+	const { slug, mailboxId, to, deliver } = await supportMailbox(page, request, baseURL);
+	const firstId = `<${Date.now()}@example.org>`;
 	const raw = [
 		"From: A Customer <customer@example.org>",
 		`To: ${to}`,
@@ -105,7 +112,7 @@ test("mail that arrives at an address shows in its mailbox, and opens as text", 
 	await page.goto(`/${slug}`);
 	await waitForHydration(page);
 	await page.getByRole("link", { name: "Support" }).click();
-	await expect(page).toHaveURL(`/${slug}/mailboxes/${box?.id}`);
+	await expect(page).toHaveURL(`/${slug}/mailboxes/${mailboxId}`);
 	await expect(page.getByRole("heading", { level: 1, name: "Support" })).toBeVisible();
 	const threads = page.getByRole("list", { name: "Threads in Support" });
 	await expect(threads).toBeVisible();
@@ -118,7 +125,7 @@ test("mail that arrives at an address shows in its mailbox, and opens as text", 
 		.click();
 
 	// The thread, oldest first, with the newest message open.
-	await expect(page).toHaveURL(new RegExp(`/${slug}/mailboxes/${box?.id}/threads/`));
+	await expect(page).toHaveURL(new RegExp(`/${slug}/mailboxes/${mailboxId}/threads/`));
 	await expect(page.getByRole("heading", { level: 1, name: "My order hasn't come" })).toBeVisible();
 	const thread = page.getByRole("list", { name: "Messages in this thread" });
 	const first = thread.getByRole("article", { name: /A Customer/ });
@@ -149,7 +156,57 @@ test("mail that arrives at an address shows in its mailbox, and opens as text", 
 	// Deleting its last message takes the thread with it, back to the mailbox.
 	await first.getByRole("button", { name: "Delete" }).click();
 	await page.getByRole("dialog").getByRole("button", { name: "Delete message" }).click();
-	await expect(page).toHaveURL(`/${slug}/mailboxes/${box?.id}`);
+	await expect(page).toHaveURL(`/${slug}/mailboxes/${mailboxId}`);
 	await expect(threads.getByRole("link", { name: /Your order has shipped/ })).toBeVisible();
 	await expect(threads.getByRole("link", { name: /My order hasn't come/ })).toHaveCount(0);
+});
+
+test("a long thread pages from its newest messages", async ({ page, request, baseURL }) => {
+	const { slug, mailboxId, to, deliver } = await supportMailbox(page, request, baseURL);
+	const rootId = `<${Date.now()}.root@example.org>`;
+	await deliver("customer@example.org", [
+		"From: A Customer <customer@example.org>",
+		`To: ${to}`,
+		"Subject: Long one",
+		`Message-ID: ${rootId}`,
+		"",
+		"Where it began.",
+		"",
+	]);
+	for (let n = 1; n <= 50; n++) {
+		await deliver("desk@example.org", [
+			"From: Help Desk <desk@example.org>",
+			`To: ${to}`,
+			"Subject: Re: Long one",
+			`Message-ID: <${Date.now()}.${n}.desk@example.org>`,
+			`In-Reply-To: ${rootId}`,
+			"",
+			`Update ${n}.`,
+			"",
+		]);
+	}
+
+	await page.goto(`/${slug}/mailboxes/${mailboxId}`);
+	await waitForHydration(page);
+	await page.getByRole("link", { name: /Long one/ }).click();
+	const heading = page.getByRole("heading", { level: 1, name: "Long one" });
+	await expect(heading).toBeVisible();
+	await expect(page.getByText("51 messages", { exact: true })).toBeVisible();
+	const thread = page.getByRole("list", { name: "Messages in this thread" });
+	await expect(thread.getByRole("article")).toHaveCount(50);
+	await expect(thread.getByText("Update 50.")).toBeVisible();
+
+	await page.getByRole("link", { name: "Older messages" }).click();
+	await expect(page.getByRole("link", { name: "Newest messages" })).toBeVisible();
+	await expect(thread.getByRole("article")).toHaveCount(1);
+	await expect(thread.getByText("Where it began.")).toBeVisible();
+
+	// Deleting the only message of an older page goes back to the newest, not to an empty page.
+	await thread.getByRole("button", { name: "Delete" }).click();
+	await page.getByRole("dialog").getByRole("button", { name: "Delete message" }).click();
+	await expect(page.getByText("50 messages", { exact: true })).toBeVisible();
+	await expect(page).not.toHaveURL(/beforeId/);
+	await expect(thread.getByRole("article")).toHaveCount(50);
+	await expect(page.getByRole("link", { name: "Newest messages" })).toHaveCount(0);
+	await expect(heading).toBeFocused();
 });

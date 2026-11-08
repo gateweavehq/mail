@@ -739,7 +739,7 @@ describe("threads", () => {
 		// The reply with the same subject made its thread the one with the newest news, and a thread
 		// shows its newest message's subject.
 		expect(await subjects(box.slug, box.mailboxId)).toEqual([
-			["[billing] invoice  42", 2],
+			["invoice 42", 2],
 			["Something else entirely", 1],
 		]);
 	});
@@ -799,7 +799,7 @@ describe("threads", () => {
 		]);
 	});
 
-	it("shows the newest message's subject, which the proved domain beside it speaks for", async () => {
+	it("shows a thread's subject in words no stranger chose, beside the newest proved domain", async () => {
 		const box = await mailboxWithAddress();
 		// A stranger who knows the id of a message the mailbox's people sent elsewhere writes first.
 		await kept(
@@ -827,6 +827,22 @@ describe("threads", () => {
 			"example.org",
 		]);
 		expect((await openThread(box.slug, box.mailboxId, line?.id ?? "")).subject).toBe("Invoice 42");
+
+		// And when a stranger writes the newest message, their tags don't reach the line either.
+		await kept(
+			box.address,
+			message(box.address, {
+				from: "Billing <billing@attacker.example>",
+				subject: "Re: [Reply within 24h or lose access] Invoice 42",
+				extra: ["In-Reply-To: <invoice@elsewhere>"],
+			}),
+		);
+		const [after] = (await threads(box.slug, box.mailboxId)).threads;
+		expect([after?.subject, after?.count, after?.latestVerifiedDomain]).toEqual([
+			"Invoice 42",
+			3,
+			null,
+		]);
 	});
 
 	it("takes in any number of threads that one reply links", async () => {
