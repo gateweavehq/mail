@@ -193,33 +193,52 @@ export interface ResendCallFailure {
 	code: string;
 	/** Whether trying again later may work: Resend failed or was busy, or wasn't reached. */
 	later: boolean;
+	/** The answer's HTTP status, when one came. */
+	status: number | null;
 }
 
 function callFailure(status: number, body: unknown): ResendCallFailure {
 	const name = body && typeof body === "object" ? (body as { name?: unknown }).name : null;
 	const known = typeof name === "string" && /^[a-z_]{1,64}$/.test(name);
 	const code = `${RESEND_CODE}${known ? name : status}`;
-	return { code, later: status >= 500 || status === 429 };
+	return { code, later: status >= 500 || status === 429, status };
 }
 
-const unreached = (): ResendCallFailure => ({ code: `${RESEND_CODE}unreachable`, later: true });
+const unreached = (): ResendCallFailure => ({
+	code: `${RESEND_CODE}unreachable`,
+	later: true,
+	status: null,
+});
 
-/** An answer Mail can't read, which the same question would only get again. */
-const unreadable = (): ResendCallFailure => ({ code: `${RESEND_CODE}unreadable`, later: false });
-const tooLarge = (): ResendCallFailure => ({ code: `${RESEND_CODE}too_large`, later: false });
+/**
+ * A success Mail can't read. One that isn't JSON at all came from something in the way, which may
+ * pass; JSON of another shape would come again the same.
+ */
+const unreadable = (later: boolean): ResendCallFailure => ({
+	code: `${RESEND_CODE}unreadable`,
+	later,
+	status: 200,
+});
+const tooLarge = (): ResendCallFailure => ({
+	code: `${RESEND_CODE}too_large`,
+	later: false,
+	status: 200,
+});
 
-/** An answer's JSON, read no further than `MAX_ANSWER_BYTES`; undefined when there was more. */
-async function answerOf(response: Response): Promise<unknown> {
+type Answer = { json: unknown } | "not_json" | "too_large";
+
+/** An answer's JSON, read no further than `MAX_ANSWER_BYTES`. */
+async function answerOf(response: Response): Promise<Answer> {
 	if (Number(response.headers.get("content-length")) > MAX_ANSWER_BYTES) {
 		await response.body?.cancel();
-		return undefined;
+		return "too_large";
 	}
 	const read = await readUpTo(response.body, MAX_ANSWER_BYTES);
-	if (!read) return undefined;
+	if (!read) return "too_large";
 	try {
-		return JSON.parse(textOf(read));
+		return { json: JSON.parse(textOf(read)) };
 	} catch {
-		return null;
+		return "not_json";
 	}
 }
 
@@ -247,16 +266,18 @@ async function call<T>(
 	} catch {
 		return { ok: false, failure: unreached() };
 	}
-	let body: unknown;
+	let answer: Answer;
 	try {
-		body = await answerOf(response);
+		answer = await answerOf(response);
 	} catch {
 		return { ok: false, failure: unreached() };
 	}
-	if (!response.ok) return { ok: false, failure: callFailure(response.status, body ?? null) };
-	if (body === undefined) return { ok: false, failure: tooLarge() };
+	const body = typeof answer === "object" ? answer.json : null;
+	if (!response.ok) return { ok: false, failure: callFailure(response.status, body) };
+	if (answer === "too_large") return { ok: false, failure: tooLarge() };
+	if (answer === "not_json") return { ok: false, failure: unreadable(true) };
 	const value = parse(body);
-	return value === null ? { ok: false, failure: unreadable() } : { ok: true, value };
+	return value === null ? { ok: false, failure: unreadable(false) } : { ok: true, value };
 }
 
 const MadeWebhook = z.object({ id: z.string().min(1).max(200), signing_secret: z.string().min(1) });
@@ -282,34 +303,46 @@ export function createReceivingWebhook(api: string, key: string, endpoint: strin
 	);
 }
 
-const WebhookState = z.object({ status: z.string().max(100).nullish() });
+const WebhookState = z.object({
+	status: z.string().max(100).nullish(),
+	endpoint: z.string().max(2_000).nullish(),
+});
+
+/** What Resend has of a webhook: whether it is on, and where it sends; or that it is gone. */
+export type WebhookState = { on: boolean; endpoint: string | null } | "gone";
 
 /**
- * Whether the key's Resend account still has this webhook, and whether it is on. Resend turns
- * off one whose deliveries keep failing.
+ * What the key's Resend account has of this webhook. Resend turns off one whose deliveries keep
+ * failing.
  */
 export async function webhookState(
 	api: string,
 	key: string,
 	id: string,
-): Promise<Called<"enabled" | "disabled" | "gone">> {
-	const found = await call(api, key, `/webhooks/${encodeURIComponent(id)}`, {}, (body) => {
-		const read = WebhookState.safeParse(body);
-		if (!read.success) return null;
-		return read.data.status === "disabled" ? ("disabled" as const) : ("enabled" as const);
-	});
+): Promise<Called<WebhookState>> {
+	const found = await call(
+		api,
+		key,
+		`/webhooks/${encodeURIComponent(id)}`,
+		{},
+		(body): WebhookState | null => {
+			const read = WebhookState.safeParse(body);
+			if (!read.success) return null;
+			return { on: read.data.status !== "disabled", endpoint: read.data.endpoint ?? null };
+		},
+	);
 	if (!found.ok && found.failure.code === `${RESEND_CODE}not_found`)
 		return { ok: true, value: "gone" };
 	return found;
 }
 
-/** Turns a webhook Resend turned off back on. */
-export function enableWebhook(api: string, key: string, id: string) {
+/** Points a webhook at `endpoint` and turns it on, as Resend may have turned it off. */
+export function repairWebhook(api: string, key: string, id: string, endpoint: string) {
 	return call(
 		api,
 		key,
 		`/webhooks/${encodeURIComponent(id)}`,
-		{ method: "PATCH", body: { status: "enabled" } },
+		{ method: "PATCH", body: { endpoint, status: "enabled" } },
 		() => true,
 	);
 }

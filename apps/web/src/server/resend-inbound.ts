@@ -11,12 +11,12 @@ import {
 	checkResendKey,
 	createReceivingWebhook,
 	deleteWebhook,
-	enableWebhook,
 	getReceivedEmail,
 	RECEIVED_EVENT,
 	RESEND_API,
 	type ReceivedEmail,
 	type ResendCallFailure,
+	repairWebhook,
 	webhookState,
 } from "./providers/resend";
 import { svixHeaders, verifySvix } from "./providers/svix";
@@ -72,9 +72,11 @@ const refuse = (error: string, status: 409 | 502 = 409): SetUp => ({ ok: false, 
 
 /**
  * Makes sure the workspace has its webhook in the Resend account of its key, made once and shared
- * by its domains, and that it is on. One that Resend no longer has, as after the key was replaced
- * with one from another account, is made again, and one Resend turned off after deliveries kept
- * failing is turned back on. The key needs full access, which reading received mail takes.
+ * by its domains, that it is on and that it points at the workspace's channel on this server. One
+ * that Resend no longer has, as after the key was replaced with one from another account, is made
+ * again; one Resend turned off after deliveries kept failing, or that points elsewhere, as after
+ * the server's address changed, is mended. The key needs full access, which reading received mail
+ * takes.
  */
 export async function ensureReceivingWebhook(
 	db: Database,
@@ -112,6 +114,7 @@ export async function ensureReceivingWebhook(
 		.where(eq(resendInbound.organizationId, workspaceId))
 		.get();
 	if (!row) return refuse("Receiving was being turned off at the same moment. Try again.");
+	const endpoint = `${origin}${INBOUND_PATH}${row.channel}`;
 
 	if (row.webhookId) {
 		const state = await webhookState(api(), opened.key, row.webhookId);
@@ -120,14 +123,11 @@ export async function ensureReceivingWebhook(
 				`Resend couldn't be asked about the webhook (${state.failure.code}). Try again.`,
 				502,
 			);
-		if (state.value === "enabled") return { ok: true };
-		if (state.value === "disabled") {
-			const enabled = await enableWebhook(api(), opened.key, row.webhookId);
-			if (enabled.ok) return { ok: true };
-			return refuse(
-				`Resend didn't turn the webhook back on (${enabled.failure.code}). Try again.`,
-				502,
-			);
+		if (state.value !== "gone") {
+			if (state.value.on && state.value.endpoint === endpoint) return { ok: true };
+			const mended = await repairWebhook(api(), opened.key, row.webhookId, endpoint);
+			if (mended.ok) return { ok: true };
+			return refuse(`Resend didn't mend the webhook (${mended.failure.code}). Try again.`, 502);
 		}
 		await db
 			.update(resendInbound)
@@ -141,11 +141,7 @@ export async function ensureReceivingWebhook(
 			.run();
 	}
 
-	const made = await createReceivingWebhook(
-		api(),
-		opened.key,
-		`${origin}${INBOUND_PATH}${row.channel}`,
-	);
+	const made = await createReceivingWebhook(api(), opened.key, endpoint);
 	if (!made.ok) {
 		return refuse(`Resend didn't make the webhook (${made.failure.code}). Try again.`, 502);
 	}
@@ -155,7 +151,15 @@ export async function ensureReceivingWebhook(
 			webhookId: made.value.id,
 			sealedSecret: await sealer.seal(SECRET_PLACE, made.value.secret),
 		})
-		.where(and(eq(resendInbound.organizationId, workspaceId), isNull(resendInbound.webhookId)))
+		// The row it was made for: one made anew after receiving was turned off and on meanwhile has
+		// another channel, which this webhook doesn't point at.
+		.where(
+			and(
+				eq(resendInbound.organizationId, workspaceId),
+				eq(resendInbound.channel, row.channel),
+				isNull(resendInbound.webhookId),
+			),
+		)
 		.run();
 	if (!meta.changes) {
 		// Another admin's webhook came first, or receiving was turned off meanwhile: this one goes.
@@ -343,19 +347,19 @@ const later = (trouble: string): Outcome => ({ status: 503, trouble, stored: fal
 /** How bad an outcome is, so the worst of several is the answer. */
 const badness = (outcome: Outcome) => (outcome.status === 503 ? 2 : outcome.trouble ? 1 : 0);
 
-/** Resend's codes for a key it didn't take, which an admin can mend by adding another. */
-const KEY_TROUBLE = new Set(
-	["missing_api_key", "invalid_api_key", "restricted_api_key", "401", "403"].map(
-		(name) => `${RESEND_CODE}${name}`,
-	),
-);
-
 /** What to tell Resend when its API didn't give the email. */
 function notGiven(failure: ResendCallFailure): Outcome {
-	// Resend failed, was busy or wasn't reached, or the key can't read mail, which may be mended in
-	// time: Resend keeps trying.
-	if (failure.later || KEY_TROUBLE.has(failure.code)) return later(failure.code);
-	// Not in the key's account, or an answer Mail can't read: no later try changes that.
+	// Resend failed, was busy or wasn't reached. Or the key can't read it, or its account doesn't
+	// have it yet, which an admin can mend with another key, or which may pass: Resend keeps trying.
+	if (
+		failure.later ||
+		failure.status === 401 ||
+		failure.status === 403 ||
+		failure.code === `${RESEND_CODE}not_found`
+	) {
+		return later(failure.code);
+	}
+	// A request Resend calls wrong, or an answer Mail can't read: no later try changes that.
 	return givenUp(failure.code);
 }
 

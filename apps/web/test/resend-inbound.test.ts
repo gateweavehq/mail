@@ -39,6 +39,8 @@ interface Received {
 	unsized?: boolean;
 	/** Resend's answer about it is one Mail can't read. */
 	garbled?: boolean;
+	/** Something in the way answers for Resend, with a page that isn't JSON, this many times. */
+	notJson?: number;
 }
 
 /** The Resend account each key belongs to. */
@@ -97,10 +99,19 @@ async function resend(request: Request): Promise<Response> {
 		if (!found || found.account !== account) return notFound("Webhook");
 		if (request.method === "DELETE") webhooks.delete(webhook);
 		if (request.method === "PATCH") {
-			const body = (await request.json()) as { status?: "enabled" | "disabled" };
+			const body = (await request.json()) as {
+				status?: "enabled" | "disabled";
+				endpoint?: string;
+			};
 			if (body.status) found.status = body.status;
+			if (body.endpoint) found.endpoint = body.endpoint;
 		}
-		return Response.json({ object: "webhook", id: webhook, status: found.status });
+		return Response.json({
+			object: "webhook",
+			id: webhook,
+			status: found.status,
+			endpoint: found.endpoint,
+		});
 	}
 	const email = /^\/emails\/receiving\/([^/]+)$/.exec(url.pathname)?.[1];
 	if (email) {
@@ -109,6 +120,10 @@ async function resend(request: Request): Promise<Response> {
 		const found = received.get(email);
 		if (!found || found.account !== account) return notFound("Email");
 		if (found.garbled) return Response.json({ object: "email", to: "not a list" });
+		if (found.notJson) {
+			found.notJson--;
+			return new Response("<html>Gateway</html>", { headers: { "content-type": "text/html" } });
+		}
 		return Response.json({
 			object: "email",
 			id: found.id,
@@ -694,13 +709,14 @@ describe("receiving through Resend", () => {
 		expect((await directory(full.slug)).body.resendReceiving?.trouble).toBe("mailbox_full");
 	});
 
-	it("acknowledges other events, and gives up on mail its account doesn't have", async () => {
+	it("acknowledges other events, and keeps trying for mail the key's account doesn't have", async () => {
 		const box = await workspace();
 		const webhook = await receiving(box);
 		const email = receivedFor(box, { subject: "Sent" });
 		expect((await deliver(webhook, eventFor(email, "email.sent"))).status).toBe(204);
+		// As when the key is from another account, which an admin can mend, or Resend is behind.
 		const elsewhere = receivedFor(box, { subject: "Elsewhere" }, { account: "other" });
-		expect((await deliver(webhook, eventFor(elsewhere))).status).toBe(200);
+		expect((await deliver(webhook, eventFor(elsewhere))).status).toBe(503);
 		expect((await directory(box.slug)).body.resendReceiving?.trouble).toBe("resend:not_found");
 		expect(await messages(box)).toHaveLength(0);
 
@@ -709,11 +725,17 @@ describe("receiving through Resend", () => {
 		expect((await deliver(webhook, eventFor(nobody))).status).toBe(200);
 		expect((await directory(box.slug)).body.resendReceiving?.trouble).toBe("resend:not_found");
 
-		// An answer Mail can't read won't read better later.
+		// An answer of the wrong shape won't read better later.
 		const garbled = receivedFor(box, { subject: "Garbled" }, { garbled: true });
 		expect((await deliver(webhook, eventFor(garbled))).status).toBe(200);
 		expect((await directory(box.slug)).body.resendReceiving?.trouble).toBe("resend:unreadable");
 		expect(await messages(box)).toHaveLength(0);
+
+		// A page that isn't JSON came from something in the way, which passes.
+		const blocked = receivedFor(box, { subject: "Blocked" }, { notJson: 1 });
+		expect((await deliver(webhook, eventFor(blocked))).status).toBe(503);
+		expect((await deliver(webhook, eventFor(blocked))).status).toBe(200);
+		expect((await messages(box)).map((one) => one.subject)).toEqual(["Blocked"]);
 	});
 
 	it("turns the webhook back on, or makes it again, when the Domains page checks it", async () => {
@@ -727,6 +749,12 @@ describe("receiving through Resend", () => {
 		webhook.status = "disabled";
 		expect((await receiveWith(box, "resend")).status).toBe(200);
 		expect(webhook.status).toBe("enabled");
+
+		// One pointing elsewhere, as after the server's address changed, is pointed back.
+		const endpoint = webhook.endpoint;
+		webhook.endpoint = "https://old.mail.test/api/inbound/resend/x";
+		expect((await directory(box.slug, { action: "check-receiving" })).status).toBe(200);
+		expect(webhook.endpoint).toBe(endpoint);
 
 		webhooks.delete(webhook.id);
 		expect((await directory(box.slug, { action: "check-receiving" })).status).toBe(200);

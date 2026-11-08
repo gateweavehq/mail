@@ -68,7 +68,7 @@ function DomainsPage() {
 				) : (
 					<p className="text-sm text-muted-foreground">An owner or admin can add a domain.</p>
 				)}
-				{admin && data.resendReceiving && (
+				{admin && (
 					<ReceivingStatus
 						state={data.resendReceiving}
 						inUse={data.domains.some((domain) => domain.receivesWith === "resend")}
@@ -228,8 +228,11 @@ const RECEIVES_WITH_WORDS: Record<ReceivesWith, string> = {
 	resend: "Resend",
 };
 
-/** How receiving through Resend went for the workspace. */
-function ReceivingStatus({ state, inUse }: { state: ResendReceiving; inUse: boolean }) {
+/**
+ * How receiving through Resend went for the workspace. With no state, the webhook isn't made, as
+ * when a domain was set to Resend while receiving was turned off at the same moment.
+ */
+function ReceivingStatus({ state, inUse }: { state: ResendReceiving | null; inUse: boolean }) {
 	const { slug } = useWorkspace();
 	const router = useRouter();
 	const [pending, setPending] = useState(false);
@@ -252,19 +255,19 @@ function ReceivingStatus({ state, inUse }: { state: ResendReceiving; inUse: bool
 	return (
 		<div className="space-y-2 rounded-lg border p-4 text-sm">
 			<p className="font-medium">Receiving through Resend</p>
-			{!state.ready && (
+			{!state?.ready && (
 				<p className="text-destructive">
 					The webhook in Resend isn't made, so no mail comes through it. Check it to make it again.
 				</p>
 			)}
-			{state.trouble && (
+			{state?.trouble && (
 				<p role="alert" className="text-destructive">
 					{receivingTrouble(state.trouble)}
 					{state.troubleAt !== null && ` (${formatDateTime(state.troubleAt)})`}
 				</p>
 			)}
 			<p className="text-muted-foreground">
-				{state.receivedAt === null
+				{state?.receivedAt == null
 					? "No mail has come through it yet."
 					: `Mail last came through it ${formatDateTime(state.receivedAt)}.`}{" "}
 				Resend turns off a webhook whose deliveries keep failing; checking it turns it back on, and
@@ -274,11 +277,10 @@ function ReceivingStatus({ state, inUse }: { state: ResendReceiving; inUse: bool
 				<LiveButton size="sm" variant="outline" disabled={pending} onClick={check}>
 					{pending ? "Checking…" : "Check the webhook"}
 				</LiveButton>
-				{said && (
-					<p role="status" className="text-muted-foreground">
-						{said}
-					</p>
-				)}
+				{/* Kept in the page, so a screen reader hears its words change. */}
+				<p role="status" className="text-muted-foreground">
+					{said}
+				</p>
 				{error && (
 					<p role="alert" className="text-destructive">
 						{error}

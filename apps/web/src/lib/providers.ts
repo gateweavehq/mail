@@ -107,7 +107,7 @@ export function receivingTrouble(code: string): string {
 		case "unreadable":
 			return "Resend's answer about a message it received couldn't be read, so it wasn't stored. It is still in Resend.";
 		case "not_found":
-			return "Resend said the account behind the workspace's key doesn't have a message its webhook named, as when the key is from another Resend account.";
+			return "Resend said the account behind the workspace's key doesn't have a message its webhook named, as when the key is from another Resend account. Resend tries again for about a day.";
 		case "too_large":
 			return "A message Resend received was larger than Mail takes, so it wasn't stored. It is still in Resend.";
 		case "mailbox_full":

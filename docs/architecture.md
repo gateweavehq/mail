@@ -77,11 +77,15 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
   Resend, downloads the raw mail from the signed address the answer gives, and stores it through
   the same path as `email()`, one copy for each mailbox. Resend took the mail already, so an
   address that doesn't exist can't be refused: it is left out. Mail answers 503 to anything that
-  may work later (no key yet, a key that can only send, a failed download, a full mailbox), and
-  Resend tries again, eight times over about a day, before it turns the webhook off, so the
-  workspace's last such trouble shows on the Domains page until mail is stored again. A retry is
-  stored once, as in `email()`. The Worker tests stand in for Resend's API and its downloads
-  (`test/resend-inbound.test.ts`).
+  may work later (no key yet, a key Resend doesn't take or that can only send, an email the key's
+  account doesn't have, Resend failing, a failed download, a full mailbox), and Resend tries
+  again, eight times over about a day, before it turns the webhook off, so the workspace's last
+  such trouble shows on the Domains page until mail is stored again. It answers 200 to what can't
+  change: an answer of the wrong shape, or mail too large. Resend's answer holds the email's text
+  and HTML, and Mail reads at most 16 MiB of it to keep within a Worker's memory, so a message
+  with more text than that stays in Resend, even though raw mail up to 40 MiB streams into R2. A
+  retry is stored once, as in `email()`. The Worker tests stand in for Resend's API and its
+  downloads (`test/resend-inbound.test.ts`).
 - **Mailboxes** (`apps/web/src/server/mailbox/`). Each mailbox has a `Mailbox` Durable Object,
   named by the mailbox's id, that holds the index of its messages in SQLite. The raw mail is in R2,
   one object per message under `<workspace>/<mailbox>/`. `email()` reads the header block and
