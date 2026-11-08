@@ -15,8 +15,9 @@ It is early. Today it has accounts (sign-up, sign-in, password reset, an account
 through an OpenID Connect provider), workspaces with members and invitations, a directory of
 proved domains, mailboxes and addresses, and an `email()` handler that refuses an address that
 doesn't exist and stores mail for one that does, in a Durable Object per mailbox and R2. Members
-read a mailbox's messages as text. Sending and replying, HTML mail, addresses an agent can make for
-itself, aliases and transactional sending are planned, not built.
+read the mailboxes they are given, with formatted mail in a sandboxed frame, and agents read theirs
+with a key, through the API. Sending and replying, addresses an agent can make for itself, aliases and
+transactional sending are planned, not built.
 
 Read [docs/architecture.md](docs/architecture.md) before changing auth or the `email()` handler.
 
@@ -106,6 +107,10 @@ These are load-bearing. Breaking one breaks users' data or security, usually sil
     (`apps/web/src/server/mailbox/read.ts`), which applies `canReadMailbox`: being in the workspace
     is not enough. Every R2 object is named by the mailbox's object, as pending, before it is
     written, so R2 never holds mail a mailbox doesn't know about.
+13. **A key is an agent's, and it only reads.** A request with a bearer token is decided by its
+    key alone (`currentCaller` in `apps/web/src/server/access.ts`), never by the cookies that come
+    with it. Only reading takes `currentCaller`; whatever changes something takes
+    `currentMember`, a person signed in. Keep only a key's hash, and never log a key.
 
 ## Code style
 

@@ -293,13 +293,11 @@ function MemberRow({ member, lastOwner }: { member: WorkspaceMember; lastOwner: 
 	const navigate = useNavigate();
 	const [confirming, setConfirming] = useState<"remove" | "leave" | null>(null);
 	const isMe = member.userId === userId;
-	// Admins manage members and admins; only owners manage owners. An agent's role isn't a person's
-	// to change here.
-	const canManage =
-		isAdminRole(myRole) &&
-		!isMe &&
-		member.role !== "agent" &&
-		(myRole === "owner" || member.role !== "owner");
+	// Admins manage members and admins; only owners manage owners.
+	const canManage = isAdminRole(myRole) && !isMe && (myRole === "owner" || member.role !== "owner");
+	// Agents have their own page, so a role read as an agent's here is one this version doesn't know:
+	// it can be removed, but there is no such role to hand out.
+	const canChangeRole = canManage && member.role !== "agent";
 
 	async function changeRole(role: PersonRole) {
 		const result = await authClient.organization.updateMemberRole({
@@ -351,7 +349,7 @@ function MemberRow({ member, lastOwner }: { member: WorkspaceMember; lastOwner: 
 			<span className="hidden text-xs text-muted-foreground sm:block">
 				Joined {formatShortDate(member.joinedAt)}
 			</span>
-			{canManage ? (
+			{canChangeRole ? (
 				<RoleSelect
 					value={member.role}
 					roles={assignableRoles(myRole)}

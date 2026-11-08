@@ -13,7 +13,7 @@ import type {
 } from "../../lib/mailbox";
 import { MAX_QUERY_SENT } from "../../lib/mailbox";
 import { canReadMailbox, isAdminRole } from "../../lib/roles";
-import { currentMember } from "../access";
+import { currentCaller } from "../access";
 import { db } from "../auth";
 import { schema } from "../db";
 import { appOrigin } from "../origin";
@@ -31,11 +31,12 @@ export const MAX_SHOWN_TEXT = 200_000;
 
 /**
  * The mailbox with this id in the workspace with this slug, for a member who may read it (see
- * `canReadMailbox`). Every route to a mailbox's mail comes through here. Null for anyone else, and
- * for a mailbox of another workspace, so its id gives nothing away.
+ * `canReadMailbox`), signed in or an agent with its key. Every route to a mailbox's mail comes
+ * through here. Null for anyone else, and for a mailbox of another workspace, so its id gives
+ * nothing away.
  */
 async function openMailbox(slug: string, mailboxId: string) {
-	const member = await currentMember(slug);
+	const member = await currentCaller(slug);
 	if (!member) return null;
 	const { memberId, workspaceId, role } = member.membership;
 	const { mailbox, mailboxAccess } = schema;

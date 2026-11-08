@@ -90,7 +90,7 @@ export interface InvitationPreview {
 	workspaceSlug: string;
 	inviterName: string;
 	email: string;
-	role: MemberRole;
+	role: PersonRole;
 	expiresAt: number;
 }
 
@@ -123,7 +123,7 @@ export async function findPendingInvitation(
 		)
 		.get();
 	return row
-		? { ...row, role: toRole(row.role ?? "member"), expiresAt: row.expiresAt.getTime() }
+		? { ...row, role: toPersonRole(row.role ?? "member"), expiresAt: row.expiresAt.getTime() }
 		: null;
 }
 

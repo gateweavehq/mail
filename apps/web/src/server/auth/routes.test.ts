@@ -64,6 +64,15 @@ const SERVED = [
 	"POST /organization/set-active",
 	"POST /organization/update",
 	"POST /organization/update-member-role",
+
+	// Agents and their keys, for owners and admins (`agents.ts`). Making an agent or a key, each
+	// a credential, has a limit of its own.
+	"GET /agents/list",
+	"POST /agents/create",
+	"POST /agents/create-key",
+	"POST /agents/delete",
+	"POST /agents/revoke-key",
+	"POST /agents/update",
 ];
 
 let mf: Miniflare;

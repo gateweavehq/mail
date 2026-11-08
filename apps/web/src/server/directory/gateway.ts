@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { z } from "zod";
 import { isAdminRole } from "../../lib/roles";
-import { currentMember } from "../access";
+import { currentCaller, currentMember } from "../access";
 import { db } from "../auth";
 import { removeMailboxes } from "../mailbox";
 import { appOrigin } from "../origin";
@@ -58,8 +58,9 @@ function answer(body: unknown, status = 200): Response {
 /** The same whether the workspace doesn't exist or the caller isn't in it. */
 const notFound = () => answer({ ok: false, error: "Not found" }, 404);
 
+/** What the caller may see of the directory. An agent sees the mailboxes it was given. */
 export async function readDirectory(slug: string): Promise<Response> {
-	const member = await currentMember(slug);
+	const member = await currentCaller(slug);
 	if (!member) return notFound();
 	const { workspaceId, memberId, role } = member.membership;
 	return answer(await listDirectory(db, workspaceId, { memberId, role }));

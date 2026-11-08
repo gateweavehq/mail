@@ -2,6 +2,7 @@ import { and, asc, count, eq, gt, inArray, isNotNull, isNull, or, sql } from "dr
 import { parseDomainName, parseLocalPart, splitRecipient } from "../../lib/addresses";
 import type { Directory, MailRoute } from "../../lib/directory";
 import { canReadMailbox, isAdminRole, type MemberRole } from "../../lib/roles";
+import { isAgentMembership } from "../auth/agents";
 import type { Database } from "../db";
 import { schema } from "../db";
 import { toRole } from "../workspaces";
@@ -75,6 +76,15 @@ export async function findAddress(db: Database, recipient: string, now: Date) {
 		)
 		.get();
 	return found ?? null;
+}
+
+/** Who reads a mailbox besides owners and admins: people and agents apart, as they are chosen. */
+function accessOf(everyone: boolean, grants: { memberId: string; role: string }[]) {
+	const ids = (agents: boolean) =>
+		grants
+			.filter((grant) => isAgentMembership(grant.role) === agents)
+			.map((grant) => grant.memberId);
+	return { everyone, memberIds: ids(false), agentIds: ids(true) };
 }
 
 /** Who is asking, for what they may see. */
@@ -167,12 +177,7 @@ export async function listDirectory(
 				expiresAt: address.expiresAt?.getTime() ?? null,
 				domainProved: address.domainVerifiedAt !== null,
 			})),
-			access: admin
-				? {
-						everyone: box.everyone,
-						memberIds: (readers.get(box.id) ?? []).map((grant) => grant.memberId),
-					}
-				: null,
+			access: admin ? accessOf(box.everyone, readers.get(box.id) ?? []) : null,
 		})),
 	};
 }

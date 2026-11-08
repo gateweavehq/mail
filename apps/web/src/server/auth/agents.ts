@@ -1,0 +1,496 @@
+// Ported from Gateweave Track's agent members (apps/web/src/server/auth/agents.ts).
+import type { BetterAuthPlugin } from "better-auth";
+import {
+	APIError,
+	createAuthEndpoint,
+	createAuthMiddleware,
+	freshSessionMiddleware,
+	sessionMiddleware,
+} from "better-auth/api";
+import { and, asc, count, eq, like, notExists, or } from "drizzle-orm";
+import * as z from "zod";
+import { isAdminRole } from "../../lib/roles";
+import type { Database } from "../db";
+import { schema } from "../db";
+import { toRole } from "../workspaces";
+
+/**
+ * Agent members: users an admin creates for an AI agent, with the `agent` role in one workspace.
+ * They have no password and no session, so they never sign in. They read the mail API with a key,
+ * and only the mailboxes they are given (`canReadMailbox`): "everyone" never counts them.
+ */
+
+export const AGENT_ROLE = "agent";
+
+/**
+ * Agents' addresses. `.invalid` can never resolve (RFC 2606), so no mail reaches anyone, and
+ * nobody can sign up, sign in or be invited under one.
+ */
+export const AGENT_EMAIL_DOMAIN = "agents.invalid";
+
+export const MAX_AGENTS_PER_WORKSPACE = 50;
+export const MAX_KEYS_PER_AGENT = 5;
+
+/** Mail's own prefix, so a key for another Gateweave product is never tried here. */
+const KEY_PREFIX = "gwm_";
+const KEY_PATTERN = /^gwm_[A-Za-z0-9_-]{43}$/;
+/** How much of a key is kept to tell keys apart: the prefix and 8 characters, of 47. */
+const KEY_START_LENGTH = 12;
+/** A key's last use is written at most this often, not on every call. */
+const LAST_USED_PRECISION_MS = 5 * 60 * 1000;
+
+/** Whether a membership is an agent's, as stored: one the agents plugin made. */
+export function isAgentMembership(role: string): boolean {
+	return role.split(",").some((one) => one.trim() === AGENT_ROLE);
+}
+
+export function isAgentEmail(email: string): boolean {
+	return email.trim().toLowerCase().endsWith(`@${AGENT_EMAIL_DOMAIN}`);
+}
+
+/** Whether a bearer token has the shape of an agent key. Says nothing about whether it works. */
+export function isAgentKey(token: string): boolean {
+	return KEY_PATTERN.test(token);
+}
+
+/** A new key: 256 random bits. Only its hash and its first characters are stored. */
+async function newKey() {
+	const bytes = crypto.getRandomValues(new Uint8Array(32));
+	const secret = `${KEY_PREFIX}${btoa(String.fromCharCode(...bytes))
+		.replace(/\+/g, "-")
+		.replace(/\//g, "_")
+		.replace(/=+$/, "")}`;
+	return { secret, start: secret.slice(0, KEY_START_LENGTH), hash: await hashKey(secret) };
+}
+
+async function hashKey(key: string): Promise<string> {
+	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key));
+	return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+export interface AgentByKey {
+	keyId: string;
+	userId: string;
+	workspaceId: string;
+	slug: string;
+}
+
+/**
+ * The agent a key belongs to, while it is still an agent member of the workspace the key was made
+ * for. Notes the key's use, at most every few minutes.
+ */
+export async function findAgentByKey(db: Database, key: string): Promise<AgentByKey | null> {
+	if (!isAgentKey(key)) return null;
+	const { agentKey, member, organization } = schema;
+	const row = await db
+		.select({
+			keyId: agentKey.id,
+			userId: agentKey.userId,
+			workspaceId: agentKey.organizationId,
+			slug: organization.slug,
+			lastUsedAt: agentKey.lastUsedAt,
+		})
+		.from(agentKey)
+		.innerJoin(
+			member,
+			and(
+				eq(member.userId, agentKey.userId),
+				eq(member.organizationId, agentKey.organizationId),
+				eq(member.role, AGENT_ROLE),
+			),
+		)
+		.innerJoin(organization, eq(organization.id, agentKey.organizationId))
+		.where(eq(agentKey.hash, await hashKey(key)))
+		.get();
+	if (!row) return null;
+	const now = Date.now();
+	if (!row.lastUsedAt || now - row.lastUsedAt.getTime() > LAST_USED_PRECISION_MS) {
+		await db
+			.update(agentKey)
+			.set({ lastUsedAt: new Date(now) })
+			.where(eq(agentKey.id, row.keyId))
+			.run();
+	}
+	return { keyId: row.keyId, userId: row.userId, workspaceId: row.workspaceId, slug: row.slug };
+}
+
+/**
+ * Deletes agents that no longer belong to a workspace. An agent belongs to one workspace only, so
+ * once that workspace is gone, nothing else can use it. Anyone with a way to sign in is a person,
+ * whatever their address, and is never touched.
+ */
+export async function deleteOrphanedAgents(db: Database): Promise<void> {
+	const { account, member, user } = schema;
+	await db
+		.delete(user)
+		.where(
+			and(
+				like(user.email, `%@${AGENT_EMAIL_DOMAIN}`),
+				notExists(db.select({ id: member.id }).from(member).where(eq(member.userId, user.id))),
+				notExists(db.select({ id: account.id }).from(account).where(eq(account.userId, user.id))),
+			),
+		)
+		.run();
+}
+
+export interface AgentKeyInfo {
+	id: string;
+	/** The key's first characters, as shown in settings. */
+	start: string;
+	createdAt: number;
+	lastUsedAt: number | null;
+}
+
+export interface AgentInfo {
+	/** The agent's user id. */
+	id: string;
+	/** Its membership's id, which mailboxes are given to. */
+	memberId: string;
+	name: string;
+	createdAt: number;
+	keys: AgentKeyInfo[];
+}
+
+const agentName = z.string().trim().min(1).max(80);
+const id = z.string().min(1).max(64);
+
+export function agentMembers({ db }: { db: Database }) {
+	const { agentKey, member, user } = schema;
+
+	async function requireAdmin(organizationId: string, userId: string) {
+		const row = await db
+			.select({ role: member.role })
+			.from(member)
+			.where(and(eq(member.organizationId, organizationId), eq(member.userId, userId)))
+			.get();
+		if (!row || !isAdminRole(toRole(row.role))) {
+			throw new APIError("FORBIDDEN", { message: "Only workspace admins can manage agents" });
+		}
+	}
+
+	/**
+	 * An agent and its workspace, for an admin of that workspace. Only an account this plugin made,
+	 * under an agent's address: deleting an agent deletes its account, which must never be a person's.
+	 */
+	async function agentForAdmin(agentId: string, userId: string) {
+		const agent = await db
+			.select({ id: user.id, name: user.name, organizationId: member.organizationId })
+			.from(member)
+			.innerJoin(user, eq(member.userId, user.id))
+			.where(
+				and(
+					eq(member.userId, agentId),
+					eq(member.role, AGENT_ROLE),
+					like(user.email, `%@${AGENT_EMAIL_DOMAIN}`),
+				),
+			)
+			.get();
+		if (!agent) throw new APIError("NOT_FOUND", { message: "That agent was deleted" });
+		await requireAdmin(agent.organizationId, userId);
+		return agent;
+	}
+
+	async function insertKey(agentId: string, organizationId: string) {
+		const key = await newKey();
+		const createdAt = new Date();
+		const keyId = crypto.randomUUID();
+		await db
+			.insert(agentKey)
+			.values({ id: keyId, userId: agentId, organizationId, ...key, createdAt })
+			.run();
+		const info: AgentKeyInfo = {
+			id: keyId,
+			start: key.start,
+			createdAt: createdAt.getTime(),
+			lastUsedAt: null,
+		};
+		return { info, secret: key.secret };
+	}
+
+	return {
+		id: "agent-members",
+		schema: {
+			agentKey: {
+				fields: {
+					userId: {
+						type: "string",
+						required: true,
+						references: { model: "user", field: "id", onDelete: "cascade" },
+						index: true,
+					},
+					organizationId: {
+						type: "string",
+						required: true,
+						references: { model: "organization", field: "id", onDelete: "cascade" },
+						index: true,
+					},
+					start: { type: "string", required: true },
+					hash: { type: "string", required: true, unique: true },
+					createdAt: { type: "date", required: true },
+					lastUsedAt: { type: "date", required: false },
+				},
+			},
+		},
+		endpoints: {
+			listAgents: createAuthEndpoint(
+				"/agents/list",
+				{
+					method: "GET",
+					query: z.object({ organizationId: id }),
+					use: [sessionMiddleware],
+				},
+				async (ctx) => {
+					const { organizationId } = ctx.query;
+					await requireAdmin(organizationId, ctx.context.session.user.id);
+					const rows = await db
+						.select({
+							id: user.id,
+							memberId: member.id,
+							name: user.name,
+							createdAt: member.createdAt,
+							key: {
+								id: agentKey.id,
+								start: agentKey.start,
+								createdAt: agentKey.createdAt,
+								lastUsedAt: agentKey.lastUsedAt,
+							},
+						})
+						.from(member)
+						.innerJoin(user, eq(member.userId, user.id))
+						.leftJoin(agentKey, eq(agentKey.userId, user.id))
+						.where(
+							and(
+								eq(member.organizationId, organizationId),
+								eq(member.role, AGENT_ROLE),
+								like(user.email, `%@${AGENT_EMAIL_DOMAIN}`),
+							),
+						)
+						.orderBy(asc(user.name), asc(agentKey.createdAt))
+						.all();
+					const agents = new Map<string, AgentInfo>();
+					for (const row of rows) {
+						const agent = agents.get(row.id) ?? {
+							id: row.id,
+							memberId: row.memberId,
+							name: row.name,
+							createdAt: row.createdAt.getTime(),
+							keys: [],
+						};
+						agents.set(row.id, agent);
+						if (row.key) {
+							agent.keys.push({
+								id: row.key.id,
+								start: row.key.start,
+								createdAt: row.key.createdAt.getTime(),
+								lastUsedAt: row.key.lastUsedAt?.getTime() ?? null,
+							});
+						}
+					}
+					return ctx.json([...agents.values()]);
+				},
+			),
+
+			createAgent: createAuthEndpoint(
+				"/agents/create",
+				{
+					method: "POST",
+					body: z.object({ organizationId: id, name: agentName }),
+					// A key reads mail until it is revoked, even after the session that made it is gone,
+					// so making one takes a recent sign-in: a stolen cookie can't leave a key behind.
+					use: [freshSessionMiddleware],
+				},
+				async (ctx) => {
+					const { organizationId, name } = ctx.body;
+					await requireAdmin(organizationId, ctx.context.session.user.id);
+					const existing = await db
+						.select({ n: count() })
+						.from(member)
+						.where(and(eq(member.organizationId, organizationId), eq(member.role, AGENT_ROLE)))
+						.get();
+					if ((existing?.n ?? 0) >= MAX_AGENTS_PER_WORKSPACE) {
+						throw new APIError("BAD_REQUEST", {
+							message: `A workspace can have ${MAX_AGENTS_PER_WORKSPACE} agents`,
+						});
+					}
+
+					const agentId = crypto.randomUUID();
+					const memberId = crypto.randomUUID();
+					const now = new Date();
+					await db.batch([
+						db.insert(user).values({
+							id: agentId,
+							name,
+							email: `${agentId}@${AGENT_EMAIL_DOMAIN}`,
+							emailVerified: false,
+							image: null,
+							createdAt: now,
+							updatedAt: now,
+						}),
+						db.insert(member).values({
+							id: memberId,
+							organizationId,
+							userId: agentId,
+							role: AGENT_ROLE,
+							createdAt: now,
+						}),
+					]);
+					const key = await insertKey(agentId, organizationId);
+					const agent: AgentInfo = {
+						id: agentId,
+						memberId,
+						name,
+						createdAt: now.getTime(),
+						keys: [key.info],
+					};
+					return ctx.json({ agent, key: key.secret });
+				},
+			),
+
+			updateAgent: createAuthEndpoint(
+				"/agents/update",
+				{
+					method: "POST",
+					body: z.object({ agentId: id, name: agentName }),
+					use: [sessionMiddleware],
+				},
+				async (ctx) => {
+					const agent = await agentForAdmin(ctx.body.agentId, ctx.context.session.user.id);
+					await db
+						.update(user)
+						.set({ name: ctx.body.name, updatedAt: new Date() })
+						.where(eq(user.id, agent.id))
+						.run();
+					return ctx.json({ id: agent.id, name: ctx.body.name });
+				},
+			),
+
+			createAgentKey: createAuthEndpoint(
+				"/agents/create-key",
+				{
+					method: "POST",
+					body: z.object({ agentId: id }),
+					use: [freshSessionMiddleware],
+				},
+				async (ctx) => {
+					const agent = await agentForAdmin(ctx.body.agentId, ctx.context.session.user.id);
+					const keys = await db
+						.select({ n: count() })
+						.from(agentKey)
+						.where(eq(agentKey.userId, agent.id))
+						.get();
+					if ((keys?.n ?? 0) >= MAX_KEYS_PER_AGENT) {
+						throw new APIError("BAD_REQUEST", {
+							message: `An agent can have ${MAX_KEYS_PER_AGENT} keys. Revoke one first.`,
+						});
+					}
+					const key = await insertKey(agent.id, agent.organizationId);
+					return ctx.json({ key: key.info, secret: key.secret });
+				},
+			),
+
+			revokeAgentKey: createAuthEndpoint(
+				"/agents/revoke-key",
+				{
+					method: "POST",
+					body: z.object({ keyId: id }),
+					use: [sessionMiddleware],
+				},
+				async (ctx) => {
+					const key = await db
+						.select({ id: agentKey.id, organizationId: agentKey.organizationId })
+						.from(agentKey)
+						.where(eq(agentKey.id, ctx.body.keyId))
+						.get();
+					if (!key) throw new APIError("NOT_FOUND", { message: "That key was revoked" });
+					await requireAdmin(key.organizationId, ctx.context.session.user.id);
+					await db.delete(agentKey).where(eq(agentKey.id, key.id)).run();
+					return ctx.json({ id: key.id });
+				},
+			),
+
+			deleteAgent: createAuthEndpoint(
+				"/agents/delete",
+				{
+					method: "POST",
+					body: z.object({ agentId: id }),
+					use: [sessionMiddleware],
+				},
+				async (ctx) => {
+					const agent = await agentForAdmin(ctx.body.agentId, ctx.context.session.user.id);
+					// The account goes with its membership, keys and the mailboxes it was given.
+					await db.batch([
+						db.delete(agentKey).where(eq(agentKey.userId, agent.id)),
+						db.delete(member).where(eq(member.userId, agent.id)),
+						db.delete(user).where(eq(user.id, agent.id)),
+					]);
+					return ctx.json({ id: agent.id });
+				},
+			),
+		},
+
+		hooks: {
+			before: [
+				{
+					// Nobody signs up, signs in, recovers, verifies or is invited under an agent's
+					// address, and no one takes one as their own.
+					matcher: (ctx) => EMAIL_FIELDS.has(ctx.path ?? ""),
+					handler: createAuthMiddleware(async (ctx) => {
+						const field = EMAIL_FIELDS.get(ctx.path) ?? "email";
+						const email: unknown = ctx.body?.[field];
+						if (typeof email === "string" && isAgentEmail(email)) {
+							throw new APIError("BAD_REQUEST", {
+								message: "That address belongs to an agent",
+							});
+						}
+					}),
+				},
+				{
+					// Agents are managed in their own settings, where deleting one also revokes its keys.
+					// An agent's role never changes: as an admin, a key would manage the workspace.
+					matcher: (ctx) =>
+						ctx.path === "/organization/update-member-role" ||
+						ctx.path === "/organization/remove-member",
+					handler: createAuthMiddleware(async (ctx) => {
+						const memberId: unknown = ctx.body?.memberId ?? ctx.body?.memberIdOrEmail;
+						if (typeof memberId !== "string") return;
+						const target = await db
+							.select({ role: member.role })
+							.from(member)
+							.innerJoin(user, eq(member.userId, user.id))
+							.where(or(eq(member.id, memberId), eq(user.email, memberId.trim().toLowerCase())))
+							.all();
+						if (target.some((row) => isAgentMembership(row.role))) {
+							throw new APIError("FORBIDDEN", {
+								message: "Manage agents in the workspace's agent settings",
+							});
+						}
+					}),
+				},
+			],
+			after: [
+				{
+					// A deleted workspace takes its agents' memberships and keys with it. The agents
+					// themselves belonged nowhere else, so they go too.
+					matcher: (ctx) => ctx.path === "/organization/delete",
+					handler: createAuthMiddleware(() => deleteOrphanedAgents(db)),
+				},
+			],
+		},
+
+		rateLimit: [
+			// Each key is a credential; nobody needs many.
+			{ pathMatcher: (path) => path === "/agents/create", window: 60, max: 10 },
+			{ pathMatcher: (path) => path === "/agents/create-key", window: 60, max: 20 },
+		],
+	} satisfies BetterAuthPlugin;
+}
+
+/** Paths that take an address, and the body field it is in. */
+const EMAIL_FIELDS: ReadonlyMap<string, string> = new Map([
+	["/sign-up/email", "email"],
+	["/sign-in/email", "email"],
+	["/request-password-reset", "email"],
+	["/send-verification-email", "email"],
+	["/change-email", "newEmail"],
+	["/organization/invite-member", "email"],
+]);
