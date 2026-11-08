@@ -4,6 +4,7 @@ import type { Directory, MailRoute } from "../../lib/directory";
 import { canReadMailbox, isAdminRole, type MemberRole } from "../../lib/roles";
 import type { Database } from "../db";
 import { schema } from "../db";
+import { toRole } from "../workspaces";
 import { type LookUpDomain, proofName } from "./dns";
 
 const { mailAddress, mailDomain, mailbox, mailboxAccess, member } = schema;
@@ -126,13 +127,21 @@ export async function listDirectory(
 			.where(eq(mailDomain.organizationId, workspaceId))
 			.orderBy(asc(mailDomain.name), asc(mailAddress.localPart)),
 	]);
+	// A grant to someone since made an owner or admin changes nothing, so it isn't shown.
 	const grants = admin
-		? await db
-				.select({ mailboxId: mailboxAccess.mailboxId, memberId: mailboxAccess.memberId })
-				.from(mailboxAccess)
-				.innerJoin(mailbox, eq(mailbox.id, mailboxAccess.mailboxId))
-				.where(eq(mailbox.organizationId, workspaceId))
-				.orderBy(asc(mailboxAccess.memberId))
+		? (
+				await db
+					.select({
+						mailboxId: mailboxAccess.mailboxId,
+						memberId: mailboxAccess.memberId,
+						role: member.role,
+					})
+					.from(mailboxAccess)
+					.innerJoin(mailbox, eq(mailbox.id, mailboxAccess.mailboxId))
+					.innerJoin(member, eq(member.id, mailboxAccess.memberId))
+					.where(eq(mailbox.organizationId, workspaceId))
+					.orderBy(asc(mailboxAccess.memberId))
+			).filter((grant) => !isAdminRole(toRole(grant.role)))
 		: [];
 	const byMailbox = Map.groupBy(addresses, (address) => address.mailboxId);
 	const readers = Map.groupBy(grants, (grant) => grant.mailboxId);

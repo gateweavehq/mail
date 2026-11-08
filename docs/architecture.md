@@ -107,8 +107,8 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     anything.
   - **Who reads a mailbox.** Owners and admins read every one. Anyone else reads one they were
     given (`mailbox_access`, a row per membership and mailbox), or one open to everyone
-    (`mailbox.everyone`) when they are a person: an agent, when there are agents, counts only with
-    a grant of its own. `canReadMailbox` in `lib/roles.ts` is the rule and `openMailbox` in
+    (`mailbox.everyone`) when they are a person: an agent counts only with a grant of its own, and
+    so does a role this version doesn't know, which `toRole` reads as an agent's. `canReadMailbox` in `lib/roles.ts` is the rule and `openMailbox` in
     `read.ts`, which every route to mail goes through, the one place it is applied; the directory
     lists only the mailboxes the caller can read. A grant belongs to the membership, not the
     person, so it goes when they leave and doesn't come back if they join again. Triggers refuse

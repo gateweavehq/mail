@@ -1,5 +1,5 @@
 import { and, eq, gt } from "drizzle-orm";
-import type { MemberRole } from "#/lib/roles";
+import type { MemberRole, PersonRole } from "#/lib/roles";
 import type { Database } from "./db";
 import { schema } from "./db";
 
@@ -127,10 +127,24 @@ export async function findPendingInvitation(
 		: null;
 }
 
-/** Better Auth stores roles as a comma-separated list; the highest one wins. */
+/**
+ * Better Auth stores roles as a comma-separated list; the highest one wins. A role this version
+ * doesn't know gets the least there is, an agent's, rather than a person's: it reads only the
+ * mailboxes it is given, and changes nothing.
+ */
 export function toRole(role: string): MemberRole {
 	const roles = role.split(",").map((r) => r.trim());
 	if (roles.includes("owner")) return "owner";
 	if (roles.includes("admin")) return "admin";
-	return "member";
+	if (roles.includes("member")) return "member";
+	return "agent";
+}
+
+/**
+ * The role an invitation gives. Better Auth only invites with a role it defines, all of them a
+ * person's, so this decides nothing about access: it is what the invitation shows and resends.
+ */
+export function toPersonRole(role: string): PersonRole {
+	const highest = toRole(role);
+	return highest === "agent" ? "member" : highest;
 }

@@ -28,7 +28,8 @@ export function accessSummary(access: Access): string {
 
 /**
  * Chooses who may read a mailbox. Owners and admins read every one, so only the others are listed.
- * What is saved is what the dialog shows: a grant to someone who has since become an admin goes.
+ * What is saved is what the dialog shows: with everyone ticked, nobody needs a grant of their own,
+ * so none are kept, and a grant to someone since made an admin goes.
  */
 export function MailboxAccessDialog({
 	box,
@@ -79,7 +80,9 @@ export function MailboxAccessDialog({
 			action: "set-mailbox-access",
 			mailboxId: box.id,
 			everyone,
-			memberIds: people.filter((person) => chosen.has(person.memberId)).map((p) => p.memberId),
+			memberIds: everyone
+				? []
+				: people.filter((person) => chosen.has(person.memberId)).map((p) => p.memberId),
 		});
 		if (result.ok) {
 			await router.invalidate();

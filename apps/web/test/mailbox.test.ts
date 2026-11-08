@@ -504,6 +504,42 @@ describe("who can read a mailbox", () => {
 		await giveAccess(box, { memberIds: [other.memberId] });
 		expect(await reach(box, reader)).toEqual(hidden);
 		expect(await reach(box, other)).toEqual(opened);
+
+		// Made an admin, they read it anyway, so their grant isn't counted among those chosen.
+		await mail.db
+			.prepare("UPDATE member SET role = 'admin' WHERE id = ?")
+			.bind(other.memberId)
+			.run();
+		const [after] = (await directory(box.slug, owner.headers)).mailboxes;
+		expect(after?.access).toEqual({ everyone: false, memberIds: [] });
+		expect(await reach(box, other)).toEqual(opened);
+	});
+
+	// "Everyone" means people. An agent, or a role this version doesn't know, reads a mailbox only
+	// when it is given that one, and gets no more than that.
+	it("isn't an agent's, nor an unknown role's, unless it is given them", async () => {
+		const box = await mailboxWithAddress();
+		await kept(box.address, message(box.address, { extra: ["Content-Type: text/html"] }));
+		await giveAccess(box, { everyone: true });
+		const person = await join(box.workspaceId);
+		const agent = await join(box.workspaceId, "agent");
+		const unknown = await join(box.workspaceId, "viewer");
+
+		expect(await reach(box, person)).toEqual(opened);
+		expect(await reach(box, agent)).toEqual(hidden);
+		expect(await reach(box, unknown)).toEqual(hidden);
+		expect((await directory(box.slug, agent.headers)).mailboxes).toEqual([]);
+
+		await giveAccess(box, { everyone: true, memberIds: [agent.memberId] });
+		expect(await reach(box, agent)).toEqual(opened);
+		expect(await reach(box, unknown)).toEqual(hidden);
+		for (const who of [agent, unknown]) {
+			const write = await changeDirectory(box.slug, who.headers, {
+				action: "add-mailbox",
+				name: "Theirs",
+			});
+			expect(write.status).toBe(403);
+		}
 	});
 
 	it("is everyone in the workspace, when the mailbox is open to them", async () => {

@@ -394,9 +394,15 @@ test("an owner chooses who reads a mailbox, and only they find it", async ({
 	await theirs.getByRole("link", { name: "Support" }).click();
 	await expect(theirs.getByText("Where is my parcel")).toBeVisible();
 
-	// Taken back, it is gone for them again.
+	// Opened to everyone, nobody needs a grant of their own, so closing it again leaves none.
 	await card.getByRole("button", { name: "Choose who can read Support" }).click();
-	await dialog.getByLabel(reader.name).uncheck();
+	await dialog.getByLabel("Everyone in the workspace").check();
+	await expect(dialog.getByLabel(reader.name)).toBeDisabled();
+	await dialog.getByRole("button", { name: "Save" }).click();
+	await expect(card.getByText("Everyone in the workspace can read it.")).toBeVisible();
+	await card.getByRole("button", { name: "Choose who can read Support" }).click();
+	await dialog.getByLabel("Everyone in the workspace").uncheck();
+	await expect(dialog.getByLabel(reader.name)).not.toBeChecked();
 	await dialog.getByRole("button", { name: "Save" }).click();
 	await expect(card.getByText("Only owners and admins can read it.")).toBeVisible();
 	await theirs.reload();

@@ -1,7 +1,13 @@
-/** A person's role in a workspace, highest first. Better Auth's organization roles. */
-export const MEMBER_ROLES = ["owner", "admin", "member"] as const;
+/**
+ * A role in a workspace, highest first. Better Auth's organization roles, and `agent`, the least:
+ * an AI agent's, and what a role this version doesn't know is read as (see `toRole`).
+ */
+export const MEMBER_ROLES = ["owner", "admin", "member", "agent"] as const;
 
 export type MemberRole = (typeof MEMBER_ROLES)[number];
+
+/** The roles a person can be invited with or given. Better Auth knows these, and not `agent`. */
+export type PersonRole = Exclude<MemberRole, "agent">;
 
 /**
  * Owners and admins manage members and invitations. Decide it here, by naming the roles that may,
