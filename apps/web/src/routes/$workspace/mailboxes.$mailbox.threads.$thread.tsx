@@ -264,7 +264,10 @@ function ThreadMessage({
 	const { slug } = useWorkspace();
 	const { mailbox } = Route.useParams();
 	const [open, setOpen] = useState(opened !== null);
-	const [message, setMessage] = useState<OpenedMessage | null>(opened);
+	// The newest message comes with the page, so it is as fresh as the page; another is read when
+	// opened, and read again when it changes here, as when it is approved.
+	const [loaded, setLoaded] = useState<OpenedMessage | null>(null);
+	const message = opened ?? loaded;
 	const [trouble, setTrouble] = useState<string | null>(null);
 	const id = useId();
 	const Chevron = open ? ChevronDown : ChevronRight;
@@ -275,16 +278,19 @@ function ThreadMessage({
 			return;
 		}
 		setOpen(true);
-		if (message) return;
+		if (!message) await load();
+	};
+
+	async function load() {
 		setTrouble(null);
 		try {
 			const read = await getMessage({ data: { workspace: slug, mailbox, message: listed.id } });
-			if (read) setMessage(read);
+			if (read) setLoaded(read);
 			else setTrouble("This message is gone.");
 		} catch {
 			setTrouble("It didn't load. Close it and try again.");
 		}
-	};
+	}
 
 	return (
 		<li>
@@ -338,7 +344,10 @@ function ThreadMessage({
 								id={listed.id}
 								status={listed.sent.status}
 								mine={listed.sent.mine}
-								onChanged={onChanged}
+								onChanged={async () => {
+									await onChanged();
+									if (!opened && loaded) await load();
+								}}
 								onDiscarded={onDeleted}
 							/>
 						)}
