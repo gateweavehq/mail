@@ -1,5 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { bodyHash } from "./body";
+import { migrate } from "./schema";
+import { MAX_REFERENCES, subjectKey } from "./thread";
 
 /** How much one mailbox may hold unless `MAILBOX_BYTES` says otherwise, counting messages on their way in. */
 export const MAILBOX_BYTES = 1024 * 1024 * 1024;
@@ -13,8 +15,14 @@ export function mailboxLimit(env: Cloudflare.Env): number {
 /** How long a delivery may take between being given a place and saying it's there. */
 export const PENDING_MS = 15 * 60 * 1000;
 
-/** The most messages one listing returns. */
+/** The most messages or threads one listing returns. */
 export const MAX_LISTED = 100;
+
+/** The most messages a thread shows: its newest. */
+export const MAX_THREAD_MESSAGES = 200;
+
+/** The most senders a thread's listing names. */
+const MAX_SENDERS = 5;
 
 /** What `email()` knows of a message before storing it. */
 export interface Arrival {
@@ -29,6 +37,10 @@ export interface Arrival {
 	subject: string | null;
 	date: string | null;
 	messageId: string | null;
+	/** The id in `messageId`, from `ownId`. */
+	ownId: string | null;
+	/** The ids it replies to or follows, from `referencedIds`. */
+	references: string[];
 	/** Cloudflare's DMARC verdict, from `cloudflareVerdict`. */
 	dmarc: string | null;
 	/** The domain the message is proved to come from, from `verifiedDomain`. */
@@ -42,6 +54,7 @@ export type Begun = { ok: true; id: string; object: string } | { ok: false; reas
 /** One message as a listing shows it. Header values are as sent, not decoded. */
 export type StoredSummary = {
 	id: string;
+	threadId: string;
 	arrivedAt: number;
 	size: number;
 	from: string | null;
@@ -64,44 +77,27 @@ export interface Cursor {
 	id: string;
 }
 
-// A message is pending from when it is given a place until its mail is in R2, then stored. One
-// that took too long is expired, until the alarm has deleted what reached R2 of it.
-const SCHEMA = `
-CREATE TABLE IF NOT EXISTS message (
-	id TEXT PRIMARY KEY,
-	state TEXT NOT NULL CHECK (state IN ('pending', 'stored', 'expired')),
-	delivery_key TEXT NOT NULL,
-	object TEXT NOT NULL,
-	size INTEGER NOT NULL,
-	body_hash TEXT,
-	arrived_at INTEGER NOT NULL,
-	envelope_from TEXT NOT NULL,
-	envelope_to TEXT NOT NULL,
-	from_header TEXT,
-	subject TEXT,
-	date_header TEXT,
-	message_id TEXT,
-	dmarc TEXT,
-	verified_domain TEXT
-) STRICT;
-CREATE INDEX IF NOT EXISTS message_delivery ON message (delivery_key, body_hash);
-CREATE INDEX IF NOT EXISTS message_listed ON message (state, arrived_at DESC, id DESC);
-CREATE TABLE IF NOT EXISTS held (
-	one INTEGER PRIMARY KEY CHECK (one = 1),
-	bytes INTEGER NOT NULL,
-	latest INTEGER NOT NULL
-) STRICT;
-INSERT OR IGNORE INTO held (one, bytes, latest) VALUES (1, 0, 0);
-CREATE TRIGGER IF NOT EXISTS message_added AFTER INSERT ON message BEGIN
-	UPDATE held SET bytes = bytes + new.size, latest = max(latest, new.arrived_at) WHERE one = 1;
-END;
-CREATE TRIGGER IF NOT EXISTS message_gone AFTER DELETE ON message BEGIN
-	UPDATE held SET bytes = bytes - old.size WHERE one = 1;
-END;
-`;
+/** Where a listing of threads goes on from: the last thread it showed. */
+export interface ThreadCursor {
+	latestAt: number;
+	id: string;
+}
 
-const SUMMARY = `id, arrived_at AS arrivedAt, size, from_header AS "from", subject, date_header AS date,
-	dmarc, verified_domain AS verifiedDomain`;
+/** One thread as a listing shows it. Header values are as sent, not decoded. */
+export interface ThreadSummary {
+	id: string;
+	latestAt: number;
+	count: number;
+	/** The first message's. */
+	subject: string | null;
+	/** The From headers of its messages, each once, in the order they first wrote. */
+	senders: (string | null)[];
+	/** The domain its newest message is proved to come from. */
+	latestVerifiedDomain: string | null;
+}
+
+const SUMMARY = `id, thread_id AS threadId, arrived_at AS arrivedAt, size, from_header AS "from",
+	subject, date_header AS date, dmarc, verified_domain AS verifiedDomain`;
 
 /**
  * One mailbox: its messages' index in SQLite, their raw mail in R2 under
@@ -121,7 +117,7 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 
 	constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
 		super(ctx, env);
-		ctx.storage.sql.exec(SCHEMA);
+		migrate(ctx.storage);
 	}
 
 	/** Gives a message a place in R2, or says the mailbox is full. */
@@ -139,8 +135,9 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 		const arrivedAt = Math.max(Date.now(), held.latest + 1);
 		sql.exec(
 			`INSERT INTO message (id, state, delivery_key, object, size, arrived_at, envelope_from,
-				envelope_to, from_header, subject, date_header, message_id, dmarc, verified_domain)
-			VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				envelope_to, from_header, subject, date_header, message_id, dmarc, verified_domain,
+				own_id, subject_key)
+			VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			id,
 			arrival.key,
 			object,
@@ -154,7 +151,12 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			arrival.messageId,
 			arrival.dmarc,
 			arrival.verifiedDomain,
+			arrival.ownId,
+			subjectKey(arrival.subject),
 		);
+		for (const ref of arrival.references.slice(-MAX_REFERENCES)) {
+			sql.exec("INSERT OR IGNORE INTO message_reference (message, ref) VALUES (?, ?)", id, ref);
+		}
 		if ((await this.ctx.storage.getAlarm()) === null) {
 			await this.ctx.storage.setAlarm(Date.now() + PENDING_MS);
 		}
@@ -229,12 +231,88 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 		return this.#store(id);
 	}
 
+	/**
+	 * Stores a pending message in a thread. It joins one when it names a stored message here, or a
+	 * stored message names it, and their subjects are the same once `Re:` and its kin are off. A
+	 * subject alone never joins a thread, as anyone can write one. A message that links threads
+	 * merges them into the one that began first.
+	 */
 	#store(id: string): "stored" | "gone" {
-		const { rowsWritten } = this.ctx.storage.sql.exec(
-			"UPDATE message SET state = 'stored' WHERE id = ? AND state = 'pending'",
-			id,
+		const sql = this.ctx.storage.sql;
+		return this.ctx.storage.transactionSync(() => {
+			const me = sql
+				.exec<{ ownId: string | null; subjectKey: string; arrivedAt: number }>(
+					`SELECT own_id AS ownId, subject_key AS subjectKey, arrived_at AS arrivedAt
+					FROM message WHERE id = ? AND state = 'pending'`,
+					id,
+				)
+				.toArray()[0];
+			if (!me) return "gone";
+			const linked = sql
+				.exec<{ threadId: string }>(
+					`SELECT DISTINCT thread_id AS threadId FROM message
+					WHERE state = 'stored' AND subject_key = ? AND (
+						own_id IN (SELECT ref FROM message_reference WHERE message = ?)
+						OR id IN (SELECT message FROM message_reference WHERE ref = ?)
+					)`,
+					me.subjectKey,
+					id,
+					// A message with no id of its own can't be named; null matches nothing.
+					me.ownId,
+				)
+				.toArray()
+				.map((row) => row.threadId);
+			const first =
+				linked.length === 0
+					? undefined
+					: sql
+							.exec<{ id: string }>(
+								`SELECT id FROM thread WHERE id IN (${linked.map(() => "?").join(", ")})
+								ORDER BY first_at, id LIMIT 1`,
+								...linked,
+							)
+							.toArray()[0]?.id;
+			const threadId = first ?? crypto.randomUUID();
+			if (!first) {
+				sql.exec(
+					"INSERT INTO thread (id, first_at, latest_at, count) VALUES (?, ?, ?, 0)",
+					threadId,
+					me.arrivedAt,
+					me.arrivedAt,
+				);
+			}
+			for (const other of linked) {
+				if (other === threadId) continue;
+				sql.exec("UPDATE message SET thread_id = ? WHERE thread_id = ?", threadId, other);
+				sql.exec("DELETE FROM thread WHERE id = ?", other);
+			}
+			sql.exec("UPDATE message SET state = 'stored', thread_id = ? WHERE id = ?", threadId, id);
+			this.#refreshThread(threadId);
+			return "stored";
+		});
+	}
+
+	/** Brings a thread's row up to date with its messages, and removes it when it has none. */
+	#refreshThread(threadId: string): void {
+		const sql = this.ctx.storage.sql;
+		const now = sql
+			.exec<{ count: number; firstAt: number | null; latestAt: number | null }>(
+				`SELECT count(*) AS count, min(arrived_at) AS firstAt, max(arrived_at) AS latestAt
+				FROM message WHERE thread_id = ? AND state = 'stored'`,
+				threadId,
+			)
+			.one();
+		if (now.count === 0 || now.firstAt === null || now.latestAt === null) {
+			sql.exec("DELETE FROM thread WHERE id = ?", threadId);
+			return;
+		}
+		sql.exec(
+			"UPDATE thread SET count = ?, first_at = ?, latest_at = ? WHERE id = ?",
+			now.count,
+			now.firstAt,
+			now.latestAt,
+			threadId,
 		);
-		return rowsWritten > 0 ? "stored" : "gone";
 	}
 
 	/** Stored messages, newest first, after `before` when given. */
@@ -255,6 +333,78 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 					take,
 				);
 		return rows.toArray();
+	}
+
+	/** Threads, the one with the newest message first, after `before` when given. */
+	threads(before: ThreadCursor | null, limit: number): ThreadSummary[] {
+		const take = Math.min(Math.max(1, limit), MAX_LISTED);
+		const sql = this.ctx.storage.sql;
+		const rows = (
+			before
+				? sql.exec<{ id: string; latestAt: number; count: number }>(
+						`SELECT id, latest_at AS latestAt, count FROM thread WHERE (latest_at, id) < (?, ?)
+						ORDER BY latest_at DESC, id DESC LIMIT ?`,
+						before.latestAt,
+						before.id,
+						take,
+					)
+				: sql.exec<{ id: string; latestAt: number; count: number }>(
+						`SELECT id, latest_at AS latestAt, count FROM thread
+						ORDER BY latest_at DESC, id DESC LIMIT ?`,
+						take,
+					)
+		).toArray();
+		return rows.map((thread) => {
+			const first = sql
+				.exec<{ subject: string | null }>(
+					`SELECT subject FROM message WHERE thread_id = ? AND state = 'stored'
+					ORDER BY arrived_at, id LIMIT 1`,
+					thread.id,
+				)
+				.toArray()[0];
+			const latest = sql
+				.exec<{ verifiedDomain: string | null }>(
+					`SELECT verified_domain AS verifiedDomain FROM message
+					WHERE thread_id = ? AND state = 'stored' ORDER BY arrived_at DESC, id DESC LIMIT 1`,
+					thread.id,
+				)
+				.toArray()[0];
+			const senders = sql
+				.exec<{ from: string | null }>(
+					`SELECT from_header AS "from" FROM message WHERE thread_id = ? AND state = 'stored'
+					GROUP BY from_header ORDER BY min(arrived_at) LIMIT ?`,
+					thread.id,
+					MAX_SENDERS,
+				)
+				.toArray()
+				.map((row) => row.from);
+			return {
+				...thread,
+				subject: first?.subject ?? null,
+				senders,
+				latestVerifiedDomain: latest?.verifiedDomain ?? null,
+			};
+		});
+	}
+
+	/**
+	 * A thread's messages, oldest first: its newest `MAX_THREAD_MESSAGES`, and whether there were
+	 * more. Null when there is no such thread here.
+	 */
+	thread(threadId: string): { messages: StoredSummary[]; cut: boolean } | null {
+		const rows = this.ctx.storage.sql
+			.exec<StoredSummary>(
+				`SELECT ${SUMMARY} FROM message WHERE thread_id = ? AND state = 'stored'
+				ORDER BY arrived_at DESC, id DESC LIMIT ?`,
+				threadId,
+				MAX_THREAD_MESSAGES + 1,
+			)
+			.toArray();
+		if (rows.length === 0) return null;
+		return {
+			messages: rows.slice(0, MAX_THREAD_MESSAGES).reverse(),
+			cut: rows.length > MAX_THREAD_MESSAGES,
+		};
 	}
 
 	/** One stored message, or null when there is no such message here. */
@@ -282,7 +432,14 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			.toArray()[0];
 		if (!row) return false;
 		await this.env.RAW_MAIL.delete(row.object);
-		sql.exec("DELETE FROM message WHERE id = ?", id);
+		this.ctx.storage.transactionSync(() => {
+			// Read again: another message may have merged its thread while R2 was deleting.
+			const now = sql
+				.exec<{ threadId: string }>("SELECT thread_id AS threadId FROM message WHERE id = ?", id)
+				.toArray()[0];
+			sql.exec("DELETE FROM message WHERE id = ?", id);
+			if (now) this.#refreshThread(now.threadId);
+		});
 		return true;
 	}
 

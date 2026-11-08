@@ -44,12 +44,20 @@ test("mail that arrives at an address shows in its mailbox, and opens as text", 
 
 	// Delivered as Email Routing would, through the local runtime's stand-in for it.
 	const to = `help@${domain}`;
+	const firstId = `<${Date.now()}@example.org>`;
+	const deliver = async (from: string, lines: string[]) => {
+		const answer = await request.post(
+			`/cdn-cgi/local/email?from=${from}&to=${encodeURIComponent(to)}`,
+			{ data: lines.join("\r\n") },
+		);
+		expect(answer.status()).toBe(200);
+	};
 	const raw = [
 		"From: A Customer <customer@example.org>",
 		`To: ${to}`,
 		"Subject: My order hasn't come",
 		"Date: Sun, 08 Nov 2026 09:00:00 +0000",
-		`Message-ID: <${Date.now()}@example.org>`,
+		`Message-ID: ${firstId}`,
 		"Content-Type: text/plain; charset=utf-8",
 		"",
 		"It was due on Friday.",
@@ -80,32 +88,63 @@ test("mail that arrives at an address shows in its mailbox, and opens as text", 
 	);
 	expect(second.status()).toBe(200);
 
+	// A reply to the first, which joins its thread.
+	await deliver("desk@example.org", [
+		"From: Help Desk <desk@example.org>",
+		`To: ${to}`,
+		"Subject: Re: My order hasn't come",
+		"Date: Sun, 08 Nov 2026 11:00:00 +0000",
+		`Message-ID: <${Date.now()}.desk@example.org>`,
+		`In-Reply-To: ${firstId}`,
+		`References: ${firstId}`,
+		"",
+		"We're looking into it.",
+		"",
+	]);
+
 	await page.goto(`/${slug}`);
 	await waitForHydration(page);
 	await page.getByRole("link", { name: "Support" }).click();
 	await expect(page).toHaveURL(`/${slug}/mailboxes/${box?.id}`);
 	await expect(page.getByRole("heading", { level: 1, name: "Support" })).toBeVisible();
-	const messages = page.getByRole("list", { name: "Messages in Support" });
-	await expect(messages).toBeVisible();
+	const threads = page.getByRole("list", { name: "Threads in Support" });
+	await expect(threads).toBeVisible();
 	// The proved domain shows beside the mark, as the name in front of an address proves nothing.
 	await expect(
-		messages.getByRole("link", { name: /Your order has shipped.*Sent from example\.org/ }),
+		threads.getByRole("link", { name: /Your order has shipped.*Sent from example\.org/ }),
 	).toBeVisible();
-	await messages.getByRole("link", { name: /My order hasn't come/ }).click();
+	await threads
+		.getByRole("link", { name: /A Customer, Help Desk \(2 messages\) My order hasn't come/ })
+		.click();
 
-	await expect(page.getByRole("heading", { name: "My order hasn't come" })).toBeVisible();
-	await expect(page.getByText("It was due on Friday.")).toBeVisible();
-	await expect(page.getByText("A Customer <customer@example.org>")).toBeVisible();
-	await expect(page.getByText(/Nothing proves who sent this message/)).toBeVisible();
+	// The thread, oldest first, with the newest message open.
+	await expect(page).toHaveURL(new RegExp(`/${slug}/mailboxes/${box?.id}/threads/`));
+	await expect(page.getByRole("heading", { level: 1, name: "My order hasn't come" })).toBeVisible();
+	const thread = page.getByRole("list", { name: "Messages in this thread" });
+	const first = thread.getByRole("article", { name: /A Customer/ });
+	const reply = thread.getByRole("article", { name: /Help Desk/ });
+	await expect(reply.getByText("We're looking into it.")).toBeVisible();
+	await expect(first.getByText("It was due on Friday.")).toHaveCount(0);
+
+	await first.getByRole("button", { name: /A Customer/ }).click();
+	await expect(first.getByText("It was due on Friday.")).toBeVisible();
+	await expect(first.getByText("A Customer <customer@example.org>")).toBeVisible();
+	await expect(first.getByText(/Nothing proves who sent this message/)).toBeVisible();
 
 	const download = page.waitForEvent("download");
-	await page.getByRole("link", { name: /Download the original/ }).click();
+	await first.getByRole("link", { name: /Download the original/ }).click();
 	expect((await download).suggestedFilename()).toBe("message.eml");
 
-	// The owner can delete it, after saying so.
-	await page.getByRole("button", { name: "Delete" }).click();
+	// The owner can delete a message, after saying so, and the thread keeps the rest.
+	await first.getByRole("button", { name: "Delete" }).click();
+	await page.getByRole("dialog").getByRole("button", { name: "Delete message" }).click();
+	await expect(first).toHaveCount(0);
+	await expect(page.getByText("1 message", { exact: true })).toBeVisible();
+
+	// Deleting its last message takes the thread with it, back to the mailbox.
+	await reply.getByRole("button", { name: "Delete" }).click();
 	await page.getByRole("dialog").getByRole("button", { name: "Delete message" }).click();
 	await expect(page).toHaveURL(`/${slug}/mailboxes/${box?.id}`);
-	await expect(messages.getByRole("link", { name: /Your order has shipped/ })).toBeVisible();
-	await expect(messages.getByRole("link", { name: /My order hasn't come/ })).toHaveCount(0);
+	await expect(threads.getByRole("link", { name: /Your order has shipped/ })).toBeVisible();
+	await expect(threads.getByRole("link", { name: /My order hasn't come/ })).toHaveCount(0);
 });

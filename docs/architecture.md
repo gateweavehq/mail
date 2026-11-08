@@ -77,12 +77,27 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     own, which triggers update as messages come and go, so a delivery doesn't add them up. Past the
     limit, a message gets a temporary refusal, so it arrives if room is made before the sender
     gives up. Owners and admins can delete a message, which frees its space.
-  - **Reading.** A page parses a message with postal-mime when someone opens it, and shows its text
-    only: HTML waits until it can be shown without running what it holds. The original downloads
-    from `/api/mail/<workspace>/<mailbox>/<message>/original`, as a file, never as a page. Every
-    member of a workspace can read its mailboxes for now. A non-member, or a mailbox of another
-    workspace, gets the same "not found" as a missing one, and the mailbox is checked against the
-    caller's workspace in D1 before its object is asked anything.
+  - **Threads.** A message joins a thread when it is stored, if it names a stored message of the
+    mailbox in `In-Reply-To` or `References`, or a stored message names it, **and** their subjects
+    are the same once `Re:`, `Fwd:`, list tags and their kin are off. A subject alone never joins
+    a thread, as anyone can write one. A reply that arrives before the message it answers is taken
+    in when that message comes, and a message that links two threads merges them into the one that
+    began first. Someone who knows a message's id and subject can still add to its thread, as in
+    any mail program; their message shows under its own sender, proved or not. A `thread` row keeps
+    the count and the newest arrival, so a page of threads is one indexed read; the object brings it
+    up to date as messages are stored and deleted. The object's schema has versions, kept in a
+    table, since Durable Objects have no `PRAGMA user_version` (`schema.ts`); messages stored
+    before threads became a thread each.
+  - **Reading.** A mailbox's page lists its threads, newest news first, and a thread's page shows
+    its messages oldest first, with the newest open. The same are at
+    `/api/mail/<workspace>/<mailbox>/threads` and `…/threads/<thread>`, beside the messages, newest
+    first, at `/api/mail/<workspace>/<mailbox>`. A message is parsed with postal-mime when someone
+    opens it, and only its text is shown: HTML waits until it can be shown without running what it
+    holds. The original downloads from `/api/mail/<workspace>/<mailbox>/<message>/original`, as a
+    file, never as a page. Every member of a workspace can read its mailboxes for now. A
+    non-member, or a mailbox of another workspace, gets the same "not found" as a missing one, and
+    the mailbox is checked against the caller's workspace in D1 before its object is asked
+    anything.
   - **Who sent it.** A message shows as from a domain only when Cloudflare's own
     `Authentication-Results` says `dmarc=pass` for that domain (`header.from`), and the message
     has one `From` holding one address on it. Cloudflare adds its headers at the top, below its
