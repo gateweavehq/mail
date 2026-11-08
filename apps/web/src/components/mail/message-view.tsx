@@ -61,7 +61,8 @@ export function MessageView({
 				<Sender message={message} />
 			</div>
 
-			<Body workspace={workspace} mailbox={mailbox} message={message} />
+			{/* A new message starts with its images off, even where the page stays mounted. */}
+			<Body key={message.id} workspace={workspace} mailbox={mailbox} message={message} />
 
 			{message.attachments.length > 0 && (
 				<section aria-label="Attachments" className="space-y-2">
@@ -109,7 +110,8 @@ export function MessageView({
  * The message as its sender formatted it, when it has HTML, or its text. The HTML is a page of its
  * own in a frame that runs nothing and, until the reader asks, loads nothing from elsewhere; see
  * `server/mailbox/html.ts`. A frame without scripts can't say how tall it is, so it has a height of
- * its own, which the reader can drag.
+ * its own, which the reader can drag. The buttons stay where they are when pressed, and say what
+ * they would do next, so the focus stays on them.
  */
 function Body({
 	workspace,
@@ -122,26 +124,31 @@ function Body({
 }) {
 	const [asText, setAsText] = useState(false);
 	const [images, setImages] = useState(false);
+	const formatted = message.hasHtml && !asText;
 
-	if (message.hasHtml && !asText) {
-		return (
-			<div className="space-y-2">
+	return (
+		<div className="space-y-2">
+			{message.hasHtml && (
 				<div className="flex flex-wrap items-center gap-2">
-					<Button size="sm" variant="outline" onClick={() => setAsText(true)}>
-						Show as text
+					<Button size="sm" variant="outline" onClick={() => setAsText(!asText)}>
+						{asText ? "Show formatted" : "Show as text"}
 					</Button>
-					{message.remoteImages && !images && (
+					{formatted && message.remoteImages && (
 						<>
-							<Button size="sm" variant="outline" onClick={() => setImages(true)}>
-								Show remote images
+							<Button size="sm" variant="outline" onClick={() => setImages(!images)}>
+								{images ? "Hide remote images" : "Show remote images"}
 							</Button>
-							<p className="flex items-center gap-2 text-sm text-muted-foreground">
-								<ImageOff className="size-4 shrink-0" aria-hidden />
-								Remote images are off, so the sender can't tell you opened this.
-							</p>
+							{!images && (
+								<p className="flex items-center gap-2 text-sm text-muted-foreground">
+									<ImageOff className="size-4 shrink-0" aria-hidden />
+									Remote images are off, so the sender can't tell you opened this.
+								</p>
+							)}
 						</>
 					)}
 				</div>
+			)}
+			{formatted ? (
 				<div className="h-[70vh] min-h-80 resize-y overflow-hidden rounded-lg border bg-white">
 					<iframe
 						title="The message, as its sender formatted it"
@@ -152,23 +159,15 @@ function Body({
 						className="size-full"
 					/>
 				</div>
-			</div>
-		);
-	}
-
-	return (
-		<div className="space-y-2">
-			{message.hasHtml && (
-				<Button size="sm" variant="outline" onClick={() => setAsText(false)}>
-					Show formatted
-				</Button>
+			) : (
+				<pre className="whitespace-pre-wrap break-words rounded-lg border p-4 font-sans text-sm">
+					{message.text || <span className="text-muted-foreground">(no text)</span>}
+				</pre>
 			)}
-			<pre className="whitespace-pre-wrap break-words rounded-lg border p-4 font-sans text-sm">
-				{message.text || <span className="text-muted-foreground">(no text)</span>}
-			</pre>
-			{message.textCut && (
+			{(formatted ? message.htmlCut : message.textCut) && (
 				<p className="text-sm text-muted-foreground">
-					The text is too long to show in full. Download the original for the rest.
+					{formatted ? "This message" : "The text"} is too long to show in full. Download the
+					original for the rest.
 				</p>
 			)}
 		</div>

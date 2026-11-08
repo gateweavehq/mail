@@ -328,12 +328,14 @@ test("a message's HTML shows in a frame that runs nothing and loads only what is
 	expect(asked).toEqual([]);
 	await page.getByRole("button", { name: "Show remote images" }).click();
 	await expect.poll(() => asked).toEqual(["https://images.example/logo.png"]);
-	await expect(page.getByRole("button", { name: "Show remote images" })).toHaveCount(0);
+	// The button says what it would do now, and keeps the focus.
+	await expect(page.getByRole("button", { name: "Hide remote images" })).toBeFocused();
 
 	// The text made from it is a click away.
 	await page.getByRole("button", { name: "Show as text" }).click();
 	await expect(page.getByText(/Half price kettles\./)).toBeVisible();
 	await expect(framed).toHaveCount(0);
+	await expect(page.getByRole("button", { name: "Show formatted" })).toBeFocused();
 	await page.getByRole("button", { name: "Show formatted" }).click();
 	await expect(message.getByRole("heading", { name: "Offers" })).toBeVisible();
 });

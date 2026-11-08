@@ -4,17 +4,20 @@
  * What keeps it harmless is the policy it is served with, not the cleaning: no scripts at all, an
  * opaque origin, and nothing loaded from outside unless the reader asks for remote images. The
  * cleaning here is a second layer, and it makes links open in a new tab and inline images show.
- * HTMLRewriter exists only in workerd, so the tests for this are the Worker's.
+ * HTMLRewriter exists only in workerd, so the tests for the cleaning are the Worker's.
  */
 import type { Attachment } from "postal-mime";
 
 /** The most of a message's HTML shown, in characters. */
 export const MAX_SHOWN_HTML = 1_000_000;
 
-/** The most the inline images of one message add to its page, in base64 characters. */
+/** The most the inline images of one message add to its page, in characters, at every use. */
 export const MAX_INLINE_IMAGES = 5_000_000;
 
-/** Image types a browser shows without running anything, which an inline part may be. */
+/**
+ * Image types a browser shows without running anything, which an inline part may be. A part sent
+ * as `image/jpg` counts as JPEG.
+ */
 const INLINE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 
 /** Tags that stay, with the attributes below. Any other tag goes, and keeps its content or not. */
@@ -201,32 +204,62 @@ const INLINE_DATA = /^data:image\//i;
 const CID = /^cid:/i;
 
 /**
- * Whether the HTML seems to load images from elsewhere, to offer showing them. It may be wrong
- * either way; the policy decides what loads.
+ * Whether the HTML seems to load images from elsewhere, to offer showing them: an `src` or a CSS
+ * `url()` with a web address, which is what `images` lets load. It may be wrong either way; the
+ * policy decides what loads. Each run of spaces or quotes is read once, so a mail made of them
+ * can't make this slow.
  */
 export function mayLoadImages(html: string): boolean {
-	return /(?:\b(?:src|srcset|background)\s*=\s*["']?|\burl\(\s*["']?)\s*(?:https?:)?\/\//i.test(
-		html.slice(0, MAX_SHOWN_HTML),
-	);
+	return /(?:\bsrc\s*=|\burl\()[\s"']*(?:https?:)?\/\//i.test(html.slice(0, MAX_SHOWN_HTML));
 }
 
-/** The message's images that its HTML names by `cid:`, as `data:` addresses, up to the cap. */
-function inlineImages(attachments: Attachment[]): Map<string, string> {
-	const found = new Map<string, string>();
-	let total = 0;
+/** A part the HTML may name by `cid:`, before it is made a `data:` address. */
+interface InlinePart {
+	type: string;
+	bytes: Uint8Array;
+}
+
+/** The message's parts that may show as images, by their Content-ID. */
+function inlineParts(attachments: Attachment[]): Map<string, InlinePart> {
+	const found = new Map<string, InlinePart>();
 	for (const attachment of attachments) {
-		if (!attachment.contentId || !INLINE_TYPES.has(attachment.mimeType)) continue;
-		if (typeof attachment.content !== "string" || attachment.encoding !== "base64") continue;
-		const address = `data:${attachment.mimeType};base64,${attachment.content}`;
-		if (total + address.length > MAX_INLINE_IMAGES) continue;
-		total += address.length;
-		found.set(attachment.contentId.trim().replace(/^<(.*)>$/, "$1"), address);
+		const type = attachment.mimeType === "image/jpg" ? "image/jpeg" : attachment.mimeType;
+		if (!attachment.contentId || !INLINE_TYPES.has(type)) continue;
+		if (typeof attachment.content === "string") continue;
+		const bytes =
+			attachment.content instanceof Uint8Array
+				? attachment.content
+				: new Uint8Array(attachment.content);
+		const id = attachment.contentId.trim().replace(/^<(.*)>$/, "$1");
+		if (!found.has(id)) found.set(id, { type, bytes });
 	}
 	return found;
 }
 
+function base64(bytes: Uint8Array): string {
+	let binary = "";
+	for (let start = 0; start < bytes.length; start += 0x8000) {
+		binary += String.fromCharCode(...bytes.subarray(start, start + 0x8000));
+	}
+	return btoa(binary);
+}
+
+const NAMED: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
+
+/** The few entities a Content-ID in an attribute is likely to be written with. */
+function decodeEntities(value: string): string {
+	return value.replace(
+		/&(?:#(\d{1,7})|#x([\da-f]{1,6})|(amp|lt|gt|quot|apos));/gi,
+		(whole, dec: string | undefined, hex: string | undefined, name: string | undefined) => {
+			if (name) return NAMED[name.toLowerCase()] ?? whole;
+			const code = dec ? Number.parseInt(dec, 10) : Number.parseInt(hex ?? "", 16);
+			return code <= 0x10ffff ? String.fromCodePoint(code) : whole;
+		},
+	);
+}
+
 function contentId(src: string): string {
-	const id = src.trim().slice("cid:".length);
+	const id = decodeEntities(src.trim().slice("cid:".length));
 	try {
 		return decodeURIComponent(id);
 	} catch {
@@ -235,15 +268,35 @@ function contentId(src: string): string {
 }
 
 /**
- * The cleaned HTML of a message. `attachments` must come from a parse with `attachmentEncoding:
- * "base64"`. Remote images keep their addresses only when `images` is true.
+ * The cleaned HTML of a message, at most `MAX_SHOWN_HTML` characters of it. Remote images keep their
+ * addresses only when `images` is true.
+ *
+ * Nothing is added after the message's own HTML: HTMLRewriter passes a tag that the end of its input
+ * leaves open as it is, unread, and anything after it would close that tag. At the end of the page,
+ * a browser drops it.
  */
 export async function cleanHtml(
 	html: string,
 	attachments: Attachment[],
 	{ images }: { images: boolean },
 ): Promise<string> {
-	const inline = inlineImages(attachments);
+	const parts = inlineParts(attachments);
+	const made = new Map<string, string>();
+	// Counted at every image that uses one, since each puts the whole address in the page.
+	let inlineLeft = MAX_INLINE_IMAGES;
+	const inlineImage = (id: string): string | null => {
+		const part = parts.get(id);
+		if (!part) return null;
+		const length = `data:${part.type};base64,`.length + Math.ceil(part.bytes.length / 3) * 4;
+		if (length > inlineLeft) return null;
+		inlineLeft -= length;
+		let address = made.get(id);
+		if (!address) {
+			address = `data:${part.type};base64,${base64(part.bytes)}`;
+			made.set(id, address);
+		}
+		return address;
+	};
 	const rewriter = new HTMLRewriter()
 		.on("*", {
 			element(element) {
@@ -281,7 +334,7 @@ export async function cleanHtml(
 					const src = element.getAttribute("src");
 					if (src === null) return;
 					if (startsWith(src, CID)) {
-						const found = inline.get(contentId(src));
+						const found = inlineImage(contentId(src));
 						if (found) element.setAttribute("src", found);
 						else element.removeAttribute("src");
 					} else if (!startsWith(src, INLINE_DATA) && !(images && startsWith(src, REMOTE))) {
@@ -295,7 +348,6 @@ export async function cleanHtml(
 				comment.remove();
 			},
 		});
-	const cut = html.length > MAX_SHOWN_HTML;
 	const cleaned = await rewriter
 		.transform(
 			new Response(html.slice(0, MAX_SHOWN_HTML), {
@@ -303,13 +355,7 @@ export async function cleanHtml(
 			}),
 		)
 		.text();
-	return [
-		"<!doctype html>",
-		'<meta charset="utf-8">',
-		`<style>${FRAME_STYLE}</style>`,
-		cleaned,
-		cut ? `<p style="${CUT_STYLE}">${CUT_NOTE}</p>` : "",
-	].join("");
+	return `<!doctype html><meta charset="utf-8"><style>${FRAME_STYLE}</style>${cleaned}`;
 }
 
 /**
@@ -323,10 +369,6 @@ const FRAME_STYLE = [
 	"img{max-width:100%;height:auto}",
 	"pre{white-space:pre-wrap}",
 ].join("");
-
-const CUT_STYLE =
-	"font:14px system-ui,sans-serif;color:#555;border-top:1px solid #ddd;padding-top:8px";
-const CUT_NOTE = "This message is too long to show in full. Download the original for the rest.";
 
 /**
  * What the frame's page may do: nothing that runs, nothing from elsewhere but images when asked,

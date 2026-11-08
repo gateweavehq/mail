@@ -52,6 +52,7 @@ interface Opened {
 	text: string;
 	hasHtml: boolean;
 	remoteImages: boolean;
+	htmlCut: boolean;
 	attachments: { name: string | null; type: string; size: number }[];
 }
 
@@ -65,8 +66,8 @@ async function directory(slug: string, headers: Record<string, string>, action?:
 	return (await response.json()) as Listed & { ok?: boolean; proved?: boolean };
 }
 
-/** How much a mailbox holds in these tests. */
-const MAILBOX_BYTES = 100_000;
+/** How much a mailbox holds in these tests: room for a message whose HTML is cut to be shown. */
+const MAILBOX_BYTES = 3_000_000;
 
 /** A workspace with a proved domain and a mailbox with one address. */
 async function mailboxWithAddress(person = owner) {
@@ -1178,6 +1179,10 @@ describe("search", () => {
 });
 
 describe("a message's HTML", () => {
+	// As in src/server/mailbox/html.ts, which these tests reach only through the Worker.
+	const MAX_SHOWN_HTML = 1_000_000;
+	const MAX_INLINE_IMAGES = 5_000_000;
+
 	const html = (body: string) => ({
 		extra: ["MIME-Version: 1.0", "Content-Type: text/html; charset=utf-8"],
 		body,
@@ -1188,6 +1193,9 @@ describe("a message's HTML", () => {
 			headers: owner.headers,
 		});
 	}
+
+	const open_ = (box: { slug: string; mailboxId: string }, id: string) =>
+		open(box.slug, box.mailboxId, id);
 
 	async function delivered(body: Parameters<typeof message>[1]) {
 		const box = await mailboxWithAddress();
@@ -1311,6 +1319,7 @@ describe("a message's HTML", () => {
 				"Content-Type: text/html; charset=utf-8",
 				"",
 				'<p>Logo:</p><img src="cid:logo%40shop.example" alt="Logo"><img src="cid:drawing@shop.example"><img src="cid:missing@shop.example">',
+				'<img src="cid:photo&amp;1@shop.example" alt="Photo">',
 				`--${boundary}`,
 				"Content-Type: image/png",
 				"Content-ID: <logo@shop.example>",
@@ -1322,6 +1331,12 @@ describe("a message's HTML", () => {
 				"Content-ID: <drawing@shop.example>",
 				"",
 				'<svg xmlns="http://www.w3.org/2000/svg"></svg>',
+				`--${boundary}`,
+				"Content-Type: image/jpg",
+				"Content-ID: <photo&1@shop.example>",
+				"Content-Transfer-Encoding: base64",
+				"",
+				"/9j/2w==",
 				`--${boundary}--`,
 			].join("\r\n"),
 		});
@@ -1332,6 +1347,48 @@ describe("a message's HTML", () => {
 		expect(page).toContain(`<img src="data:image/png;base64,${pixel}" alt="Logo">`);
 		// Not an image type that is shown, and not a part of this message.
 		expect(page).toContain("<img><img>");
+		expect(page).toContain('<img src="data:image/jpeg;base64,/9j/2w==" alt="Photo">');
+	});
+
+	it("puts a message's own images in only up to a size, however often it names them", async () => {
+		const image = "A".repeat(40_000);
+		const boundary = "rel2";
+		const { box, id } = await delivered({
+			extra: ["MIME-Version: 1.0", `Content-Type: multipart/related; boundary="${boundary}"`],
+			body: [
+				`--${boundary}`,
+				"Content-Type: text/html; charset=utf-8",
+				"",
+				'<img src="cid:big@shop.example">'.repeat(200),
+				`--${boundary}`,
+				"Content-Type: image/png",
+				"Content-ID: <big@shop.example>",
+				"Content-Transfer-Encoding: base64",
+				"",
+				image,
+				`--${boundary}--`,
+			].join("\r\n"),
+		});
+		const page = await (await htmlOf(box, id)).text();
+		const address = `data:image/png;base64,${image}`;
+		const shown = page.split(address).length - 1;
+		// Each use counts: the page holds the whole address every time.
+		expect(shown).toBe(Math.floor(MAX_INLINE_IMAGES / address.length));
+		expect(page.split("<img>").length - 1).toBe(200 - shown);
+	});
+
+	it("shows the start of HTML that is too long, with nothing after it", async () => {
+		// Cut inside a tag, which a browser drops at the end of the page. Anything put after it
+		// would close the tag.
+		const open = '<a href="https://cut.example/sign-in"';
+		const start = `<p>${"x".repeat(MAX_SHOWN_HTML - 3 - open.length)}`;
+		const { box, id } = await delivered(html(`${start}${open} title="t">More</a><p>After`));
+		const opened = await open_(box, id);
+		expect(opened.htmlCut).toBe(true);
+		const page = await (await htmlOf(box, id)).text();
+		expect(page.endsWith(open)).toBe(true);
+		expect(page).not.toContain("After");
+		expect(page).not.toContain("too long");
 	});
 
 	it("is not there for a message without HTML, or for anyone who can't see it", async () => {

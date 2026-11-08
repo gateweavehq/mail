@@ -105,6 +105,8 @@ export interface OpenedMessage {
 	hasHtml: boolean;
 	/** Its HTML seems to load images from elsewhere, which show only when asked for. */
 	remoteImages: boolean;
+	/** Its HTML is too long to show in full, so the frame shows the start of it. */
+	htmlCut: boolean;
 	attachments: { name: string | null; type: string; size: number }[];
 }
 

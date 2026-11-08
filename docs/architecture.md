@@ -118,8 +118,12 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     `meta`, `base` and `link` with what they hold, opens links in a new tab without a referrer,
     and puts the message's own `cid:` images in as `data:` addresses (PNG, JPEG, GIF and WebP,
     5 MB at most). The cleaning is a second layer: the policy holds even where it misses
-    something. A frame that runs nothing can't say how tall it is, so the frame has a height of
-    its own, which the reader can drag. The app's own policy allows frames from itself only.
+    something. The first 1,000,000 characters of the HTML show, and the app says when there is
+    more; nothing is added to the page after the message's own HTML, since a tag the cut left
+    open would take it in. Inline images count at every use, so naming one many times can't
+    make the page huge. A frame that runs nothing can't say how tall it is, so the frame has a
+    height of its own, which the reader can drag. The app's own policy allows frames from itself
+    only.
   - **Search.** A mailbox's page, and `…/threads?q=`, list the threads with a message that has
     every word typed, newest news first. The last word also finds the words it starts, when it
     ends in two letters or digits or more (FTS5 takes the prefix from its last token, so `a.` is

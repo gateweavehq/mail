@@ -18,7 +18,7 @@ import { db } from "../auth";
 import { schema } from "../db";
 import { appOrigin } from "../origin";
 import type { StoredSummary } from "./durable-object";
-import { cleanHtml, framePolicy, mayLoadImages } from "./html";
+import { cleanHtml, framePolicy, MAX_SHOWN_HTML, mayLoadImages } from "./html";
 import { mailboxStub } from "./index";
 import { textOfHtml } from "./text";
 import { threadSubject } from "./thread";
@@ -226,6 +226,7 @@ async function readMessage(
 		textCut: text.length > MAX_SHOWN_TEXT || Boolean(fromHtml?.cut),
 		hasHtml: Boolean(email.html),
 		remoteImages: email.html ? mayLoadImages(email.html) : false,
+		htmlCut: (email.html?.length ?? 0) > MAX_SHOWN_HTML,
 		attachments: email.attachments.map((attachment) => ({
 			name: attachment.filename,
 			type: attachment.mimeType,
@@ -280,7 +281,8 @@ export async function messageHtml(
 ): Promise<Response> {
 	const object = await storedMail(slug, mailboxId, messageId);
 	if (!object) return notFound();
-	const email = await PostalMime.parse(object.body, { attachmentEncoding: "base64" });
+	// Attachments stay bytes: only the inline images the HTML names are made text, as needed.
+	const email = await PostalMime.parse(object.body);
 	if (!email.html) return notFound();
 	const images = url.searchParams.get("images") === "1";
 	return new Response(await cleanHtml(email.html, email.attachments, { images }), {
