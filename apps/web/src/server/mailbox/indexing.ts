@@ -58,9 +58,11 @@ export async function indexBatch(
 		// What a message holds must never stop the alarm, which also expires deliveries: when its
 		// entry can't be written, it is found by its headers, or by nothing, rather than not indexed.
 		const entries = [found, { ...found, attachments: "", body: "" }, NOTHING];
+		let written = false;
 		for (const entry of entries) {
 			try {
 				write(storage, message.id, entry);
+				written = true;
 				break;
 			} catch (error) {
 				console.error("mailbox: writing a message's search entry failed", {
@@ -68,9 +70,12 @@ export async function indexBatch(
 				});
 			}
 		}
+		// Not even an empty entry: the storage itself is failing, as when it is full.
+		if (!written) failures++;
 	}
-	// When none of the batch could be read, R2 is likely down: running again at once won't help.
-	// So are 20 messages whose mail R2 always fails to give, which would hold up older mail.
+	// When none of the batch could be read or written, R2 or the storage is likely failing: running
+	// again at once won't help. So are 20 messages whose mail R2 always fails to give, which would
+	// hold up older mail.
 	if (failures > 0 && failures === batch.length) return "failed";
 	if (waiting.length > INDEX_BATCH) return "more";
 	return failures > 0 ? "failed" : "done";

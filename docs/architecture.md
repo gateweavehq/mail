@@ -108,7 +108,8 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     anything.
   - **Search.** A mailbox's page, and `…/threads?q=`, list the threads with a message that has
     every word typed, newest news first. The last word also finds the words it starts, when it
-    has two characters or more: one starts so many that a big mailbox would read most of its index.
+    ends in two letters or digits or more (FTS5 takes the prefix from its last token, so `a.` is
+    `a`): one starts so many that a big mailbox would read most of its index.
     An FTS5 table in the mailbox's object indexes each message's subject, sender, attachment names
     and text, with accents set aside. Both the index and a query make look-alike forms plain
     (NFKC: full-width letters and digits, half-width katakana, ligatures), so either side may be

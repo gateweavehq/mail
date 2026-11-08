@@ -100,8 +100,9 @@ export async function searchable(
  * What someone typed, as an FTS5 query, or null when it has nothing to look for. Each word is
  * quoted, so that what FTS5 would read as syntax (`OR`, `NEAR`, `*`, `column:`) is only text, and
  * a message must have them all. The last word also finds the words it starts, as it may be half
- * typed, when it is long enough. A word with no letter or digit in it has nothing to find, and is
- * left out. Control characters part words: FTS5 would end a quoted word at a NUL.
+ * typed, when what it ends with is long enough: FTS5 takes the prefix from its last token, so `a.`
+ * would look for every word that starts with `a`. A word with no letter or digit in it has nothing
+ * to find, and is left out. Control characters part words: FTS5 would end a quoted word at a NUL.
  */
 export function ftsQuery(typed: string): string | null {
 	const words = plain(typed, MAX_QUERY)
@@ -113,8 +114,11 @@ export function ftsQuery(typed: string): string | null {
 	return words
 		.map((word, at) => {
 			const quoted = `"${word.replaceAll('"', '""')}"`;
-			const last = at === words.length - 1;
-			return last && [...word].length >= MIN_PREFIX ? `${quoted}*` : quoted;
+			if (at < words.length - 1) return quoted;
+			// The letters and digits it ends with, marks such as accents aside.
+			const end = word.match(/[\p{L}\p{N}\p{M}]+$/u)?.[0] ?? "";
+			const counted = end.match(/[\p{L}\p{N}]/gu)?.length ?? 0;
+			return counted >= MIN_PREFIX ? `${quoted}*` : quoted;
 		})
 		.join(" ");
 }

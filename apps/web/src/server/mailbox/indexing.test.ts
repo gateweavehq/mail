@@ -139,6 +139,26 @@ describe("indexBatch", () => {
 		});
 	});
 
+	it("waits when the storage takes no entry at all, rather than run again at once", async () => {
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		const box = mailbox(INDEX_BATCH + 5);
+		// As a full database would.
+		const full = {
+			...box.storage,
+			sql: {
+				exec: (query: string, ...bindings: unknown[]) => {
+					if (query.includes("INSERT INTO message_search")) throw new Error("database is full");
+					return (box.storage.sql.exec as (q: string, ...b: unknown[]) => unknown)(
+						query,
+						...bindings,
+					);
+				},
+			},
+		} as unknown as typeof box.storage;
+		expect(await indexBatch(full, read)).toBe("failed");
+		expect(box.indexed()).toEqual([]);
+	});
+
 	it("finds what waits through the index that holds only them, without sorting", () => {
 		const box = mailbox(0);
 		const plan = (

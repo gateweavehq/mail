@@ -18,6 +18,11 @@ describe("ftsQuery", () => {
 		expect(ftsQuery("invoice a")).toBe('"invoice" "a"');
 		expect(ftsQuery("会")).toBe('"会"');
 		expect(ftsQuery("会議")).toBe('"会議"*');
+		// FTS5 takes the prefix from the word's last token, here a single letter or none.
+		expect(ftsQuery("a.")).toBe('"a."');
+		expect(ftsQuery("t-")).toBe('"t-"');
+		expect(ftsQuery("ab.c")).toBe('"ab.c"');
+		expect(ftsQuery("x-ab")).toBe('"x-ab"*');
 	});
 
 	it("parts words at control characters", () => {
