@@ -58,9 +58,12 @@ export interface Arrival {
 	ownId?: string | null;
 	/** The ids it replies to or follows, from `referencedIds`. */
 	references?: string[];
-	/** Cloudflare's DMARC verdict, from `cloudflareVerdict`. */
+	/**
+	 * The DMARC result of the server that took the mail: Cloudflare's, from `cloudflareVerdict`, or
+	 * Resend's, from its API.
+	 */
 	dmarc: string | null;
-	/** The domain the message is proved to come from, from `verifiedDomain`. */
+	/** The domain the message is proved to come from, from `verifiedDomain` or `resendVerifiedDomain`. */
 	verifiedDomain: string | null;
 }
 

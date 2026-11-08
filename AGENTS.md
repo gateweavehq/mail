@@ -96,15 +96,16 @@ These are load-bearing. Breaking one breaks users' data or security, usually sil
 11. **Mail is untrusted input.** Only `dmarc=pass` in Cloudflare's own `Authentication-Results`,
     among the headers it adds at the top, is proof of who sent a message, and only of the domain
     it checked (`header.from`), when that is the domain of the one address in the one `From`
-    (`verifiedDomain`). A forged message can arrive marked `dmarc=none`, bring an
+    (`verifiedDomain`). For mail that came through Resend, only the DMARC result its API gives is
+    (`resendVerifiedDomain`), never a header in that mail, which could copy Cloudflare's. A forged message can arrive marked `dmarc=none`, bring an
     `Authentication-Results` of its own, or put an address in the name before the real one, so
     show the proved domain, never a mark alone. `message.from` is the envelope sender, not the
     person the reader will see, so show the `From` header. Show a message's HTML only as the page
     `messageHtml` serves, under its own policy (`framePolicy`: a sandbox without scripts or the
     app's origin, nothing from elsewhere but images the reader asked for), and only in a frame with
     the same sandbox; never in one of the app's pages. Serve the original only as a download.
-12. **A mailbox's Durable Object has no public route.** Only `email()`, after looking the address
-    up, and server code, after checking membership and that the mailbox is in the caller's
+12. **A mailbox's Durable Object has no public route.** Only `email()` and Resend's webhook, after
+    looking the address up, and server code, after checking membership and that the mailbox is in the caller's
     workspace, reach it. Mail is read only through `openMailbox`
     (`apps/web/src/server/mailbox/read.ts`), which applies `canReadMailbox`: being in the workspace
     is not enough. Every R2 object is named by the mailbox's object, as pending, before it is
@@ -133,6 +134,15 @@ These are load-bearing. Breaking one breaks users' data or security, usually sil
     workspace's id (`apps/web/src/server/secrets.ts`) before it is written, opened only to send or
     to check it with Resend, and pages see only its last four characters. Never log it, return it
     or put it in an error. Putting one in takes an owner or admin with a recent sign-in.
+16. **Resend's webhook admits only what the workspace's secret signed.** A delivery to
+    `/api/inbound/resend/<channel>` carries no session: the channel finds the workspace, and the
+    Svix signature, under the webhook's signing secret sealed in `resend_inbound`, within five
+    minutes, proves Resend sent it (`apps/web/src/server/resend-inbound.ts`). The webhook's body
+    names an email and nothing more is taken from it: who the mail is for, Resend's DMARC result
+    and the raw mail come from Resend's API with the workspace's key. Mail is stored only for that
+    workspace's addresses on proved domains set to receive with Resend. Answer with a success only
+    once it is stored, or when trying again can't help; otherwise answer 503, and Resend tries
+    again for about a day.
 
 ## Code style
 

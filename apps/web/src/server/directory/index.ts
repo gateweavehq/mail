@@ -1,6 +1,6 @@
 import { and, asc, count, eq, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { parseDomainName, parseLocalPart, splitRecipient } from "../../lib/addresses";
-import type { Directory, MailRoute } from "../../lib/directory";
+import type { Directory, MailRoute, ResendReceiving } from "../../lib/directory";
 import type { SendsWith } from "../../lib/providers";
 import { canReadMailbox, isAdminRole, type MemberRole } from "../../lib/roles";
 import { AGENT_ROLE, isAgentMembership } from "../auth/agents";
@@ -9,7 +9,8 @@ import { schema } from "../db";
 import { toRole } from "../workspaces";
 import { type LookUpDomain, proofName } from "./dns";
 
-const { mailAddress, mailDomain, mailbox, mailboxAccess, member, providerKey } = schema;
+const { mailAddress, mailDomain, mailbox, mailboxAccess, member, providerKey, resendInbound } =
+	schema;
 
 // Caps, so a stranger signing up can't fill the database. Two requests at once can pass one by a
 // little, which does no harm.
@@ -29,6 +30,8 @@ export const ENDED_ADDRESS_KEPT_DAYS = 30;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const VERIFICATION_PREFIX = "gateweave-mail-verification=";
 const CLOUDFLARE_MAIL_HOST = ".mx.cloudflare.net";
+/** The hosts Resend gives for a receiving MX record: its own, or Amazon SES's in a region. */
+const RESEND_MAIL_HOSTS = [/(^|\.)forge\.rmta\.net$/, /^inbound-smtp\.[a-z0-9-]+\.amazonaws\.com$/];
 
 export interface Refusal {
 	ok: false;
@@ -64,7 +67,11 @@ export async function findAddress(db: Database, recipient: string, now: Date) {
 	const parts = splitRecipient(recipient);
 	if (!parts) return null;
 	const found = await db
-		.select({ mailboxId: mailAddress.mailboxId, workspaceId: mailDomain.organizationId })
+		.select({
+			mailboxId: mailAddress.mailboxId,
+			workspaceId: mailDomain.organizationId,
+			receivesWith: mailDomain.receivesWith,
+		})
 		.from(mailAddress)
 		.innerJoin(mailDomain, eq(mailAddress.domainId, mailDomain.id))
 		.where(
@@ -176,6 +183,7 @@ export async function listDirectory(
 					? { name: proofName(domain.name), value: proofValue(domain.verificationToken) }
 					: null,
 			sendsWith: domain.sendsWith,
+			receivesWith: domain.receivesWith,
 		})),
 		mailboxes: readable.map((box) => ({
 			id: box.id,
@@ -188,6 +196,7 @@ export async function listDirectory(
 			})),
 			access: admin ? accessOf(box.everyone, readers.get(box.id) ?? []) : null,
 		})),
+		resendReceiving: admin ? await receivingState(db, workspaceId) : null,
 	};
 }
 
@@ -217,7 +226,30 @@ export async function addDomain(db: Database, workspaceId: string, input: string
 
 function mailRoute(hosts: string[]): MailRoute {
 	if (hosts.length === 0) return "none";
-	return hosts.every((host) => host.endsWith(CLOUDFLARE_MAIL_HOST)) ? "cloudflare" : "elsewhere";
+	if (hosts.every((host) => host.endsWith(CLOUDFLARE_MAIL_HOST))) return "cloudflare";
+	if (hosts.every((host) => RESEND_MAIL_HOSTS.some((pattern) => pattern.test(host))))
+		return "resend";
+	return "elsewhere";
+}
+
+/** What the Domains page shows of receiving through Resend: whether it is set up, and how it went. */
+export async function receivingState(
+	db: Database,
+	workspaceId: string,
+): Promise<ResendReceiving | null> {
+	const row = await db
+		.select()
+		.from(resendInbound)
+		.where(eq(resendInbound.organizationId, workspaceId))
+		.get();
+	return row
+		? {
+				ready: row.webhookId !== null,
+				receivedAt: row.receivedAt?.getTime() ?? null,
+				trouble: row.trouble,
+				troubleAt: row.troubleAt?.getTime() ?? null,
+			}
+		: null;
 }
 
 /**

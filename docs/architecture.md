@@ -58,6 +58,26 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
   storing fails, or the database does, the handler throws, which tells the sender to try again:
   accepting a message we didn't keep would lose it. The Worker tests deliver to it through
   Miniflare (`test/inbound.test.ts`, `test/directory.test.ts`, `test/mailbox.test.ts`).
+- **Resend's webhook** (`apps/web/src/server/resend-inbound.ts`), for a domain whose MX is
+  Resend's, as a domain whose DNS isn't on this deployment's account can't use Email Routing. A
+  domain is set to receive with Resend (`mail_domain.receives_with`, `cloudflare` by default) on
+  the Domains page, which needs the workspace's Resend key with full access: Resend refuses a
+  sending-only key received mail and webhooks. The first such domain makes the workspace's webhook
+  in that Resend account (`POST /webhooks`, for `email.received`), at
+  `/api/inbound/resend/<channel>`, a random id per workspace, and keeps its id and signing secret,
+  sealed as the key is, in `resend_inbound`. The last one to stop removes it. Choosing Resend again
+  makes it again when Resend no longer has it, as after the key was replaced with one from another
+  account. Resend's webhook carries no content, only the email's id. Mail checks the delivery's
+  Svix signature, then asks Resend for the email (`GET /emails/receiving/<id>`), takes its To, Cc,
+  Bcc and `received_for`, keeps the addresses on this workspace's proved domains that receive with
+  Resend, downloads the raw mail from the signed address the answer gives, and stores it through
+  the same path as `email()`, one copy for each mailbox. Resend took the mail already, so an
+  address that doesn't exist can't be refused: it is left out. Mail answers 503 to anything that
+  may work later (no key yet, a key that can only send, a failed download, a full mailbox), and
+  Resend tries again, eight times over about a day, before it turns the webhook off, so the
+  workspace's last such trouble shows on the Domains page until mail is stored again. A retry is
+  stored once, as in `email()`. The Worker tests stand in for Resend's API and its downloads
+  (`test/resend-inbound.test.ts`).
 - **Mailboxes** (`apps/web/src/server/mailbox/`). Each mailbox has a `Mailbox` Durable Object,
   named by the mailbox's id, that holds the index of its messages in SQLite. The raw mail is in R2,
   one object per message under `<workspace>/<mailbox>/`. `email()` reads the header block and
@@ -187,7 +207,9 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     skipped, as they quote the envelope sender, and a verdict that names DMARC twice isn't trusted.
     A field whose name only looks like `From`, such as `From :`, counts as a second one. Pages
     show the proved domain beside the mark: the name in front of the address is the sender's to
-    write.
+    write. Mail that came through Resend has no such headers of Cloudflare's, and any it has are
+    the sender's: its verdict is the DMARC result Resend's API gives, which its MX computed, for
+    the domain of the one address in the one `From`.
   - **Sending** (`send.ts`, `compose.ts`, `delivery.ts`). A person who may read a mailbox replies
     to its mail and writes new mail from it, at `POST /api/mail/<workspace>/<mailbox>/outbox`,
     signed in and from the app's own origin. An agent sends there with its key, as below. A

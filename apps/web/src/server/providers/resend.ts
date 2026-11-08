@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { RESEND_CODE, type ResendAccess } from "../../lib/providers";
 
 /**
@@ -177,4 +178,159 @@ export async function checkResendKey(api: string, key: string): Promise<KeyCheck
 		return { ok: false, error: "Resend couldn't check the key just now. Try again soon." };
 	}
 	return { ok: false, error: "Resend doesn't take this key. Check that it is whole and active." };
+}
+
+/** Why a call to Resend's API didn't give what was asked: Mail's code, and whether to try later. */
+export interface ResendCallFailure {
+	/** Such as `resend:restricted_api_key`, or `resend:unreachable` when nothing came back. */
+	code: string;
+	/** Whether trying again later may work: Resend failed or was busy, or wasn't reached. */
+	later: boolean;
+}
+
+function callFailure(status: number, body: unknown): ResendCallFailure {
+	const name = body && typeof body === "object" ? (body as { name?: unknown }).name : null;
+	const known = typeof name === "string" && /^[a-z_]{1,64}$/.test(name);
+	const code = `${RESEND_CODE}${known ? name : status}`;
+	return { code, later: status >= 500 || status === 429 };
+}
+
+const unreached = (): ResendCallFailure => ({ code: `${RESEND_CODE}unreachable`, later: true });
+
+type Called<T> = { ok: true; value: T } | { ok: false; failure: ResendCallFailure };
+
+/** One call to Resend's API, whose answer, when it is a success, `parse` reads. Never throws. */
+async function call<T>(
+	api: string,
+	key: string,
+	path: string,
+	init: { method?: string; body?: unknown },
+	parse: (body: unknown) => T | null,
+): Promise<Called<T>> {
+	let response: Response;
+	try {
+		response = await fetch(`${api}${path}`, {
+			method: init.method ?? "GET",
+			headers: {
+				...headers(key),
+				...(init.body === undefined ? {} : { "content-type": "application/json" }),
+			},
+			...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
+			signal: AbortSignal.timeout(TIMEOUT_MS),
+		});
+	} catch {
+		return { ok: false, failure: unreached() };
+	}
+	const body: unknown = await response.json().catch(() => null);
+	if (!response.ok) return { ok: false, failure: callFailure(response.status, body) };
+	const value = parse(body);
+	// A success Mail can't read is Resend's trouble, which may pass.
+	return value === null ? { ok: false, failure: callFailure(502, null) } : { ok: true, value };
+}
+
+const MadeWebhook = z.object({ id: z.string().min(1).max(200), signing_secret: z.string().min(1) });
+
+/** The event Resend sends when it received mail, and the only one Mail asks for. */
+export const RECEIVED_EVENT = "email.received";
+
+/**
+ * Makes a webhook in the key's Resend account that tells `endpoint` of each mail Resend receives.
+ * The answer holds the webhook's id and the secret that signs its deliveries, which Resend shows
+ * only now. Needs a key with full access.
+ */
+export function createReceivingWebhook(api: string, key: string, endpoint: string) {
+	return call(
+		api,
+		key,
+		"/webhooks",
+		{ method: "POST", body: { endpoint, events: [RECEIVED_EVENT] } },
+		(body) => {
+			const made = MadeWebhook.safeParse(body);
+			return made.success ? { id: made.data.id, secret: made.data.signing_secret } : null;
+		},
+	);
+}
+
+/** Whether the key's Resend account still has this webhook. */
+export async function webhookExists(
+	api: string,
+	key: string,
+	id: string,
+): Promise<Called<boolean>> {
+	const found = await call(api, key, `/webhooks/${encodeURIComponent(id)}`, {}, () => true);
+	if (!found.ok && found.failure.code === `${RESEND_CODE}not_found`)
+		return { ok: true, value: false };
+	return found;
+}
+
+/** Removes a webhook Mail made. One that is already gone counts as removed. */
+export async function deleteWebhook(api: string, key: string, id: string) {
+	const done = await call(
+		api,
+		key,
+		`/webhooks/${encodeURIComponent(id)}`,
+		{ method: "DELETE" },
+		() => true,
+	);
+	if (!done.ok && done.failure.code === `${RESEND_CODE}not_found`) return { ok: true } as const;
+	return done;
+}
+
+const Addresses = z
+	.array(z.string().max(1_000))
+	.max(1_000)
+	.nullish()
+	.transform((list) => list ?? []);
+
+const Verdict = z.enum(["pass", "fail", "gray", "processing_failed", "unknown"]).catch("unknown");
+
+const ReceivedEmail = z.object({
+	id: z.string().min(1).max(200),
+	from: z.string().max(1_000).nullish(),
+	to: Addresses,
+	cc: Addresses,
+	bcc: Addresses,
+	received_for: Addresses,
+	authentication: z
+		.object({ spf: Verdict.optional(), dkim: Verdict.optional(), dmarc: Verdict.optional() })
+		.nullish(),
+	raw: z.object({ download_url: z.url({ protocol: /^https$/ }).max(8_000) }).nullish(),
+});
+
+/** What Mail reads of a received email: who it was for, Resend's checks, and where its raw mail is. */
+export interface ReceivedEmail {
+	id: string;
+	/** The envelope's or From's bare address, as Resend gives it. */
+	from: string | null;
+	/** Every address Resend says it was for, as it gives them: To, Cc, Bcc and `received_for`. */
+	recipients: string[];
+	/**
+	 * Resend's DMARC result, computed by its MX when the mail came: `pass`, `fail`, `gray` (no
+	 * policy, or `p=none`), `processing_failed` or `unknown`. Null for mail from before Resend kept it.
+	 */
+	dmarc: string | null;
+	/** A signed address the raw mail can be downloaded from for about an hour, or null. */
+	rawUrl: string | null;
+}
+
+/** One email Resend received, by its id. Needs a key with full access. */
+export function getReceivedEmail(api: string, key: string, id: string) {
+	return call(
+		api,
+		key,
+		`/emails/receiving/${encodeURIComponent(id)}`,
+		{},
+		(body): ReceivedEmail | null => {
+			const read = ReceivedEmail.safeParse(body);
+			if (!read.success) return null;
+			const email = read.data;
+			return {
+				id: email.id,
+				from: email.from ?? null,
+				recipients: [...email.to, ...email.cc, ...email.bcc, ...email.received_for],
+				dmarc: email.authentication ? (email.authentication.dmarc ?? "unknown") : null,
+				rawUrl: email.raw?.download_url ?? null,
+			};
+		},
+	);
 }

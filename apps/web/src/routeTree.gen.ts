@@ -27,6 +27,7 @@ import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 import { Route as ApiDirectoryWorkspaceRouteImport } from './routes/api/directory/$workspace'
 import { Route as WorkspaceMailboxesMailboxIndexRouteImport } from './routes/$workspace/mailboxes.$mailbox.index'
 import { Route as WorkspaceMailboxesMailboxMessageRouteImport } from './routes/$workspace/mailboxes.$mailbox.$message'
+import { Route as ApiInboundResendChannelRouteImport } from './routes/api/inbound/resend.$channel'
 import { Route as WorkspaceMailboxesMailboxThreadsThreadRouteImport } from './routes/$workspace/mailboxes.$mailbox.threads.$thread'
 import { Route as ApiMailWorkspaceMailboxIndexRouteImport } from './routes/api/mail/$workspace.$mailbox.index'
 import { Route as ApiMailWorkspaceMailboxOutboxRouteImport } from './routes/api/mail/$workspace.$mailbox.outbox'
@@ -131,6 +132,11 @@ const WorkspaceMailboxesMailboxMessageRoute =
     path: '/mailboxes/$mailbox/$message',
     getParentRoute: () => WorkspaceRoute,
   } as any)
+const ApiInboundResendChannelRoute = ApiInboundResendChannelRouteImport.update({
+  id: '/api/inbound/resend/$channel',
+  path: '/api/inbound/resend/$channel',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const WorkspaceMailboxesMailboxThreadsThreadRoute =
   WorkspaceMailboxesMailboxThreadsThreadRouteImport.update({
     id: '/mailboxes/$mailbox/threads/$thread',
@@ -198,6 +204,7 @@ export interface FileRoutesByFullPath {
   '/api/directory/$workspace': typeof ApiDirectoryWorkspaceRoute
   '/$workspace/settings/': typeof WorkspaceSettingsIndexRoute
   '/$workspace/mailboxes/$mailbox/$message': typeof WorkspaceMailboxesMailboxMessageRoute
+  '/api/inbound/resend/$channel': typeof ApiInboundResendChannelRoute
   '/$workspace/mailboxes/$mailbox/': typeof WorkspaceMailboxesMailboxIndexRoute
   '/$workspace/mailboxes/$mailbox/threads/$thread': typeof WorkspaceMailboxesMailboxThreadsThreadRoute
   '/api/mail/$workspace/$mailbox/outbox': typeof ApiMailWorkspaceMailboxOutboxRoute
@@ -224,6 +231,7 @@ export interface FileRoutesByTo {
   '/api/directory/$workspace': typeof ApiDirectoryWorkspaceRoute
   '/$workspace/settings': typeof WorkspaceSettingsIndexRoute
   '/$workspace/mailboxes/$mailbox/$message': typeof WorkspaceMailboxesMailboxMessageRoute
+  '/api/inbound/resend/$channel': typeof ApiInboundResendChannelRoute
   '/$workspace/mailboxes/$mailbox': typeof WorkspaceMailboxesMailboxIndexRoute
   '/$workspace/mailboxes/$mailbox/threads/$thread': typeof WorkspaceMailboxesMailboxThreadsThreadRoute
   '/api/mail/$workspace/$mailbox/outbox': typeof ApiMailWorkspaceMailboxOutboxRoute
@@ -253,6 +261,7 @@ export interface FileRoutesById {
   '/api/directory/$workspace': typeof ApiDirectoryWorkspaceRoute
   '/$workspace/settings/': typeof WorkspaceSettingsIndexRoute
   '/$workspace/mailboxes/$mailbox/$message': typeof WorkspaceMailboxesMailboxMessageRoute
+  '/api/inbound/resend/$channel': typeof ApiInboundResendChannelRoute
   '/$workspace/mailboxes/$mailbox/': typeof WorkspaceMailboxesMailboxIndexRoute
   '/$workspace/mailboxes/$mailbox/threads/$thread': typeof WorkspaceMailboxesMailboxThreadsThreadRoute
   '/api/mail/$workspace/$mailbox/outbox': typeof ApiMailWorkspaceMailboxOutboxRoute
@@ -283,6 +292,7 @@ export interface FileRouteTypes {
     | '/api/directory/$workspace'
     | '/$workspace/settings/'
     | '/$workspace/mailboxes/$mailbox/$message'
+    | '/api/inbound/resend/$channel'
     | '/$workspace/mailboxes/$mailbox/'
     | '/$workspace/mailboxes/$mailbox/threads/$thread'
     | '/api/mail/$workspace/$mailbox/outbox'
@@ -309,6 +319,7 @@ export interface FileRouteTypes {
     | '/api/directory/$workspace'
     | '/$workspace/settings'
     | '/$workspace/mailboxes/$mailbox/$message'
+    | '/api/inbound/resend/$channel'
     | '/$workspace/mailboxes/$mailbox'
     | '/$workspace/mailboxes/$mailbox/threads/$thread'
     | '/api/mail/$workspace/$mailbox/outbox'
@@ -337,6 +348,7 @@ export interface FileRouteTypes {
     | '/api/directory/$workspace'
     | '/$workspace/settings/'
     | '/$workspace/mailboxes/$mailbox/$message'
+    | '/api/inbound/resend/$channel'
     | '/$workspace/mailboxes/$mailbox/'
     | '/$workspace/mailboxes/$mailbox/threads/$thread'
     | '/api/mail/$workspace/$mailbox/outbox'
@@ -358,6 +370,7 @@ export interface RootRouteChildren {
   SettingsAccountRoute: typeof SettingsAccountRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiDirectoryWorkspaceRoute: typeof ApiDirectoryWorkspaceRoute
+  ApiInboundResendChannelRoute: typeof ApiInboundResendChannelRoute
   ApiMailWorkspaceMailboxOutboxRoute: typeof ApiMailWorkspaceMailboxOutboxRoute
   ApiMailWorkspaceMailboxIndexRoute: typeof ApiMailWorkspaceMailboxIndexRoute
   ApiMailWorkspaceMailboxMessageHtmlRoute: typeof ApiMailWorkspaceMailboxMessageHtmlRoute
@@ -495,6 +508,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof WorkspaceMailboxesMailboxMessageRouteImport
       parentRoute: typeof WorkspaceRoute
     }
+    '/api/inbound/resend/$channel': {
+      id: '/api/inbound/resend/$channel'
+      path: '/api/inbound/resend/$channel'
+      fullPath: '/api/inbound/resend/$channel'
+      preLoaderRoute: typeof ApiInboundResendChannelRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/$workspace/mailboxes/$mailbox/threads/$thread': {
       id: '/$workspace/mailboxes/$mailbox/threads/$thread'
       path: '/mailboxes/$mailbox/threads/$thread'
@@ -604,6 +624,7 @@ const rootRouteChildren: RootRouteChildren = {
   SettingsAccountRoute: SettingsAccountRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiDirectoryWorkspaceRoute: ApiDirectoryWorkspaceRoute,
+  ApiInboundResendChannelRoute: ApiInboundResendChannelRoute,
   ApiMailWorkspaceMailboxOutboxRoute: ApiMailWorkspaceMailboxOutboxRoute,
   ApiMailWorkspaceMailboxIndexRoute: ApiMailWorkspaceMailboxIndexRoute,
   ApiMailWorkspaceMailboxMessageHtmlRoute:

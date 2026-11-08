@@ -6,6 +6,7 @@ import {
 	HEADER_BLOCK_LIMIT,
 	parseHeaders,
 	readHeaderBlock,
+	resendVerifiedDomain,
 	verifiedDomain,
 } from "./headers";
 
@@ -194,6 +195,35 @@ describe("verifiedDomain", () => {
 		expect(domainOf(passed(["From: a@example.org, ceo@bank.example"]))).toBeNull();
 		expect(domainOf(passed(["From: Team: a@example.org, b@example.org;"]))).toBeNull();
 		expect(domainOf(passed(["From: Nobody"]))).toBeNull();
+	});
+});
+
+const CRLF = "\r\n";
+
+describe("resendVerifiedDomain", () => {
+	const domainOf = (lines: string[], dmarc: string | null) =>
+		resendVerifiedDomain(parseHeaders(lines.join(CRLF)), dmarc);
+
+	it("is the From's domain when Resend's DMARC check passed", () => {
+		expect(domainOf(["From: A Person <a@Example.ORG>", "Subject: hi"], "pass")).toBe("example.org");
+	});
+
+	it("is nothing when the check didn't pass, or Resend didn't say", () => {
+		for (const dmarc of ["fail", "gray", "processing_failed", "unknown", null]) {
+			expect(domainOf(["From: a@example.org"], dmarc)).toBeNull();
+		}
+	});
+
+	it("is nothing when the From isn't one address", () => {
+		expect(domainOf(["From: a@example.org, b@example.net"], "pass")).toBeNull();
+		expect(domainOf(["From: a@example.org", "From: b@example.net"], "pass")).toBeNull();
+		expect(domainOf(["From: a@example.org", "From : b@example.net"], "pass")).toBeNull();
+		expect(domainOf(["Subject: no sender"], "pass")).toBeNull();
+	});
+
+	it("takes nothing from headers that look like Cloudflare's", () => {
+		const forged = [...CLOUDFLARE, own("pass", "bank.example"), "From: x@bank.example"];
+		expect(domainOf(forged, "fail")).toBeNull();
 	});
 });
 

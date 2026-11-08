@@ -7,7 +7,7 @@ import {
 	text,
 	uniqueIndex,
 } from "drizzle-orm/sqlite-core";
-import { KEYED_PROVIDERS, SENDS_WITH } from "../../lib/providers";
+import { KEYED_PROVIDERS, RECEIVES_WITH, SENDS_WITH } from "../../lib/providers";
 import { member, organization, user } from "./auth-schema";
 
 const createdAt = () =>
@@ -38,6 +38,11 @@ export const mailDomain = sqliteTable(
 		 * workspace's key in `provider_key`.
 		 */
 		sendsWith: text("sends_with", { enum: SENDS_WITH }).default("cloudflare").notNull(),
+		/**
+		 * How its mail arrives: `cloudflare`, through Email Routing to `email()`, or `resend`, through
+		 * the workspace's webhook in `resend_inbound`, which takes mail only for domains set to it.
+		 */
+		receivesWith: text("receives_with", { enum: RECEIVES_WITH }).default("cloudflare").notNull(),
 	},
 	(table) => [
 		uniqueIndex("mail_domain_verified_name_unique")
@@ -175,3 +180,27 @@ export const providerKey = sqliteTable(
 	},
 	(table) => [primaryKey({ columns: [table.organizationId, table.provider] })],
 );
+
+/**
+ * A workspace's webhook in its Resend account, which tells Mail of mail Resend received for it. It
+ * is there while any of the workspace's domains receives with Resend. The channel is in the
+ * webhook's address and finds the row; the signing secret, sealed like the key, proves a delivery
+ * came from Resend. It goes with the workspace.
+ */
+export const resendInbound = sqliteTable("resend_inbound", {
+	organizationId: text("organization_id")
+		.primaryKey()
+		.references(() => organization.id, { onDelete: "cascade" }),
+	/** Random, so the webhook's address says nothing and can't be guessed. */
+	channel: text("channel").notNull().unique(),
+	/** Resend's id for the webhook, once it is made. */
+	webhookId: text("webhook_id"),
+	/** Its signing secret, sealed, once it is made. */
+	sealedSecret: text("sealed_secret"),
+	createdAt: createdAt(),
+	/** When Mail last stored mail that came through it. */
+	receivedAt: integer("received_at", { mode: "timestamp_ms" }),
+	/** What went wrong last, as a code `receivingTrouble` puts in words, until mail is stored again. */
+	trouble: text("trouble"),
+	troubleAt: integer("trouble_at", { mode: "timestamp_ms" }),
+});

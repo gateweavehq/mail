@@ -9,13 +9,15 @@ import { ConfirmDialog } from "#/components/workspace/confirm-dialog";
 import { isAdminRole, useMyRole, useWorkspace } from "#/components/workspace/context";
 import { Notice } from "#/components/workspace/notice";
 import { authClient } from "#/lib/auth-client";
+import { formatDateTime } from "#/lib/dates";
 import {
 	changeDirectory,
 	type DirectoryDomain,
 	getDirectory,
 	type MailRoute,
+	type ResendReceiving,
 } from "#/lib/directory";
-import type { SendsWith } from "#/lib/providers";
+import { type ReceivesWith, receivingTrouble, type SendsWith } from "#/lib/providers";
 import { useDocumentTitle } from "#/lib/title";
 
 export const Route = createFileRoute("/$workspace/settings/domains")({
@@ -66,6 +68,12 @@ function DomainsPage() {
 				) : (
 					<p className="text-sm text-muted-foreground">An owner or admin can add a domain.</p>
 				)}
+				{admin && data.resendReceiving && (
+					<ReceivingStatus
+						state={data.resendReceiving}
+						inUse={data.domains.some((domain) => domain.receivesWith === "resend")}
+					/>
+				)}
 				{data.domains.length > 0 && (
 					<ul aria-label="Domains" className="space-y-3">
 						{data.domains.map((domain) => (
@@ -90,7 +98,7 @@ function DomainsPage() {
 						Cloudflare account running this server has onboarded for Email Sending. For a domain
 						whose DNS is somewhere else, send through Resend: verify the domain at Resend, add the
 						workspace's Resend key here, then set the domain to send with Resend. A key that can
-						only send is enough.
+						only send is enough for sending; receiving through Resend needs one with full access.
 					</p>
 				</div>
 				{admin ? (
@@ -117,8 +125,9 @@ function DomainsPage() {
 					a message to an address that doesn't exist is refused.
 				</p>
 				<p className="text-sm text-muted-foreground">
-					In the Cloudflare account that runs this server, turn on Email Routing for the domain you
-					proved. Then choose one of these:
+					A domain's mail comes one of two ways. Through Cloudflare Email Routing, in the Cloudflare
+					account that runs this server: turn it on for the domain you proved, then choose one of
+					these:
 				</p>
 				<ul className="list-disc space-y-2 pl-5 text-sm text-muted-foreground">
 					<li>
@@ -133,6 +142,15 @@ function DomainsPage() {
 						one can take over a minute to work, with mail going to the catch-all until it does.
 					</li>
 				</ul>
+				<p className="text-sm text-muted-foreground">
+					Or through Resend, for a domain whose DNS is somewhere else. In Resend, turn on receiving
+					for the domain and add the MX record it shows. Add the workspace's Resend key here, with
+					full access, as a key that can only send can't read received mail. Then set the domain to
+					receive with Resend: Mail makes a webhook in that Resend account, which tells it of each
+					message. Resend takes every address on the domain, so mail to one that doesn't exist here
+					can't be refused, only left out. A domain's mail goes to one place, so use a subdomain
+					when the domain already gets mail somewhere else.
+				</p>
 			</section>
 		</div>
 	);
@@ -186,15 +204,55 @@ function AddDomain() {
 }
 
 /** What the last check found, in words. */
-function checkedWords(proved: boolean, mail: MailRoute): string {
+function checkedWords(proved: boolean, mail: MailRoute, receivesWith: ReceivesWith): string {
 	if (!proved) return "No matching TXT record yet. A new one can take a few minutes to show.";
+	if (receivesWith === "resend") {
+		if (mail === "resend")
+			return "Proved. Its MX records point to Resend, which passes its mail on.";
+		if (mail === "none") {
+			return "Proved, but it has no MX records yet. Add the one Resend shows for the domain.";
+		}
+		return "Proved, but not all its MX records point to Resend, so some or all of its mail won't reach this server.";
+	}
 	if (mail === "cloudflare") {
 		return "Proved. Its MX records point to Cloudflare, which is right if this server's account runs it.";
 	}
-	if (mail === "elsewhere") {
+	if (mail === "elsewhere" || mail === "resend") {
 		return "Proved, but not all its MX records point to Cloudflare, so some or all of its mail won't reach this server.";
 	}
 	return "Proved, but it has no MX records yet. Turning on Email Routing adds them.";
+}
+
+const RECEIVES_WITH_WORDS: Record<ReceivesWith, string> = {
+	cloudflare: "Cloudflare Email Routing",
+	resend: "Resend",
+};
+
+/** How receiving through Resend went for the workspace. */
+function ReceivingStatus({ state, inUse }: { state: ResendReceiving; inUse: boolean }) {
+	if (!inUse) return null;
+	return (
+		<div className="space-y-1 rounded-lg border p-4 text-sm">
+			<p className="font-medium">Receiving through Resend</p>
+			{!state.ready && (
+				<p className="text-destructive">
+					The webhook in Resend isn't made, so no mail comes through it. Choose Resend for one of
+					the domains again.
+				</p>
+			)}
+			{state.trouble && (
+				<p role="alert" className="text-destructive">
+					{receivingTrouble(state.trouble)}
+					{state.troubleAt !== null && ` (${formatDateTime(state.troubleAt)})`}
+				</p>
+			)}
+			<p className="text-muted-foreground">
+				{state.receivedAt === null
+					? "No mail has come through it yet."
+					: `Mail last came through it ${formatDateTime(state.receivedAt)}.`}
+			</p>
+		</div>
+	);
 }
 
 const SENDS_WITH_WORDS: Record<SendsWith, string> = {
@@ -220,6 +278,20 @@ function DomainRow({
 	const [removing, setRemoving] = useState(false);
 	const [switching, setSwitching] = useState(false);
 
+	async function receiveWith(receivesWith: ReceivesWith) {
+		setSwitching(true);
+		setError(null);
+		setSaid(null);
+		const result = await changeDirectory(slug, {
+			action: "set-domain-receiving",
+			id: domain.id,
+			receivesWith,
+		});
+		if (result.ok) await router.invalidate();
+		else setError(result.error);
+		setSwitching(false);
+	}
+
 	async function sendWith(sendsWith: SendsWith) {
 		setSwitching(true);
 		setError(null);
@@ -243,7 +315,7 @@ function DomainRow({
 			id: domain.id,
 		});
 		if (result.ok) {
-			setSaid(checkedWords(result.proved, result.mail));
+			setSaid(checkedWords(result.proved, result.mail, domain.receivesWith));
 			await router.invalidate();
 		} else {
 			setError(result.error);
@@ -308,6 +380,32 @@ function DomainRow({
 			) : (
 				<p className="text-sm text-muted-foreground">
 					Sends with {SENDS_WITH_WORDS[domain.sendsWith]}
+				</p>
+			)}
+			{admin ? (
+				<div className="flex flex-wrap items-center gap-2">
+					<Label htmlFor={`receives-with-${domain.id}`} className="text-muted-foreground">
+						Receives with
+					</Label>
+					<select
+						id={`receives-with-${domain.id}`}
+						value={domain.receivesWith}
+						disabled={switching}
+						onChange={(event) => {
+							const chosen = event.target.value;
+							if (chosen === "cloudflare" || chosen === "resend") void receiveWith(chosen);
+						}}
+						className="h-9 min-w-0 rounded-md border bg-transparent px-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+					>
+						<option value="cloudflare">{RECEIVES_WITH_WORDS.cloudflare}</option>
+						<option value="resend" disabled={keyed === false && domain.receivesWith !== "resend"}>
+							{keyed === false ? "Resend (add a key first)" : RECEIVES_WITH_WORDS.resend}
+						</option>
+					</select>
+				</div>
+			) : (
+				<p className="text-sm text-muted-foreground">
+					Receives with {RECEIVES_WITH_WORDS[domain.receivesWith]}
 				</p>
 			)}
 			{admin && domain.sendsWith === "resend" && keyed === false && (
