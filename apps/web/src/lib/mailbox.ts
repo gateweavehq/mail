@@ -9,6 +9,8 @@ export interface Person {
 
 export interface ListedMessage {
 	id: string;
+	/** The thread it is in. */
+	threadId: string;
 	arrivedAt: number;
 	from: Person | null;
 	subject: string;
@@ -33,8 +35,56 @@ export interface MailboxPage {
 	next: MessageCursor | null;
 }
 
+export interface ListedThread {
+	id: string;
+	/** When its newest message arrived. */
+	latestAt: number;
+	/** How many messages it has. */
+	count: number;
+	/**
+	 * Its newest message's subject, like the proved domain beside it, without "Re:", list tags and
+	 * their kin. Those are what may differ between a thread's messages, so the words are the same
+	 * whoever wrote which of them.
+	 */
+	subject: string;
+	/** Who wrote in it, each once, in the order they first wrote. The first few only. */
+	senders: Person[];
+	/** As `verifiedDomain` in a listing, for its newest message. */
+	latestVerifiedDomain: string | null;
+}
+
+/** Where a listing of threads goes on from. */
+export interface ThreadCursor {
+	latestAt: number;
+	id: string;
+}
+
+export interface ThreadsPage {
+	name: string;
+	threads: ListedThread[];
+	/** Where the next page, of threads with older news, starts, or null when there is none. */
+	next: ThreadCursor | null;
+}
+
+export interface ThreadPage {
+	/** The mailbox's name. */
+	mailbox: string;
+	/** As in `ListedThread`. */
+	subject: string;
+	/** How many messages the whole thread has. */
+	count: number;
+	/** A page of them, oldest first. The first page has the newest. */
+	messages: ListedMessage[];
+	/** Where the page before this one, of older messages, starts, or null when there is none. */
+	older: MessageCursor | null;
+	/** The newest message on this page, opened. */
+	latest: OpenedMessage | null;
+}
+
 export interface OpenedMessage {
 	id: string;
+	/** The thread it is in. */
+	threadId: string;
 	arrivedAt: number;
 	size: number;
 	from: Person | null;
@@ -71,6 +121,35 @@ export const getMailbox = createServerFn({ method: "GET" })
 	.handler(async ({ data }): Promise<MailboxPage | null> => {
 		const { listMessages } = await import("#/server/mailbox/read");
 		return listMessages(data.workspace, data.mailbox, data.before);
+	});
+
+/** A page of a mailbox's threads, the newest news first, or null when the caller can't see it. */
+export const getThreads = createServerFn({ method: "GET" })
+	.validator(
+		z.object({
+			workspace: Slug,
+			mailbox: Id,
+			before: z.object({ latestAt: z.number().int().nonnegative(), id: Id }).nullable(),
+		}),
+	)
+	.handler(async ({ data }): Promise<ThreadsPage | null> => {
+		const { listThreads } = await import("#/server/mailbox/read");
+		return listThreads(data.workspace, data.mailbox, data.before);
+	});
+
+/** A page of a thread, or null when there is no such thread the caller can see. */
+export const getThread = createServerFn({ method: "GET" })
+	.validator(
+		z.object({
+			workspace: Slug,
+			mailbox: Id,
+			thread: Id,
+			before: z.object({ arrivedAt: z.number().int().nonnegative(), id: Id }).nullable(),
+		}),
+	)
+	.handler(async ({ data }): Promise<ThreadPage | null> => {
+		const { openThread } = await import("#/server/mailbox/read");
+		return openThread(data.workspace, data.mailbox, data.thread, data.before);
 	});
 
 /** One message, parsed, or null when there is no such message the caller can see. */

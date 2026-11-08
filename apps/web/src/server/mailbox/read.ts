@@ -1,15 +1,26 @@
 import { env } from "cloudflare:workers";
 import { and, eq } from "drizzle-orm";
 import PostalMime, { type Address, addressParser, decodeWords } from "postal-mime";
-import type { MailboxPage, MessageCursor, OpenedMessage, Person } from "../../lib/mailbox";
+import type {
+	ListedMessage,
+	MailboxPage,
+	MessageCursor,
+	OpenedMessage,
+	Person,
+	ThreadCursor,
+	ThreadPage,
+	ThreadsPage,
+} from "../../lib/mailbox";
 import { isAdminRole } from "../../lib/roles";
 import { currentMember } from "../access";
 import { db } from "../auth";
 import { schema } from "../db";
 import { appOrigin } from "../origin";
+import type { StoredSummary } from "./durable-object";
 import { mailboxStub } from "./index";
+import { threadSubject } from "./thread";
 
-/** Messages on one page of a mailbox. */
+/** Messages or threads on one page of a mailbox. */
 export const PAGE_SIZE = 50;
 
 /** The most text a message's page shows, in characters. */
@@ -78,15 +89,88 @@ export async function listMessages(
 	const last = shown.at(-1);
 	return {
 		name: box.name,
-		messages: shown.map((row) => ({
-			id: row.id,
-			arrivedAt: row.arrivedAt,
-			from: sender(row.from),
-			subject: decoded(row.subject),
-			verifiedDomain: row.verifiedDomain,
-			size: row.size,
-		})),
+		messages: shown.map(listed),
 		next: rows.length > PAGE_SIZE && last ? { arrivedAt: last.arrivedAt, id: last.id } : null,
+	};
+}
+
+function listed(row: StoredSummary): ListedMessage {
+	return {
+		id: row.id,
+		threadId: row.threadId,
+		arrivedAt: row.arrivedAt,
+		from: sender(row.from),
+		subject: decoded(row.subject),
+		verifiedDomain: row.verifiedDomain,
+		size: row.size,
+	};
+}
+
+/** Who wrote in a thread, each address once. */
+function senders(froms: (string | null)[]): Person[] {
+	const found: Person[] = [];
+	for (const from of froms) {
+		const person = sender(from);
+		if (!person) continue;
+		const same = found.some((one) =>
+			person.address ? one.address === person.address : one.name === person.name,
+		);
+		if (!same) found.push(person);
+	}
+	return found;
+}
+
+export async function listThreads(
+	slug: string,
+	mailboxId: string,
+	before: ThreadCursor | null,
+): Promise<ThreadsPage | null> {
+	const box = await openMailbox(slug, mailboxId);
+	if (!box) return null;
+	const rows = await box.stub.threads(before, PAGE_SIZE + 1);
+	const shown = rows.slice(0, PAGE_SIZE);
+	const last = shown.at(-1);
+	return {
+		name: box.name,
+		threads: shown.map((row) => ({
+			id: row.id,
+			latestAt: row.latestAt,
+			count: row.count,
+			subject: threadSubject(decoded(row.subject)),
+			senders: senders(row.senders),
+			latestVerifiedDomain: row.latestVerifiedDomain,
+		})),
+		next: rows.length > PAGE_SIZE && last ? { latestAt: last.latestAt, id: last.id } : null,
+	};
+}
+
+/**
+ * A page of a thread's messages, the newest page first, with its newest opened, as the thread's
+ * page shows them.
+ */
+export async function openThread(
+	slug: string,
+	mailboxId: string,
+	threadId: string,
+	before: MessageCursor | null,
+): Promise<ThreadPage | null> {
+	const box = await openMailbox(slug, mailboxId);
+	if (!box) return null;
+	const thread = await box.stub.thread(threadId, before, PAGE_SIZE + 1);
+	if (!thread) return null;
+	const shown = thread.messages.slice(0, PAGE_SIZE);
+	const [newest] = shown;
+	const oldest = shown.at(-1);
+	return {
+		mailbox: box.name,
+		subject: threadSubject(decoded(thread.subject)),
+		count: thread.count,
+		messages: shown.map(listed).reverse(),
+		older:
+			thread.messages.length > PAGE_SIZE && oldest
+				? { arrivedAt: oldest.arrivedAt, id: oldest.id }
+				: null,
+		latest: newest ? await readMessage(box.stub, newest.id) : null,
 	};
 }
 
@@ -100,8 +184,15 @@ export async function openMessage(
 	messageId: string,
 ): Promise<OpenedMessage | null> {
 	const box = await openMailbox(slug, mailboxId);
-	if (!box) return null;
-	const row = await box.stub.get(messageId);
+	return box ? readMessage(box.stub, messageId) : null;
+}
+
+/** Reads and parses a message of a mailbox the caller may read. */
+async function readMessage(
+	stub: ReturnType<typeof mailboxStub>,
+	messageId: string,
+): Promise<OpenedMessage | null> {
+	const row = await stub.get(messageId);
 	if (!row) return null;
 	const object = await env.RAW_MAIL.get(row.object);
 	if (!object) return null;
@@ -110,6 +201,7 @@ export async function openMessage(
 	const text = fromHtml?.text ?? email.text ?? "";
 	return {
 		id: row.id,
+		threadId: row.threadId,
 		arrivedAt: row.arrivedAt,
 		size: row.size,
 		// The headers the listing kept are the first of each, which is what the page shows too.
@@ -196,14 +288,40 @@ function answer(body: unknown, status = 200): Response {
 /** The same whether the mailbox doesn't exist or the caller can't see it. */
 const notFoundJson = () => answer({ ok: false, error: "Not found" }, 404);
 
+/** Where a page starts, from `beforeAt` and `beforeId` in a URL, or null for the first. */
+function messageCursor(url: URL): MessageCursor | null {
+	const at = Number(url.searchParams.get("beforeAt"));
+	const id = url.searchParams.get("beforeId");
+	return id && Number.isSafeInteger(at) && at >= 0 && id.length <= 100
+		? { arrivedAt: at, id }
+		: null;
+}
+
 /** A page of a mailbox, for `GET /api/mail/<workspace>/<mailbox>`. */
 export async function mailboxAnswer(slug: string, mailboxId: string, url: URL): Promise<Response> {
+	const page = await listMessages(slug, mailboxId, messageCursor(url));
+	return page ? answer(page) : notFoundJson();
+}
+
+/** A page of a mailbox's threads, for `GET /api/mail/<workspace>/<mailbox>/threads`. */
+export async function threadsAnswer(slug: string, mailboxId: string, url: URL): Promise<Response> {
 	const at = Number(url.searchParams.get("beforeAt"));
 	const id = url.searchParams.get("beforeId");
 	const before =
-		id && Number.isSafeInteger(at) && at >= 0 && id.length <= 100 ? { arrivedAt: at, id } : null;
-	const page = await listMessages(slug, mailboxId, before);
+		id && Number.isSafeInteger(at) && at >= 0 && id.length <= 100 ? { latestAt: at, id } : null;
+	const page = await listThreads(slug, mailboxId, before);
 	return page ? answer(page) : notFoundJson();
+}
+
+/** A page of a thread, for `GET /api/mail/<workspace>/<mailbox>/threads/<thread>`. */
+export async function threadAnswer(
+	slug: string,
+	mailboxId: string,
+	threadId: string,
+	url: URL,
+): Promise<Response> {
+	const thread = await openThread(slug, mailboxId, threadId, messageCursor(url));
+	return thread ? answer(thread) : notFoundJson();
 }
 
 /** One message, for `GET /api/mail/<workspace>/<mailbox>/<message>`. */

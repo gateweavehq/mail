@@ -628,3 +628,355 @@ describe("a full mailbox", () => {
 		]);
 	});
 });
+
+describe("threads", () => {
+	interface Threads {
+		threads: {
+			id: string;
+			latestAt: number;
+			count: number;
+			subject: string;
+			senders: { name: string; address: string }[];
+			latestVerifiedDomain: string | null;
+		}[];
+		next: { latestAt: number; id: string } | null;
+	}
+
+	interface Thread {
+		mailbox: string;
+		subject: string;
+		count: number;
+		messages: { id: string; threadId: string; subject: string }[];
+		older: { arrivedAt: number; id: string } | null;
+		latest: (Opened & { threadId: string }) | null;
+	}
+
+	async function threads(slug: string, mailboxId: string, query = "") {
+		const response = await mail.fetch(`${origin}/api/mail/${slug}/${mailboxId}/threads${query}`, {
+			headers: owner.headers,
+		});
+		expect(response.status).toBe(200);
+		return (await response.json()) as Threads;
+	}
+
+	function thread(
+		slug: string,
+		mailboxId: string,
+		id: string,
+		headers = owner.headers,
+		query = "",
+	) {
+		return mail.fetch(`${origin}/api/mail/${slug}/${mailboxId}/threads/${id}${query}`, {
+			headers,
+		});
+	}
+
+	async function openThread(slug: string, mailboxId: string, id: string, query = "") {
+		const response = await thread(slug, mailboxId, id, owner.headers, query);
+		expect(response.status).toBe(200);
+		return (await response.json()) as Thread;
+	}
+
+	const subjects = async (slug: string, mailboxId: string) =>
+		(await threads(slug, mailboxId)).threads.map((one) => [one.subject, one.count]);
+
+	it("puts a reply in the thread of the message it answers, newest news first", async () => {
+		const box = await mailboxWithAddress();
+		await kept(box.address, message(box.address, { subject: "Older", messageId: "<old@x>" }));
+		await kept(box.address, message(box.address, { subject: "Plan", messageId: "<plan@x>" }));
+		await kept(
+			box.address,
+			message(box.address, {
+				from: "Second Person <second@example.org>",
+				subject: "Re: Plan",
+				messageId: "<reply@x>",
+				extra: ["In-Reply-To: <plan@x>", "References: <plan@x>"],
+				above: fromCloudflare("pass"),
+			}),
+		);
+
+		const page = await threads(box.slug, box.mailboxId);
+		expect(page.threads.map((one) => [one.subject, one.count])).toEqual([
+			["Plan", 2],
+			["Older", 1],
+		]);
+		const [plan] = page.threads;
+		expect(plan?.senders.map((one) => one.address)).toEqual([
+			"sender@example.org",
+			"second@example.org",
+		]);
+		expect(plan?.latestVerifiedDomain).toBe("example.org");
+		expect(page.threads[1]?.latestVerifiedDomain).toBeNull();
+
+		const body = await openThread(box.slug, box.mailboxId, plan?.id ?? "");
+		expect(body.subject).toBe("Plan");
+		expect(body.messages.map((one) => one.subject)).toEqual(["Plan", "Re: Plan"]);
+		expect(body.latest?.subject).toBe("Re: Plan");
+		expect(body.latest?.threadId).toBe(plan?.id);
+		expect(body.count).toBe(2);
+		expect(body.older).toBeNull();
+
+		// Each message knows its thread, in the listing of messages too.
+		const listed = (await messages(box.slug, box.mailboxId)).messages as { threadId?: string }[];
+		expect(listed.filter((one) => one.threadId === plan?.id)).toHaveLength(2);
+	});
+
+	it("keeps a reply apart when its subject is another", async () => {
+		const box = await mailboxWithAddress();
+		await kept(box.address, message(box.address, { subject: "Invoice 42", messageId: "<inv@x>" }));
+		await kept(
+			box.address,
+			message(box.address, { subject: "Something else entirely", extra: ["In-Reply-To: <inv@x>"] }),
+		);
+		await kept(
+			box.address,
+			message(box.address, {
+				subject: "RE: [billing] invoice  42",
+				extra: ["References: <inv@x>"],
+			}),
+		);
+
+		// The reply with the same subject made its thread the one with the newest news, and a thread
+		// shows its newest message's subject.
+		expect(await subjects(box.slug, box.mailboxId)).toEqual([
+			["invoice 42", 2],
+			["Something else entirely", 1],
+		]);
+	});
+
+	it("never joins a thread on its subject alone", async () => {
+		const box = await mailboxWithAddress();
+		await kept(box.address, message(box.address, { subject: "Plan", messageId: "<plan@x>" }));
+		await kept(box.address, message(box.address, { subject: "Re: Plan" }));
+		await kept(
+			box.address,
+			message(box.address, { subject: "Re: Plan", extra: ["References: <elsewhere@x>"] }),
+		);
+
+		expect(await subjects(box.slug, box.mailboxId)).toEqual([
+			["Plan", 1],
+			["Plan", 1],
+			["Plan", 1],
+		]);
+	});
+
+	it("takes in a reply that arrived before the message it answers", async () => {
+		const box = await mailboxWithAddress();
+		await kept(
+			box.address,
+			message(box.address, { subject: "Re: Late", extra: ["In-Reply-To: <late@x>"] }),
+		);
+		await kept(box.address, message(box.address, { subject: "Late", messageId: "<late@x>" }));
+
+		const page = await threads(box.slug, box.mailboxId);
+		expect(page.threads.map((one) => [one.subject, one.count])).toEqual([["Late", 2]]);
+		const body = await openThread(box.slug, box.mailboxId, page.threads[0]?.id ?? "");
+		// In the order they arrived.
+		expect(body.messages.map((one) => one.subject)).toEqual(["Re: Late", "Late"]);
+	});
+
+	it("puts together replies to a message the mailbox never got", async () => {
+		// Such as mail its people sent from elsewhere: every answer names it, and none is here.
+		const box = await mailboxWithAddress();
+		for (const who of ["one", "two"]) {
+			await kept(
+				box.address,
+				message(box.address, {
+					from: `${who} <${who}@example.org>`,
+					subject: "Re: Trip",
+					extra: ["In-Reply-To: <mine@elsewhere>", "References: <mine@elsewhere>"],
+				}),
+			);
+		}
+		await kept(
+			box.address,
+			message(box.address, { subject: "Re: Other", extra: ["References: <mine@elsewhere>"] }),
+		);
+
+		expect(await subjects(box.slug, box.mailboxId)).toEqual([
+			["Other", 1],
+			["Trip", 2],
+		]);
+	});
+
+	it("shows a thread's subject in words no stranger chose, beside the newest proved domain", async () => {
+		const box = await mailboxWithAddress();
+		// A stranger who knows the id of a message the mailbox's people sent elsewhere writes first.
+		await kept(
+			box.address,
+			message(box.address, {
+				from: "Billing <billing@attacker.example>",
+				subject: "[Pay to IBAN XX00 1234 instead] Invoice 42",
+				extra: ["In-Reply-To: <invoice@elsewhere>"],
+			}),
+		);
+		// Then the real answer arrives, proved.
+		await kept(
+			box.address,
+			message(box.address, {
+				subject: "Re: Invoice 42",
+				extra: ["In-Reply-To: <invoice@elsewhere>"],
+				above: fromCloudflare("pass"),
+			}),
+		);
+
+		const [line] = (await threads(box.slug, box.mailboxId)).threads;
+		expect([line?.subject, line?.count, line?.latestVerifiedDomain]).toEqual([
+			"Invoice 42",
+			2,
+			"example.org",
+		]);
+		expect((await openThread(box.slug, box.mailboxId, line?.id ?? "")).subject).toBe("Invoice 42");
+
+		// And when a stranger writes the newest message, their tags don't reach the line either.
+		await kept(
+			box.address,
+			message(box.address, {
+				from: "Billing <billing@attacker.example>",
+				subject: "Re: [Reply within 24h or lose access] Invoice 42",
+				extra: ["In-Reply-To: <invoice@elsewhere>"],
+			}),
+		);
+		const [after] = (await threads(box.slug, box.mailboxId)).threads;
+		expect([after?.subject, after?.count, after?.latestVerifiedDomain]).toEqual([
+			"Invoice 42",
+			3,
+			null,
+		]);
+	});
+
+	it("takes in any number of threads that one reply links", async () => {
+		// A stranger can make a thread of every message they send, and SQLite takes at most a hundred
+		// values in a query, so linking them mustn't take one each.
+		const box = await mailboxWithAddress();
+		for (let n = 0; n < 101; n++) {
+			await kept(box.address, message(box.address, { messageId: "<root@x>", body: `Copy ${n}` }));
+		}
+		expect((await threads(box.slug, box.mailboxId)).next).not.toBeNull();
+
+		await kept(
+			box.address,
+			message(box.address, { subject: "Re: Hello", extra: ["References: <root@x>"] }),
+		);
+
+		const page = await threads(box.slug, box.mailboxId);
+		expect(page.threads.map((one) => one.count)).toEqual([102]);
+		expect(page.next).toBeNull();
+	});
+
+	it("merges two threads that one message links", async () => {
+		const box = await mailboxWithAddress();
+		await kept(box.address, message(box.address, { subject: "Merge", messageId: "<a@x>" }));
+		await kept(box.address, message(box.address, { subject: "Merge", messageId: "<b@x>" }));
+		expect(await subjects(box.slug, box.mailboxId)).toEqual([
+			["Merge", 1],
+			["Merge", 1],
+		]);
+		const [newer, older] = (await threads(box.slug, box.mailboxId)).threads;
+
+		await kept(
+			box.address,
+			message(box.address, { subject: "Re: Merge", extra: ["References: <a@x> <b@x>"] }),
+		);
+
+		const page = await threads(box.slug, box.mailboxId);
+		expect(page.threads.map((one) => [one.subject, one.count])).toEqual([["Merge", 3]]);
+		// The thread that began first takes in the other.
+		expect(page.threads[0]?.id).toBe(older?.id);
+		expect((await thread(box.slug, box.mailboxId, newer?.id ?? "")).status).toBe(404);
+	});
+
+	it("follows deletions: a thread shrinks, then goes with its last message", async () => {
+		const box = await mailboxWithAddress();
+		await kept(box.address, message(box.address, { subject: "Short", messageId: "<s@x>" }));
+		await kept(
+			box.address,
+			message(box.address, { subject: "Re: Short", extra: ["In-Reply-To: <s@x>"] }),
+		);
+		const [only] = (await threads(box.slug, box.mailboxId)).threads;
+		const body = await openThread(box.slug, box.mailboxId, only?.id ?? "");
+		const remove = (id: string) =>
+			mail.fetch(`${origin}/api/mail/${box.slug}/${box.mailboxId}/${id}`, {
+				method: "DELETE",
+				headers: owner.headers,
+			});
+
+		expect((await remove(body.messages[1]?.id ?? "")).status).toBe(200);
+		const after = (await threads(box.slug, box.mailboxId)).threads;
+		expect(after.map((one) => [one.subject, one.count])).toEqual([["Short", 1]]);
+		expect(after[0]?.latestAt).toBeLessThan(only?.latestAt ?? 0);
+
+		expect((await remove(body.messages[0]?.id ?? "")).status).toBe(200);
+		expect((await threads(box.slug, box.mailboxId)).threads).toEqual([]);
+		expect((await thread(box.slug, box.mailboxId, only?.id ?? "")).status).toBe(404);
+	});
+
+	it("shows a thread only to the workspace's members, through its own mailbox", async () => {
+		const box = await mailboxWithAddress();
+		await kept(box.address, message(box.address, { subject: "Private" }));
+		const [only] = (await threads(box.slug, box.mailboxId)).threads;
+		const other = await addMailbox(box.slug, owner, box.domainId, `other@${box.domain}`);
+		const id = only?.id ?? "";
+
+		expect((await thread(box.slug, box.mailboxId, id, outsider.headers)).status).toBe(404);
+		expect((await thread(box.slug, other, id)).status).toBe(404);
+		// Nor through a mailbox of another workspace of theirs.
+		const elsewhere = await mailboxWithAddress();
+		expect((await thread(elsewhere.slug, elsewhere.mailboxId, id)).status).toBe(404);
+		const listing = await mail.fetch(`${origin}/api/mail/${box.slug}/${box.mailboxId}/threads`, {
+			headers: outsider.headers,
+		});
+		expect(listing.status).toBe(404);
+	});
+
+	it("pages through a long thread, from its newest messages", async () => {
+		const box = await mailboxWithAddress();
+		await kept(box.address, message(box.address, { subject: "Long", messageId: "<long@x>" }));
+		for (let n = 1; n <= 50; n++) {
+			await kept(
+				box.address,
+				message(box.address, {
+					subject: "Re: Long",
+					body: `Reply ${n}`,
+					extra: ["In-Reply-To: <long@x>"],
+				}),
+			);
+		}
+		const [line] = (await threads(box.slug, box.mailboxId)).threads;
+		const id = line?.id ?? "";
+
+		const first = await openThread(box.slug, box.mailboxId, id);
+		expect(first.count).toBe(51);
+		expect(first.messages).toHaveLength(50);
+		expect(first.messages[0]?.subject).toBe("Re: Long");
+		expect(first.latest?.id).toBe(first.messages.at(-1)?.id);
+		expect(first.latest?.text).toContain("Reply 50");
+
+		const second = await openThread(
+			box.slug,
+			box.mailboxId,
+			id,
+			`?beforeAt=${first.older?.arrivedAt}&beforeId=${first.older?.id}`,
+		);
+		expect(second.count).toBe(51);
+		expect(second.messages.map((one) => one.subject)).toEqual(["Long"]);
+		expect(second.older).toBeNull();
+	});
+
+	it("pages through threads", async () => {
+		const box = await mailboxWithAddress();
+		for (let n = 0; n < 51; n++) {
+			await kept(box.address, message(box.address, { subject: `Thread ${n}` }));
+		}
+		const first = await threads(box.slug, box.mailboxId);
+		expect(first.threads).toHaveLength(50);
+		expect(first.threads[0]?.subject).toBe("Thread 50");
+		const second = await threads(
+			box.slug,
+			box.mailboxId,
+			`?beforeAt=${first.next?.latestAt}&beforeId=${first.next?.id}`,
+		);
+		expect(second.threads.map((one) => one.subject)).toEqual(["Thread 0"]);
+		expect(second.next).toBeNull();
+	});
+});

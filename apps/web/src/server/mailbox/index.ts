@@ -10,6 +10,7 @@ import {
 	readHeaderBlock,
 	verifiedDomain,
 } from "./headers";
+import { ownId, referencedIds } from "./thread";
 
 export { Mailbox } from "./durable-object";
 
@@ -54,6 +55,8 @@ export async function storeMail(
 		subject: firstHeader(headers, "subject"),
 		date: firstHeader(headers, "date"),
 		messageId: firstHeader(headers, "message-id"),
+		ownId: ownId(headers),
+		references: referencedIds(headers),
 		dmarc: verdict?.dmarc ?? null,
 		verifiedDomain: verifiedDomain(headers, verdict),
 	});

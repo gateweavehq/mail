@@ -41,9 +41,11 @@ tools that run on Cloudflare, next to [Gateweave Track](https://github.com/gatew
 - **Receiving mail.** The Worker's `email()` handler looks up each message's address and refuses
   one that doesn't exist. Mail for one that does is kept in its mailbox, once even when it arrives
   twice, up to 1 GiB per mailbox.
-- **Reading mail.** Members of a workspace see its mailboxes' messages, newest first, and read
-  their text, with the attachments listed and the original to download. A sender's domain shows
-  as proved only when the message passed DMARC for it. Owners and admins can delete a message.
+- **Reading mail.** Members of a workspace see its mailboxes' threads, newest news first, and read
+  their messages' text, with the attachments listed and the original to download. Replies join
+  the thread of the message they answer, or of other replies to it, when their subject matches.
+  A sender's domain shows as proved only when the message passed DMARC for it. Owners and admins
+  can delete a message.
 
 ## What it is planned to become
 
