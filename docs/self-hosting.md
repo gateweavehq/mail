@@ -144,23 +144,23 @@ pnpm wrangler secret put BETTER_AUTH_URL
 Keep tokens, keys and email addresses as secrets. Plain variables stay through a deploy too,
 because `wrangler.jsonc` sets `keep_vars`.
 
-| Name                   | What it does                                                                                                          |
-| ---------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `BETTER_AUTH_SECRET`   | Signs sessions. Required.                                                                                             |
-| `BETTER_AUTH_URL`      | The address people use, such as `https://mail.example.com`. Inferred from each request when unset.                    |
-| `GITHUB_CLIENT_ID`     | Turns on "Sign in with GitHub", with `GITHUB_CLIENT_SECRET`.                                                          |
-| `GITHUB_CLIENT_SECRET` | The client secret of the same GitHub OAuth app.                                                                       |
-| `OIDC_ISSUER`          | Turns on an OpenID Connect provider, with the two below. See [below](#sign-in-through-an-openid-connect-provider).    |
-| `OIDC_CLIENT_ID`       | This deployment's client ID at the provider.                                                                          |
-| `OIDC_CLIENT_SECRET`   | Its client secret there.                                                                                              |
-| `OIDC_PROVIDER_NAME`   | What the sign-in button calls it. Unset: "single sign-on".                                                            |
-| `EMAIL_FROM`           | Turns on email (invitations, password reset), such as `Gateweave Mail <mail@example.com>`.                            |
-| `MAILBOX_BYTES`        | How many bytes one mailbox may hold, as a whole number. Unset: 1 GiB.                                                 |
-| `SEND_PER_DAY`         | How many messages one workspace may send from its mailboxes a day, as a whole number. Unset: 200.                     |
-| `SECRETS_KEY`          | Encrypts workspaces' keys, such as a Resend key: 32 random bytes, base64. None can be added without it.               |
-| `LEGAL_NOTICE_URL`     | The address of your legal notice. See [below](#your-legal-pages).                                                     |
-| `PRIVACY_POLICY_URL`   | The address of your privacy policy.                                                                                   |
-| `TERMS_URL`            | The address of your terms.                                                                                            |
+| Name                   | What it does                                                                                                       |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `BETTER_AUTH_SECRET`   | Signs sessions. Required.                                                                                          |
+| `BETTER_AUTH_URL`      | The address people use, such as `https://mail.example.com`. Inferred from each request when unset.                 |
+| `GITHUB_CLIENT_ID`     | Turns on "Sign in with GitHub", with `GITHUB_CLIENT_SECRET`.                                                       |
+| `GITHUB_CLIENT_SECRET` | The client secret of the same GitHub OAuth app.                                                                    |
+| `OIDC_ISSUER`          | Turns on an OpenID Connect provider, with the two below. See [below](#sign-in-through-an-openid-connect-provider). |
+| `OIDC_CLIENT_ID`       | This deployment's client ID at the provider.                                                                       |
+| `OIDC_CLIENT_SECRET`   | Its client secret there.                                                                                           |
+| `OIDC_PROVIDER_NAME`   | What the sign-in button calls it. Unset: "single sign-on".                                                         |
+| `EMAIL_FROM`           | Turns on email (invitations, password reset), such as `Gateweave Mail <mail@example.com>`.                         |
+| `MAILBOX_BYTES`        | How many bytes one mailbox may hold, as a whole number. Unset: 1 GiB.                                              |
+| `SEND_PER_DAY`         | How many messages one workspace may send from its mailboxes a day, as a whole number. Unset: 200.                  |
+| `SECRETS_KEY`          | Encrypts workspaces' keys, such as a Resend key: 32 random bytes, base64. None can be added without it.            |
+| `LEGAL_NOTICE_URL`     | The address of your legal notice. See [below](#your-legal-pages).                                                  |
+| `PRIVACY_POLICY_URL`   | The address of your privacy policy.                                                                                |
+| `TERMS_URL`            | The address of your terms.                                                                                         |
 
 ### Your own domain
 
