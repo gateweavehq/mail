@@ -1,12 +1,13 @@
 import { env } from "cloudflare:workers";
 import { z } from "zod";
-import { SENDS_WITH } from "../../lib/providers";
+import { RECEIVES_WITH, SENDS_WITH } from "../../lib/providers";
 import { isAdminRole } from "../../lib/roles";
 import { currentCaller, currentMember } from "../access";
 import { db } from "../auth";
 import { removeMailboxes } from "../mailbox";
 import { appOrigin } from "../origin";
 import { allowDomainCheck } from "../rate-limit";
+import { dropUnusedReceivingWebhook, mendReceiving, setDomainReceiving } from "../resend-inbound";
 import { DEFAULT_DNS_RESOLVER, dnsLookup } from "./dns";
 import {
 	addAddress,
@@ -28,10 +29,16 @@ const Action = z.discriminatedUnion("action", [
 	z.object({ action: z.literal("add-domain"), name: z.string().max(300) }),
 	z.object({ action: z.literal("check-domain"), id: Id }),
 	z.object({ action: z.literal("remove-domain"), id: Id }),
+	z.object({ action: z.literal("check-receiving") }),
 	z.object({
 		action: z.literal("set-domain-sending"),
 		id: Id,
 		sendsWith: z.enum(SENDS_WITH),
+	}),
+	z.object({
+		action: z.literal("set-domain-receiving"),
+		id: Id,
+		receivesWith: z.enum(RECEIVES_WITH),
 	}),
 	z.object({
 		action: z.literal("add-mailbox"),
@@ -113,10 +120,17 @@ async function run(action: z.output<typeof Action>, workspaceId: string, userId:
 				dnsLookup(env.DNS_RESOLVER_URL || DEFAULT_DNS_RESOLVER),
 				now,
 			);
-		case "remove-domain":
-			return removeDomain(db, workspaceId, action.id);
+		case "remove-domain": {
+			const result = await removeDomain(db, workspaceId, action.id);
+			if (result.ok) await dropUnusedReceivingWebhook(db, workspaceId);
+			return result;
+		}
 		case "set-domain-sending":
 			return setDomainSending(db, workspaceId, action.id, action.sendsWith);
+		case "set-domain-receiving":
+			return setDomainReceiving(db, workspaceId, action.id, action.receivesWith, appOrigin());
+		case "check-receiving":
+			return mendReceiving(db, workspaceId, appOrigin());
 		case "add-mailbox":
 			return addMailbox(db, workspaceId, action.name, action.everyone);
 		case "set-mailbox-access":

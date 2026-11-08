@@ -28,6 +28,9 @@ or subdomain is proved on its own: proving `example.com` gives no addresses on
   200 rules in all, and a new one can take over a minute to work, with mail going to the catch-all
   until it does.
 
+A domain whose DNS isn't on that Cloudflare account can receive through
+[Resend](https://resend.com) instead: see [Email](#email).
+
 Mail is early, so think before doing this for a domain people rely on: what arrives is kept and
 shown, and a message to an address that doesn't exist is refused. You can
 deploy without Email Routing. Proof stays after the TXT record is removed, but whoever runs the
@@ -209,6 +212,17 @@ Then, in the workspace, an owner or admin verifies the domain at Resend, adds a 
 Settings › Domains, and sets the domain to send with Resend. A key that may only send is enough.
 Keep `SECRETS_KEY` as it is: the keys sealed with it can't be opened with another, and would have
 to be added again. Resend's own limits and quotas apply to that account.
+
+Such a domain can receive through Resend too. In Resend, turn on receiving for the domain and add
+the MX record it shows; as a domain's mail goes to one place, use a subdomain when the domain
+already gets mail elsewhere. The workspace's key then needs full access, since a sending-only key
+can't read received mail. Set the domain to receive with Resend under Settings › Domains: Mail
+makes a webhook in that Resend account, pointing at `/api/inbound/resend/…` on the server's
+address (`BETTER_AUTH_URL`), which has to be reachable from the internet, and removes it when no
+domain receives with Resend. Resend turns off a webhook whose deliveries keep failing, as while
+the server is down for long; "Check the webhook" on the same page turns it back on.
+Resend takes mail for every address on the domain, so mail to an address that doesn't exist in
+Mail is left out rather than refused, and stays in Resend.
 
 As you hold the database, you can do it for them, from the repository root. Find their `id` in this
 list. Don't paste an address someone sent you into a command, as it could run as part of it:

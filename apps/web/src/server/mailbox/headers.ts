@@ -200,13 +200,11 @@ function resultParts(value: string): string[] {
 const normalDomain = (domain: string) => domain.trim().toLowerCase().replace(/\.$/, "");
 
 /**
- * The domain a message is proved to come from, or null. That is when Cloudflare's DMARC check
- * passed for the domain of the one address in the one `From`, which is the address a page shows.
- * A field whose name only looks like `From` counts as a second one: programs differ on such names,
- * and Cloudflare may have checked it instead.
+ * The domain of the one address in the one `From`, which is the address a page shows, or null when
+ * there isn't exactly one. A field whose name only looks like `From` counts as a second one:
+ * programs differ on such names, and a checker may have read it instead.
  */
-export function verifiedDomain(headers: Header[], verdict: Verdict | null): string | null {
-	if (verdict?.dmarc !== "pass" || !verdict.fromDomain) return null;
+export function soleFromDomain(headers: Header[]): string | null {
 	const froms = headers.filter((header) => header.name.replace(/[^a-z]/g, "") === "from");
 	const [from] = froms;
 	if (froms.length !== 1 || !from?.strict || from.name !== "from") return null;
@@ -220,8 +218,36 @@ export function verifiedDomain(headers: Header[], verdict: Verdict | null): stri
 	if (senders.length !== 1 || !sender || sender.group || !sender.address) return null;
 	const at = sender.address.lastIndexOf("@");
 	if (at <= 0) return null;
-	const domain = normalDomain(sender.address.slice(at + 1));
+	return normalDomain(sender.address.slice(at + 1));
+}
+
+/**
+ * The domain a message is proved to come from, or null. That is when Cloudflare's DMARC check
+ * passed for the domain of the one address in the one `From`.
+ */
+export function verifiedDomain(headers: Header[], verdict: Verdict | null): string | null {
+	if (verdict?.dmarc !== "pass" || !verdict.fromDomain) return null;
+	const domain = soleFromDomain(headers);
 	return domain === verdict.fromDomain ? domain : null;
+}
+
+/**
+ * The same for mail that came through Resend, whose DMARC result comes from its API rather than
+ * from a header. DMARC checks the domain of `From`, and with only one address there, that is the
+ * domain it passed, as long as it is also the From Resend read (`from`), so that Mail and Resend
+ * can't have read two different ones.
+ */
+export function resendVerifiedDomain(
+	headers: Header[],
+	dmarc: string | null,
+	from: string | null,
+): string | null {
+	if (dmarc !== "pass" || !from) return null;
+	const domain = soleFromDomain(headers);
+	const at = from.lastIndexOf("@");
+	return domain && at > 0 && normalDomain(from.slice(at + 1).replace(/>\s*$/, "")) === domain
+		? domain
+		: null;
 }
 
 /**

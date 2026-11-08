@@ -1,10 +1,10 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import type { DirectoryAction } from "#/server/directory/gateway";
-import type { SendsWith } from "./providers";
+import type { ReceivesWith, SendsWith } from "./providers";
 
 /** Where a domain's MX records send its mail. */
-export type MailRoute = "cloudflare" | "elsewhere" | "none";
+export type MailRoute = "cloudflare" | "resend" | "elsewhere" | "none";
 
 export interface DirectoryDomain {
 	id: string;
@@ -14,6 +14,19 @@ export interface DirectoryDomain {
 	proof: { name: string; value: string } | null;
 	/** How its mail is sent. */
 	sendsWith: SendsWith;
+	/** How its mail arrives. */
+	receivesWith: ReceivesWith;
+}
+
+/** How receiving through Resend goes for the workspace, for owners and admins. */
+export interface ResendReceiving {
+	/** Whether its webhook is made. */
+	ready: boolean;
+	/** When mail that came through Resend was last stored. */
+	receivedAt: number | null;
+	/** What went wrong last, as a code, until mail is stored again. */
+	trouble: string | null;
+	troubleAt: number | null;
 }
 
 export interface DirectoryAddress {
@@ -44,6 +57,8 @@ export interface DirectoryMailbox {
 export interface Directory {
 	domains: DirectoryDomain[];
 	mailboxes: DirectoryMailbox[];
+	/** Null for those who can't change it, and while no domain has received with Resend. */
+	resendReceiving: ResendReceiving | null;
 }
 
 /** The workspace's domains and mailboxes, or null if the caller isn't in it. */

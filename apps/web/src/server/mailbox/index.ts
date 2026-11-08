@@ -6,8 +6,10 @@ import {
 	cloudflareVerdict,
 	deliveryKey,
 	firstHeader,
+	type Header,
 	parseHeaders,
 	readHeaderBlock,
+	resendVerifiedDomain,
 	verifiedDomain,
 } from "./headers";
 import { ownId, referencedIds } from "./thread";
@@ -23,12 +25,38 @@ export function mailboxStub(mailboxId: string) {
 export const mailboxPrefix = (workspaceId: string, mailboxId: string) =>
 	`${workspaceId}/${mailboxId}/`;
 
-/** What `email()` gets from Cloudflare, as far as storing goes. */
+/** What `email()` gets from Cloudflare, or a delivery from Resend, as far as storing goes. */
 export interface ArrivingMessage {
 	readonly from: string;
 	readonly to: string;
 	readonly raw: ReadableStream<Uint8Array>;
 	readonly rawSize: number;
+}
+
+/** What proves who sent a message: a DMARC result, and the domain it proves the mail came from. */
+export type Judge = (headers: Header[]) => { dmarc: string | null; verifiedDomain: string | null };
+
+/** For mail from Email Routing: Cloudflare's own `Authentication-Results`, in its own place. */
+export const judgedByCloudflare: Judge = (headers) => {
+	const verdict = cloudflareVerdict(headers);
+	return { dmarc: verdict?.dmarc ?? null, verifiedDomain: verifiedDomain(headers, verdict) };
+};
+
+/**
+ * For mail that came through Resend: the DMARC result its API gives, which its MX computed, for
+ * the From it read (`from`). Nothing in the mail itself counts, as a sender can write anything
+ * there, Cloudflare's headers too.
+ */
+export const judgedByResend =
+	(dmarc: string | null, from: string | null): Judge =>
+	(headers) => ({ dmarc, verifiedDomain: resendVerifiedDomain(headers, dmarc, from) });
+
+/** The mailbox has no room for the message, which may change by the time the sender tries again. */
+export class MailboxFullError extends Error {
+	override name = "MailboxFullError";
+	constructor() {
+		super("The mailbox is full");
+	}
 }
 
 /**
@@ -39,10 +67,11 @@ export interface ArrivingMessage {
 export async function storeMail(
 	found: { workspaceId: string; mailboxId: string },
 	message: ArrivingMessage,
+	judge: Judge = judgedByCloudflare,
 ): Promise<void> {
 	const [forHeaders, forStoring] = message.raw.tee();
 	const headers = parseHeaders(await readHeaderBlock(forHeaders));
-	const verdict = cloudflareVerdict(headers);
+	const judged = judge(headers);
 	const mailbox = mailboxStub(found.mailboxId);
 	const begun = await mailbox.begin({
 		workspaceId: found.workspaceId,
@@ -57,13 +86,13 @@ export async function storeMail(
 		messageId: firstHeader(headers, "message-id"),
 		ownId: ownId(headers),
 		references: referencedIds(headers),
-		dmarc: verdict?.dmarc ?? null,
-		verifiedDomain: verifiedDomain(headers, verdict),
+		dmarc: judged.dmarc,
+		verifiedDomain: judged.verifiedDomain,
 	});
 	if (!begun.ok) {
 		await forStoring.cancel();
 		// Temporary on purpose: the mailbox may have room again by the time the sender retries.
-		throw new Error("The mailbox is full");
+		throw new MailboxFullError();
 	}
 	// R2 needs the length up front to take a stream, and Cloudflare gives it.
 	const sized = new FixedLengthStream(message.rawSize);

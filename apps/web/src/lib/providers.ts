@@ -7,6 +7,15 @@ export const SENDS_WITH = ["cloudflare", "resend"] as const;
 
 export type SendsWith = (typeof SENDS_WITH)[number];
 
+/**
+ * How a domain's mail reaches Mail: through Cloudflare Email Routing to the Worker's `email()`, or
+ * through Resend, whose MX takes it and whose webhook says it came. Resend needs the workspace's key
+ * with full access, since a sending-only key can't read received mail.
+ */
+export const RECEIVES_WITH = ["cloudflare", "resend"] as const;
+
+export type ReceivesWith = (typeof RECEIVES_WITH)[number];
+
 /** Providers a workspace keeps a key for. */
 export const KEYED_PROVIDERS = ["resend"] as const;
 
@@ -74,5 +83,42 @@ export function resendReason(code: string, detail: string | null): string {
 			return "Resend couldn't be reached, so nobody knows whether it went.";
 		default:
 			return `Resend refused it (${name}).${said}`;
+	}
+}
+
+/**
+ * Why mail that came through Resend wasn't stored, in words, from Mail's code. Resend keeps trying
+ * for about a day after each failure that is Mail's or the key's, so mending it in time loses nothing.
+ */
+export function receivingTrouble(code: string): string {
+	const name = code.startsWith(RESEND_CODE) ? code.slice(RESEND_CODE.length) : code;
+	switch (name) {
+		case "no_key":
+			return "The workspace has no Resend key, so mail Resend received couldn't be fetched. Add a key with full access; Resend tries again for about a day.";
+		case "key_unreadable":
+			return "The workspace's Resend key can't be read on this server any more, so mail Resend received couldn't be fetched. Add it again.";
+		case "restricted_api_key":
+			return "The workspace's Resend key can only send, so mail Resend received couldn't be fetched. Add a key with full access; Resend tries again for about a day.";
+		case "missing_api_key":
+		case "invalid_api_key":
+		case "401":
+		case "403":
+			return "Resend didn't take the workspace's key, so mail Resend received couldn't be fetched. Add a working key with full access; Resend tries again for about a day.";
+		case "unreadable":
+			return "Resend's answer about a message it received couldn't be read, so it wasn't stored. It is still in Resend.";
+		case "not_found":
+			return "Resend said the account behind the workspace's key doesn't have a message its webhook named, as when the key is from another Resend account. Resend tries again for about a day.";
+		case "too_large":
+			return "A message Resend received was larger than Mail takes, so it wasn't stored. It is still in Resend.";
+		case "mailbox_full":
+			return "A mailbox was full, so a message Resend received wasn't stored yet. Resend tries again for about a day.";
+		case "raw_unavailable":
+			return "The message couldn't be downloaded from Resend. Resend tries again for about a day.";
+		case "store_failed":
+			return "Storing a message Resend received failed. Resend tries again for about a day.";
+		case "unreachable":
+			return "Resend couldn't be reached to fetch a message it received. Resend tries again for about a day.";
+		default:
+			return `Resend didn't give Mail a message it received (${name}).`;
 	}
 }
