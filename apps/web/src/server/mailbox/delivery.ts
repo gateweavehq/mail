@@ -1,3 +1,5 @@
+import type { ResendFailure } from "../providers/resend";
+
 /**
  * What Email Service's answers mean for a message the mailbox sends. Email Service has no
  * idempotency, so only an answer that says the message didn't go is tried again by Mail itself:
@@ -57,4 +59,29 @@ export function outcomeOf(error: unknown, attempts: number, now: number): Outcom
 	return wait === undefined
 		? { state: "refused", code }
 		: { state: "waiting", code, nextAt: now + wait };
+}
+
+/**
+ * What a failed try through Resend means. Resend knows each message by its key for a day, so one
+ * that may have gone is tried again too, and only when the tries run out is it uncertain. One that
+ * stayed busy or over quota until then is refused, since nothing went.
+ *
+ * Unless an earlier try under the same key may have sent it (`earlierMaybeSent`): then a refusal or
+ * the end of the tries leaves it uncertain, since Resend checks a key before it looks for what that
+ * key sent, and a refusal now doesn't say the earlier try didn't go.
+ */
+export function resendOutcome(
+	failure: ResendFailure,
+	attempts: number,
+	now: number,
+	earlierMaybeSent = false,
+): Outcome {
+	const { kind, code } = failure;
+	const stop: Outcome =
+		earlierMaybeSent || kind === "unsure"
+			? { state: "uncertain", code }
+			: { state: "refused", code };
+	if (kind === "refused") return stop;
+	const wait = WAITS_MS[kind === "daily" ? "daily" : "busy"][attempts - 1];
+	return wait === undefined ? stop : { state: "waiting", code, nextAt: now + wait };
 }

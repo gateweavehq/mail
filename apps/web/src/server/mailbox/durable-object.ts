@@ -1,7 +1,11 @@
 import { DurableObject } from "cloudflare:workers";
 import type { SendStatus } from "../../lib/outbox";
+import { KEY_CHANGED, RESEND_CODE, type SendsWith } from "../../lib/providers";
+import { createDb } from "../db";
+import { openProviderKey } from "../providers/keys";
+import { RESEND_API, type ResendFailure, sendWithResend } from "../providers/resend";
 import { bodyHash } from "./body";
-import { outcomeOf, STALE_SENDING_MS } from "./delivery";
+import { type Outcome, outcomeOf, resendOutcome, STALE_SENDING_MS, WAITS_MS } from "./delivery";
 import { indexBatch } from "./indexing";
 import { LINKED_THREADS, migrate } from "./schema";
 import { ftsQuery, searchable } from "./search";
@@ -81,8 +85,10 @@ export interface Sending {
 	ownId: string;
 	/** The ids it follows, which thread it. */
 	references: string[];
-	/** What the `EMAIL` binding's `send()` is given. */
+	/** What the `EMAIL` binding's `send()` is given, and what Resend's request is made from. */
 	request: EmailMessageBuilder;
+	/** How it goes: by its domain's setting when it was written. */
+	provider: SendsWith;
 	/** The draft's own id, which makes a second send of it the first one's. */
 	draft: string;
 	/**
@@ -103,6 +109,32 @@ export type Awaiting = {
 	sentBy: string | null;
 	arrivedAt: number;
 };
+
+/** A message as a try finds it. */
+type Trying = {
+	request: string;
+	attempts: number;
+	provider: string;
+	workspaceId: string | null;
+	idempotencyKey: string | null;
+	/** 1 when a try under its idempotency key may have sent it. */
+	maybeSent: number;
+	/** Which saving of the workspace's Resend key the last try used. */
+	keyVersion: string | null;
+};
+
+/** How handing a message over went. */
+type Delivered =
+	| { ok: true; providerId: string | null }
+	| {
+			ok: false;
+			outcome: Outcome;
+			detail: string | null;
+			/** Whether Resend turned the request down, which spends its key. */
+			answered: boolean;
+			/** Whether this try may have sent it. */
+			maybeSent: boolean;
+	  };
 
 export type Sent =
 	| ({ ok: true; id: string; threadId: string } & SendStatus)
@@ -180,7 +212,7 @@ export interface ThreadMessages {
 
 const SUMMARY = `id, thread_id AS threadId, arrived_at AS arrivedAt, size, from_header AS "from",
 	subject, date_header AS date, dmarc, verified_domain AS verifiedDomain, sent_by AS sentBy,
-	(SELECT json_object('state', state, 'code', code, 'nextAt', next_at) FROM outgoing
+	(SELECT json_object('state', state, 'code', code, 'nextAt', next_at, 'detail', detail) FROM outgoing
 		WHERE outgoing.message = message.id) AS sending,
 	(SELECT approved_by FROM outgoing WHERE outgoing.message = message.id) AS approvedBy`;
 
@@ -421,13 +453,17 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			// Not tried yet: should nothing try it, the alarm finds it waiting after a while. One held
 			// for approval is left alone by the alarm.
 			sql.exec(
-				`INSERT INTO outgoing (message, state, request, attempted_at, draft)
-				VALUES (?, ?, ?, ?, ?)`,
+				`INSERT INTO outgoing (message, state, request, attempted_at, draft, provider, workspace_id,
+					idempotency_key)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 				id,
 				sending.hold ? "held" : "sending",
 				JSON.stringify(sending.request),
 				sending.hold ? null : Date.now(),
 				sending.draft,
+				sending.provider,
+				sending.workspaceId,
+				id,
 			);
 		});
 		await this.#alarmBy(Date.now() + PENDING_MS);
@@ -516,14 +552,16 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 	}
 
 	/**
-	 * Asks Email Service to send a stored message now, and records how that went. The try is
-	 * recorded before Email Service is asked, so that should this object stop while it waits, the
-	 * alarm finds the message uncertain rather than trying it again. A person's try starts the count
-	 * of tries over.
+	 * Asks Email Service, or Resend, to send a stored message now, and records how that went. The try
+	 * is recorded before either is asked, so that should this object stop while it waits, the alarm
+	 * finds the message uncertain rather than trying it again, or for Resend, which knows it by its
+	 * key, tries it again. A person's try starts the count of tries over.
 	 *
 	 * Only from the state the caller found it in, checked as it changes: the first try of a new
 	 * message, the alarm's of one that waits, or a person's of one refused or uncertain. A message
 	 * discarded, deleted or tried by someone else meanwhile isn't sent, and the answer is null.
+	 *
+	 * A person who sends again one that stopped because the Resend key changed takes the new key.
 	 */
 	async #tryNow(
 		id: string,
@@ -539,42 +577,123 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			approve: "state = 'held'",
 		}[from];
 		const row = sql
-			.exec<{ request: string; attempts: number }>(
+			.exec<Trying>(
 				`UPDATE outgoing SET state = 'sending', attempted_at = ?, next_at = NULL,
 					attempts = CASE WHEN ? THEN 1 ELSE attempts + 1 END,
-					approved_by = coalesce(?, approved_by), approved_at = coalesce(?, approved_at)
+					approved_by = coalesce(?, approved_by), approved_at = coalesce(?, approved_at),
+					key_version = CASE WHEN ? AND code = ? THEN NULL ELSE key_version END
 				WHERE message = ? AND ${found}
-				RETURNING request, attempts`,
+				RETURNING request, attempts, provider, workspace_id AS workspaceId,
+					idempotency_key AS idempotencyKey, maybe_sent AS maybeSent, key_version AS keyVersion`,
 				now,
 				from === "again" || from === "approve" ? 1 : 0,
 				approvedBy,
 				approvedBy === null ? null : now,
+				from === "again" ? 1 : 0,
+				KEY_CHANGED,
 				id,
 			)
 			.toArray()[0];
 		if (!row) return null;
 		await this.#alarmBy(now + STALE_SENDING_MS);
-		try {
-			const result = await this.env.EMAIL.send(JSON.parse(row.request) as EmailMessageBuilder);
+		const result = await this.#deliver(id, row);
+		if (result.ok) {
 			sql.exec(
-				`UPDATE outgoing SET state = 'sent', code = NULL, provider_id = ?, sent_at = ?
+				`UPDATE outgoing SET state = 'sent', code = NULL, detail = NULL, provider_id = ?, sent_at = ?
 				WHERE message = ? AND state = 'sending'`,
-				result.messageId,
+				result.providerId,
 				Date.now(),
 				id,
 			);
-		} catch (error) {
-			const outcome = outcomeOf(error, row.attempts, Date.now());
+		} else {
+			const { outcome } = result;
 			sql.exec(
-				"UPDATE outgoing SET state = ?, code = ?, next_at = ? WHERE message = ? AND state = 'sending'",
+				`UPDATE outgoing SET state = ?, code = ?, next_at = ?, detail = ?,
+					maybe_sent = max(maybe_sent, ?),
+					idempotency_key = CASE WHEN ? AND maybe_sent = 0 THEN ? ELSE idempotency_key END
+				WHERE message = ? AND state = 'sending'`,
 				outcome.state,
 				outcome.code,
 				outcome.state === "waiting" ? outcome.nextAt : null,
+				result.detail,
+				result.maybeSent ? 1 : 0,
+				// Resend turned that request down, and would only give the same answer to its key again,
+				// so the next try, after a fix, needs a new one. Unless an earlier try under it may have
+				// sent the message: only that key keeps a try from sending it twice.
+				result.answered ? 1 : 0,
+				crypto.randomUUID(),
 				id,
 			);
 			if (outcome.state === "waiting") await this.#alarmBy(outcome.nextAt);
 		}
 		return this.#status(id);
+	}
+
+	/** Hands a message to Email Service or Resend once, and says how that went. Never throws. */
+	async #deliver(id: string, row: Trying): Promise<Delivered> {
+		const request = JSON.parse(row.request) as EmailMessageBuilder;
+		if (row.provider !== "resend") {
+			try {
+				const result = await this.env.EMAIL.send(request);
+				return { ok: true, providerId: result.messageId };
+			} catch (error) {
+				const outcome = outcomeOf(error, row.attempts, Date.now());
+				return { ok: false, outcome, detail: null, answered: false, maybeSent: false };
+			}
+		}
+		const earlier = row.maybeSent === 1;
+		const failed = (failure: ResendFailure): Delivered => ({
+			ok: false,
+			outcome: resendOutcome(failure, row.attempts, Date.now(), earlier),
+			detail: failure.detail,
+			answered: failure.answered,
+			maybeSent: failure.kind === "unsure",
+		});
+		const stopped = (code: string): Delivered => ({
+			ok: false,
+			outcome: { state: earlier ? "uncertain" : "refused", code: `${RESEND_CODE}${code}` },
+			detail: null,
+			answered: false,
+			maybeSent: false,
+		});
+		let opened: Awaited<ReturnType<typeof openProviderKey>>;
+		try {
+			// Read at each try, so a key replaced or removed meanwhile is the one that counts.
+			opened = await openProviderKey(
+				createDb(this.env.DB),
+				this.env.SECRETS_KEY,
+				row.workspaceId ?? "",
+				"resend",
+			);
+		} catch {
+			// D1 didn't answer, and nothing was asked of Resend.
+			return failed({
+				kind: "busy",
+				code: `${RESEND_CODE}key_unavailable`,
+				detail: null,
+				answered: false,
+			});
+		}
+		// Nothing goes this time, but an earlier try may have, so its key stays.
+		if (!opened.ok) return stopped(opened.code);
+		// Resend knows an idempotency key only in the account that sent it, so after a try that may
+		// have gone, one through another key could send it twice.
+		if (earlier && row.keyVersion !== null && row.keyVersion !== opened.version) {
+			return stopped("key_changed");
+		}
+		// Kept before Resend is asked, as the try may never say how it went.
+		this.ctx.storage.sql.exec(
+			"UPDATE outgoing SET key_version = ? WHERE message = ? AND state = 'sending'",
+			opened.version,
+			id,
+		);
+		const answer = await sendWithResend({
+			api: this.env.RESEND_API_URL || RESEND_API,
+			key: opened.key,
+			request,
+			idempotencyKey: row.idempotencyKey ?? id,
+		});
+		return answer.ok ? { ok: true, providerId: answer.id } : failed(answer.failure);
 	}
 
 	/**
@@ -585,10 +704,10 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 		return (
 			this.ctx.storage.sql
 				.exec<SendStatus>(
-					"SELECT state, code, next_at AS nextAt FROM outgoing WHERE message = ?",
+					"SELECT state, code, next_at AS nextAt, detail FROM outgoing WHERE message = ?",
 					id,
 				)
-				.toArray()[0] ?? { state: "uncertain", code: null, nextAt: null }
+				.toArray()[0] ?? { state: "uncertain", code: null, nextAt: null, detail: null }
 		);
 	}
 
@@ -867,10 +986,23 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			Date.now(),
 			stale,
 		);
+		// Resend knows a message by its key for a day, so one of its tries that never said how it went
+		// is tried again, as a failure that may have sent it would be, while there are tries left.
+		sql.exec(
+			`UPDATE outgoing SET state = 'waiting', next_at = ?, code = ?, maybe_sent = 1
+			WHERE state = 'sending' AND provider = 'resend' AND attempts > 0 AND attempts <= ?
+				AND attempted_at <= ?`,
+			Date.now(),
+			`${RESEND_CODE}unreachable`,
+			WAITS_MS.busy.length,
+			stale,
+		);
 		// A try that never said how it went may have sent the message, so it isn't tried again.
 		sql.exec(
-			`UPDATE outgoing SET state = 'uncertain', code = NULL
+			`UPDATE outgoing SET state = 'uncertain', maybe_sent = 1,
+				code = CASE WHEN provider = 'resend' THEN ? END
 			WHERE state = 'sending' AND attempts > 0 AND attempted_at <= ?`,
+			`${RESEND_CODE}unreachable`,
 			stale,
 		);
 		const due = sql

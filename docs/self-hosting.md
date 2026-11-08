@@ -157,6 +157,7 @@ because `wrangler.jsonc` sets `keep_vars`.
 | `EMAIL_FROM`           | Turns on email (invitations, password reset), such as `Gateweave Mail <mail@example.com>`.                         |
 | `MAILBOX_BYTES`        | How many bytes one mailbox may hold, as a whole number. Unset: 1 GiB.                                              |
 | `SEND_PER_DAY`         | How many messages one workspace may send from its mailboxes a day, as a whole number. Unset: 200.                  |
+| `SECRETS_KEY`          | Encrypts workspaces' keys, such as a Resend key: 32 random bytes, base64. None can be added without it.            |
 | `LEGAL_NOTICE_URL`     | The address of your legal notice. See [below](#your-legal-pages).                                                  |
 | `PRIVACY_POLICY_URL`   | The address of your privacy policy.                                                                                |
 | `TERMS_URL`            | The address of your terms.                                                                                         |
@@ -195,6 +196,19 @@ is refused, and its copy in the thread says why. A workspace sends up to 200 mes
 address that bounced or complained before. An agent also has a day's count of its own, which an
 owner or admin sets on the Agents page, and mail it writes that waits for approval counts against
 the workspace's day only once it is approved.
+
+A domain whose DNS isn't on the Cloudflare account that runs Mail can't be onboarded there, so it
+can send through [Resend](https://resend.com) instead, with each workspace's own key. Set
+`SECRETS_KEY` once, which encrypts those keys:
+
+```sh
+openssl rand -base64 32 | pnpm wrangler secret put SECRETS_KEY
+```
+
+Then, in the workspace, an owner or admin verifies the domain at Resend, adds a Resend key under
+Settings › Domains, and sets the domain to send with Resend. A key that may only send is enough.
+Keep `SECRETS_KEY` as it is: the keys sealed with it can't be opened with another, and would have
+to be added again. Resend's own limits and quotas apply to that account.
 
 As you hold the database, you can do it for them, from the repository root. Find their `id` in this
 list. Don't paste an address someone sent you into a command, as it could run as part of it:

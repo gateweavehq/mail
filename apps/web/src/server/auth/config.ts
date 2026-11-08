@@ -15,6 +15,7 @@ import { agentMembers } from "./agents";
 import { deleteAccount } from "./delete-account";
 import { type OidcProvider, oidcDatabaseHooks, oidcSignIn } from "./oidc-sign-in";
 import { passwordTries, tellOfSpentTries } from "./password-tries";
+import { type ProviderSettings, providerKeys } from "./provider-keys";
 
 export interface AuthConfig {
 	db: Database;
@@ -40,6 +41,8 @@ export interface AuthConfig {
 	allowSpentTriesEmail?: ((userId: string) => Promise<boolean>) | undefined;
 	/** Removes the mail of a deleted workspace's mailboxes. Left for the daily run without it. */
 	removeMailboxes?: ((workspaceId: string, mailboxIds: string[]) => Promise<void>) | undefined;
+	/** What workspaces' provider keys need. Without `secretsKey`, none can be added. */
+	providers?: ProviderSettings | undefined;
 }
 
 /**
@@ -278,6 +281,7 @@ export function createAuth(config: AuthConfig) {
 			}),
 			...(config.oidc ? oidcSignIn(config.db, config.oidc) : []),
 			agentMembers({ db: config.db }),
+			providerKeys({ db: config.db, settings: config.providers ?? {} }),
 			// Must stay last: forwards Set-Cookie headers from server-side auth calls.
 			tanstackStartCookies(),
 		],

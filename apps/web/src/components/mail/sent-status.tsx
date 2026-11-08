@@ -4,7 +4,14 @@ import { Button } from "#/components/ui/button";
 import { ConfirmDialog } from "#/components/workspace/confirm-dialog";
 import { isAdminRole, useMyRole } from "#/components/workspace/context";
 import { formatDateTime } from "#/lib/dates";
-import { canSendAgain, changeOutbox, refusalReason, type SendStatus } from "#/lib/outbox";
+import {
+	canSendAgain,
+	changeOutbox,
+	isResendCode,
+	refusalReason,
+	type SendStatus,
+} from "#/lib/outbox";
+import { KEY_CHANGED, resendMaybeWent, resendReason } from "#/lib/providers";
 
 /** A word or two for how a message the mailbox sent went, for its line in a thread. */
 export function sentLabel(status: SendStatus | null): string | null {
@@ -144,6 +151,9 @@ export function SentNotice({
 	);
 }
 
+/** Resend's answers that say it sent nothing and is busy. Others it waits after may have gone. */
+const RESEND_BUSY = new Set(["resend:rate_limit_exceeded", "resend:resource_locked", "resend:429"]);
+
 function said(status: SendStatus): string {
 	switch (status.state) {
 		case "held":
@@ -153,11 +163,28 @@ function said(status: SendStatus): string {
 		case "waiting": {
 			const when = status.nextAt ? ` at ${formatDateTime(status.nextAt)}` : " soon";
 			// Without a code, its first try never began, as when a deploy came in between.
-			return status.code
-				? `Email Service is busy, so Mail tries again${when}.`
-				: `It isn't sent yet. Mail tries${when}.`;
+			if (!status.code) return `It isn't sent yet. Mail tries${when}.`;
+			if (!isResendCode(status.code)) return `Email Service is busy, so Mail tries again${when}.`;
+			if (status.code === "resend:key_unavailable") {
+				return `The workspace's Resend key couldn't be read just then, so Mail tries again${when}.`;
+			}
+			if (status.code === "resend:daily_quota_exceeded") {
+				return `The Resend account has used its daily quota, so Mail tries again${when}.`;
+			}
+			return RESEND_BUSY.has(status.code)
+				? `Resend is busy, so Mail tries again${when}.`
+				: `Resend didn't say whether it went, so Mail asks again${when}. Resend knows it by its id, so it can't go twice.`;
 		}
 		case "uncertain":
+			if (status.code === KEY_CHANGED) {
+				return "A try may have gone through the workspace's Resend key before it was replaced, and Resend can only tell a repeat sent with the same account, so Mail stopped. Send it again only if it didn't arrive.";
+			}
+			if (status.code !== null && isResendCode(status.code)) {
+				const stopped = resendMaybeWent(status.code)
+					? ""
+					: ` Then Mail stopped: ${resendReason(status.code, status.detail)}`;
+				return `Resend didn't say whether a try went, so it may have gone or not.${stopped} Sending it again within a day of the first try can't send it twice, as Resend knows it by its id. After that it could, so check first.`;
+			}
 			return `${
 				status.code === "E_INTERNAL_SERVER_ERROR"
 					? "Email Service failed while sending this"
@@ -166,6 +193,6 @@ function said(status: SendStatus): string {
 		case "discarded":
 			return "Discarded, so it won't be sent, but its copy is still here. Discard it again to take it out.";
 		default:
-			return `Not sent. ${refusalReason(status.code)}`;
+			return `Not sent. ${refusalReason(status.code, status.detail)}`;
 	}
 }

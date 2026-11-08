@@ -13,6 +13,7 @@ import { bearsKey } from "../access";
 import { db } from "../auth";
 import { agentPolicyOf } from "../auth/agents";
 import { appOrigin } from "../origin";
+import { sendingWith } from "../providers/keys";
 import { allowAgentSend, allowSend } from "../rate-limit";
 import {
 	addressHeader,
@@ -172,6 +173,16 @@ export async function outboxAnswer(
 	// A draft sent before, as when its answer was lost, is what became of it, and counts once.
 	const earlier = await box.stub.drafted(action.draft);
 	if (earlier) return sentAnswer(earlier);
+	// Its domain says how it goes. Asked before anything is counted, as a mistake shouldn't use up
+	// the day's allowance.
+	const way = await sendingWith(db, workspaceId, sender);
+	const provider = way?.sendsWith ?? "cloudflare";
+	if (provider === "resend" && !way?.keyed) {
+		return refuse(
+			"This address's domain sends through Resend, and this workspace has no Resend key. An owner or admin can add one in Settings, under Domains.",
+			409,
+		);
+	}
 	// An agent's mail waits for a person unless all of it goes where its policy lets it, and counts
 	// against its own day either way.
 	let hold = false;
@@ -219,6 +230,7 @@ export async function outboxAnswer(
 		ownId: message.ownId,
 		references: answering.references,
 		request: sendRequest(message),
+		provider,
 		draft: action.draft,
 		hold,
 	});

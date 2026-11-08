@@ -1,18 +1,21 @@
 import { createFileRoute, useRouter } from "@tanstack/react-router";
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useState } from "react";
 import { LiveButton } from "#/components/live-button";
+import { ResendKey, type ResendKeyState } from "#/components/settings/resend-key";
 import { Button } from "#/components/ui/button";
 import { Input } from "#/components/ui/input";
 import { Label } from "#/components/ui/label";
 import { ConfirmDialog } from "#/components/workspace/confirm-dialog";
 import { isAdminRole, useMyRole, useWorkspace } from "#/components/workspace/context";
 import { Notice } from "#/components/workspace/notice";
+import { authClient } from "#/lib/auth-client";
 import {
 	changeDirectory,
 	type DirectoryDomain,
 	getDirectory,
 	type MailRoute,
 } from "#/lib/directory";
+import type { SendsWith } from "#/lib/providers";
 import { useDocumentTitle } from "#/lib/title";
 
 export const Route = createFileRoute("/$workspace/settings/domains")({
@@ -23,7 +26,21 @@ export const Route = createFileRoute("/$workspace/settings/domains")({
 function DomainsPage() {
 	const data = Route.useLoaderData();
 	const admin = isAdminRole(useMyRole());
+	const { id: organizationId } = useWorkspace();
+	const router = useRouter();
+	const [resend, setResend] = useState<ResendKeyState | null>(null);
 	useDocumentTitle("Domains");
+
+	// Only owners and admins may know of the key, so only their page asks.
+	const loadResend = useCallback(async () => {
+		const result = await authClient.providers.key({
+			query: { organizationId, provider: "resend" },
+		});
+		if (result.data) setResend(result.data);
+	}, [organizationId]);
+	useEffect(() => {
+		if (admin) void loadResend();
+	}, [admin, loadResend]);
 
 	if (!data) {
 		return (
@@ -52,9 +69,42 @@ function DomainsPage() {
 				{data.domains.length > 0 && (
 					<ul aria-label="Domains" className="space-y-3">
 						{data.domains.map((domain) => (
-							<DomainRow key={domain.id} domain={domain} admin={admin} />
+							<DomainRow
+								key={domain.id}
+								domain={domain}
+								admin={admin}
+								keyed={resend ? resend.key !== null : null}
+							/>
 						))}
 					</ul>
+				)}
+			</section>
+
+			<section aria-labelledby="sending-heading" className="space-y-3">
+				<div className="space-y-1">
+					<h2 id="sending-heading" className="text-sm font-semibold">
+						Sending from a domain
+					</h2>
+					<p className="text-sm text-muted-foreground">
+						Each domain sends one of two ways. Cloudflare Email Service sends from domains that the
+						Cloudflare account running this server has onboarded for Email Sending. For a domain
+						whose DNS is somewhere else, send through Resend: verify the domain at Resend, add the
+						workspace's Resend key here, then set the domain to send with Resend. A key that can
+						only send is enough.
+					</p>
+				</div>
+				{admin ? (
+					<ResendKey
+						state={resend}
+						onChanged={async () => {
+							await loadResend();
+							await router.invalidate();
+						}}
+					/>
+				) : (
+					<p className="text-sm text-muted-foreground">
+						An owner or admin can add the workspace's Resend key.
+					</p>
 				)}
 			</section>
 
@@ -63,8 +113,8 @@ function DomainsPage() {
 					Getting a domain's mail to this server
 				</h2>
 				<p className="text-sm text-muted-foreground">
-					Mail can't send or reply yet, so think before doing this for a domain people rely on: its
-					mail is kept here and shown, and a message to an address that doesn't exist is refused.
+					Think before doing this for a domain people rely on: its mail is kept here and shown, and
+					a message to an address that doesn't exist is refused.
 				</p>
 				<p className="text-sm text-muted-foreground">
 					In the Cloudflare account that runs this server, turn on Email Routing for the domain you
@@ -147,13 +197,42 @@ function checkedWords(proved: boolean, mail: MailRoute): string {
 	return "Proved, but it has no MX records yet. Turning on Email Routing adds them.";
 }
 
-function DomainRow({ domain, admin }: { domain: DirectoryDomain; admin: boolean }) {
+const SENDS_WITH_WORDS: Record<SendsWith, string> = {
+	cloudflare: "Cloudflare Email Service",
+	resend: "Resend",
+};
+
+function DomainRow({
+	domain,
+	admin,
+	keyed,
+}: {
+	domain: DirectoryDomain;
+	admin: boolean;
+	/** Whether the workspace has a Resend key, once the page knows. */
+	keyed: boolean | null;
+}) {
 	const { slug } = useWorkspace();
 	const router = useRouter();
 	const [said, setSaid] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [pending, setPending] = useState(false);
 	const [removing, setRemoving] = useState(false);
+	const [switching, setSwitching] = useState(false);
+
+	async function sendWith(sendsWith: SendsWith) {
+		setSwitching(true);
+		setError(null);
+		setSaid(null);
+		const result = await changeDirectory(slug, {
+			action: "set-domain-sending",
+			id: domain.id,
+			sendsWith,
+		});
+		if (result.ok) await router.invalidate();
+		else setError(result.error);
+		setSwitching(false);
+	}
 
 	async function check() {
 		setPending(true);
@@ -204,6 +283,38 @@ function DomainRow({ domain, admin }: { domain: DirectoryDomain; admin: boolean 
 						</div>
 					</dl>
 				</div>
+			)}
+			{admin ? (
+				<div className="flex flex-wrap items-center gap-2">
+					<Label htmlFor={`sends-with-${domain.id}`} className="text-muted-foreground">
+						Sends with
+					</Label>
+					<select
+						id={`sends-with-${domain.id}`}
+						value={domain.sendsWith}
+						disabled={switching}
+						onChange={(event) => {
+							const chosen = event.target.value;
+							if (chosen === "cloudflare" || chosen === "resend") void sendWith(chosen);
+						}}
+						className="h-9 min-w-0 rounded-md border bg-transparent px-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+					>
+						<option value="cloudflare">{SENDS_WITH_WORDS.cloudflare}</option>
+						<option value="resend" disabled={keyed === false && domain.sendsWith !== "resend"}>
+							{keyed === false ? "Resend (add a key first)" : SENDS_WITH_WORDS.resend}
+						</option>
+					</select>
+				</div>
+			) : (
+				<p className="text-sm text-muted-foreground">
+					Sends with {SENDS_WITH_WORDS[domain.sendsWith]}
+				</p>
+			)}
+			{admin && domain.sendsWith === "resend" && keyed === false && (
+				<p className="text-sm text-destructive">
+					This domain sends through Resend, and the workspace has no Resend key, so its mail can't
+					be sent. Add a key below, or send with Cloudflare Email Service.
+				</p>
 			)}
 			{said && (
 				<p role="status" className="text-sm text-muted-foreground">
