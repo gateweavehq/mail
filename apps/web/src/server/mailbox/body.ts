@@ -1,4 +1,5 @@
 import { headerEnd } from "./headers";
+import { type RawMail, type RawRef, SealError } from "./sealed";
 
 // The pages need the DOM's `Crypto` type, which doesn't know the Workers runtime's addition to it.
 const { DigestStream: Digest } = crypto as Crypto & { DigestStream: typeof DigestStream };
@@ -35,11 +36,19 @@ export function afterHeaders(): TransformStream<Uint8Array, Uint8Array> {
 	});
 }
 
-/** SHA-256 of a stored message's body, in hex, or null when the object isn't there. */
-export async function bodyHash(bucket: R2Bucket, key: string): Promise<string | null> {
-	const object = await bucket.get(key);
-	if (!object) return null;
-	const digest = new Digest("SHA-256");
-	await object.body.pipeThrough(afterHeaders()).pipeTo(digest);
-	return hex(await digest.digest);
+/**
+ * SHA-256 of a stored message's body as it was written, in hex, so sealed mail and mail kept as it
+ * came compare alike. Null when the object isn't there, or doesn't open.
+ */
+export async function bodyHash(raw: RawMail, ref: RawRef): Promise<string | null> {
+	try {
+		const object = await raw.get(ref);
+		if (!object) return null;
+		const digest = new Digest("SHA-256");
+		await object.body.pipeThrough(afterHeaders()).pipeTo(digest);
+		return hex(await digest.digest);
+	} catch (error) {
+		if (error instanceof SealError) return null;
+		throw error;
+	}
 }

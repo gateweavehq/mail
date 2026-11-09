@@ -202,6 +202,11 @@ These are load-bearing. Breaking one breaks users' data or security, usually sil
     it elsewhere. A body says who sent a message and what it is about,
     marked as words anyone may have written, never its text: that stays behind an agent's key and
     its access. Secrets are shown once and never logged.
+19. **Raw mail is read and written only through `RawMail`**
+    (`apps/web/src/server/mailbox/sealed.ts`). A message's row says how its object is sealed
+    (`message.seal`), and only `RawMail` opens it with `SECRETS_KEY`; never read or write an
+    object in `RAW_MAIL` directly, though deleting one by name is fine. Sealed mail stays as it was
+    written, so a change to the format is a new seal version beside `v1`, never a change to it.
 
 ## Code style
 

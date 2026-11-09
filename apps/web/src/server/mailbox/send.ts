@@ -42,6 +42,7 @@ import { sendableHtml } from "./html";
 import type { mailboxStub } from "./index";
 import { decoded } from "./people";
 import { openMailbox } from "./read";
+import { rawMail } from "./sealed";
 import { envelopeAddresses, replySender, senderAddresses } from "./senders";
 import { textOfHtml } from "./text";
 import { messageIds, ownId } from "./thread";
@@ -436,7 +437,7 @@ async function answered(
 ): Promise<Answering | null> {
 	const row = await stub.get(messageId);
 	if (!row) return null;
-	const object = await env.RAW_MAIL.get(row.object);
+	const object = await rawMail(env).get(row);
 	if (!object) return null;
 	const headers = parseHeaders(await readHeaderBlock(object.body));
 	const own = ownId(headers);

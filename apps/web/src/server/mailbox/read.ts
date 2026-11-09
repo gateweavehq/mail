@@ -25,6 +25,7 @@ import type { StoredSummary } from "./durable-object";
 import { cleanHtml, framePolicy, MAX_SHOWN_HTML, mayLoadImages } from "./html";
 import { mailboxStub } from "./index";
 import { decoded, people, sender } from "./people";
+import { rawMail, SealError } from "./sealed";
 import { envelopeAddresses, replySender, senderAddresses } from "./senders";
 import { textOfHtml } from "./text";
 import { threadSubject } from "./thread";
@@ -277,8 +278,22 @@ export async function openThread(
 			thread.messages.length > PAGE_SIZE && oldest
 				? { arrivedAt: oldest.arrivedAt, id: oldest.id }
 				: null,
-		latest: newest ? await readMessage(box, newest.id, from) : null,
+		latest: newest ? await latestOf(box, newest.id, from) : null,
 	};
+}
+
+/**
+ * A thread's newest message, opened. When its sealed mail doesn't open here, as after the server's
+ * `SECRETS_KEY` changed, the thread is still shown, without it: only the message fails to open.
+ */
+async function latestOf(box: OpenMailbox, messageId: string, from: string[]) {
+	try {
+		return await readMessage(box, messageId, from);
+	} catch (error) {
+		if (!(error instanceof SealError)) throw error;
+		console.error("mailbox: a message's sealed mail doesn't open", { reason: error.message });
+		return null;
+	}
 }
 
 /**
@@ -333,7 +348,7 @@ async function readMessage(
 ): Promise<OpenedMessage | null> {
 	const row = await box.stub.get(messageId);
 	if (!row) return null;
-	const object = await env.RAW_MAIL.get(row.object);
+	const object = await rawMail(env).get(row);
 	if (!object) return null;
 	await noteRead(box, row, reading);
 	const email = await PostalMime.parse(object.body);
@@ -398,7 +413,7 @@ async function storedMail(slug: string, mailboxId: string, messageId: string) {
 	if (!box) return null;
 	const row = await box.stub.get(messageId);
 	if (!row) return null;
-	const object = await env.RAW_MAIL.get(row.object);
+	const object = await rawMail(env).get(row);
 	if (object) await noteRead(box, row, "message.read");
 	return object;
 }

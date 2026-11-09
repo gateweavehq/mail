@@ -106,6 +106,23 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     with whatever part of it reached R2. The alarm marks such a delivery expired before it
     deletes anything, so one that finishes late finds it gone, deletes its own mail and is tried
     again. So removing a mailbox's prefix removes all of its mail.
+  - **Raw mail is sealed in R2** (`sealed.ts`), when the deployment has a `SECRETS_KEY`. Each
+    object has its own AES-256-GCM key, which HKDF derives from `SECRETS_KEY`, a random salt kept
+    in the message's row (`message.seal`), and the object's name, which holds the workspace's and
+    mailbox's ids: the bucket alone opens nothing, and an object put back from another message, or
+    moved to another name, doesn't open. The mail is sealed in 64 KiB chunks, each with its own
+    tag, so it streams in and out and a part of it is read from only the chunks that hold it, as
+    search reads a message's start. A chunk's nonce is its place and the last one is marked last
+    in its additional data, and the object must be exactly as long as the row's size makes it, so
+    nothing can be reordered, cut or added. The Worker picks the seal and the object keeps it
+    (`begin`), and the mail is sealed only with the seal the object gave back, so a Worker and an
+    object of different versions during a deploy never write mail its row can't read. Everything
+    reads and writes raw mail through `RawMail`; mail with no seal, kept before sealing or without
+    a `SECRETS_KEY`, is read as it is. Mail that doesn't open, as after `SECRETS_KEY` changed,
+    fails only where it is opened: its thread still shows, search finds it by its headers, and a
+    copy whose files are waiting to be sent is refused as `mail:copy_unread`. Sealed mail stays as
+    it was written, so another scheme or a key for rotation would be a new seal version beside
+    `v1`.
   - **The same message twice is kept once.** A delivery's key is a hash of the mailbox and
     whichever of the message's `Message-ID`, `From`, `Date` and `Subject` it has. When one
     finishes and a stored message has the same key, their bodies are compared, and the copy goes

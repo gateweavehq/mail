@@ -3,6 +3,7 @@
  * someone types becomes an FTS5 query.
  */
 import PostalMime, { decodeWords } from "postal-mime";
+import { type RawMail, type RawRef, SealError } from "./sealed";
 import { textOfHtml } from "./text";
 
 /** How much of a message's start is read for its text. Text parts come before most attachments. */
@@ -61,12 +62,13 @@ function plain(text: string, max: number): string {
 
 /**
  * What a stored message is found by: its subject and From always, and its text and attachments'
- * names when the start of its mail parses. A message that doesn't parse is still found by its
- * headers, so it can't hold up the rest. Reading R2 may throw, for the alarm to try again.
+ * names when the start of its mail parses. A message that doesn't parse, or whose sealed mail
+ * doesn't open, is still found by its headers, so it can't hold up the rest. Reading R2 may throw,
+ * for the alarm to try again.
  */
 export async function searchable(
-	bucket: R2Bucket,
-	message: { object: string; size: number; subject: string | null; from: string | null },
+	raw: RawMail,
+	message: RawRef & { subject: string | null; from: string | null },
 ): Promise<Searchable> {
 	const found = {
 		subject: plain(decoded(message.subject), MAX_SEARCHED_HEADER),
@@ -74,11 +76,17 @@ export async function searchable(
 		attachments: "",
 		body: "",
 	};
-	const object = await bucket.get(message.object, {
-		range: { offset: 0, length: Math.max(1, Math.min(message.size, SEARCH_READ_BYTES)) },
-	});
-	if (!object) return found;
-	const start = await object.arrayBuffer();
+	let start: Uint8Array<ArrayBuffer> | null;
+	try {
+		start = await raw.bytes(message, {
+			offset: 0,
+			length: Math.max(1, Math.min(message.size, SEARCH_READ_BYTES)),
+		});
+	} catch (error) {
+		if (error instanceof SealError) return found;
+		throw error;
+	}
+	if (!start) return found;
 	try {
 		const email = await PostalMime.parse(start);
 		const text = email.text ?? (email.html ? (await textOfHtml(email.html)).text : "");

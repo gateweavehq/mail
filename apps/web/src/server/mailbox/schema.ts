@@ -245,6 +245,12 @@ CREATE INDEX message_sent_by ON message (sent_by, arrived_at DESC, id DESC)
 	WHERE sent_by IS NOT NULL;
 `;
 
+// How a message's raw mail is sealed in R2: null for mail kept as it came, as all of it was before
+// this, or the random salt its own key was derived with. See `sealed.ts`.
+const VERSION_12 = `
+ALTER TABLE message ADD COLUMN seal TEXT;
+`;
+
 /** Each brings the schema from the version before it. Append only: objects keep what they ran. */
 export const MIGRATIONS: ((sql: SqlStorage) => void)[] = [
 	(sql) => sql.exec(VERSION_1),
@@ -275,6 +281,7 @@ export const MIGRATIONS: ((sql: SqlStorage) => void)[] = [
 	(sql) => sql.exec(VERSION_9),
 	(sql) => sql.exec(VERSION_10),
 	(sql) => sql.exec(VERSION_11),
+	(sql) => sql.exec(VERSION_12),
 ];
 
 /** What migrating needs of a Durable Object's storage. */
