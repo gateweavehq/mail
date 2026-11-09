@@ -71,6 +71,8 @@ const SERVED = [
 	"POST /agents/create",
 	"POST /agents/create-key",
 	"POST /agents/delete",
+	"POST /agents/pause",
+	"POST /agents/resume",
 	"POST /agents/revoke-key",
 	"POST /agents/set-address-policy",
 	"POST /agents/set-policy",

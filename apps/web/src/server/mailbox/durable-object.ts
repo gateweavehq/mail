@@ -3,6 +3,7 @@ import PostalMime, { type Attachment } from "postal-mime";
 import { type SendStatus, SUPPRESSED_CODE } from "../../lib/outbox";
 import { KEY_CHANGED, RESEND_CODE, type SendsWith } from "../../lib/providers";
 import type { SentEventType } from "../../lib/webhooks";
+import { heldWriters } from "../auth/agents";
 import { createDb } from "../db";
 import { openProviderKey } from "../providers/keys";
 import { RESEND_API, type ResendFailure, sendWithResend } from "../providers/resend";
@@ -37,6 +38,9 @@ export function mailboxLimit(env: Cloudflare.Env): number {
 
 /** How long a delivery may take between being given a place and saying it's there. */
 export const PENDING_MS = 15 * 60 * 1000;
+
+/** How long mail waits to be tried again when D1 doesn't say whether the agent who wrote it is paused. */
+const PAUSE_UNKNOWN_MS = 60 * 1000;
 
 /** The most messages or threads one listing returns. */
 export const MAX_LISTED = 100;
@@ -774,6 +778,63 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 		};
 	}
 
+	/**
+	 * Of mail waiting to be tried again, puts what a paused agent wrote, or someone no longer a
+	 * member, in a person's hands: held, as an agent's policy would hold it, for someone to approve
+	 * or reject. Mail a person approved is theirs and goes on. Says which it took. When D1 doesn't
+	 * say who is paused, it takes all that someone wrote, to try in a minute, rather than send what a
+	 * paused agent wrote.
+	 */
+	async #holdPaused(ids: string[]): Promise<Set<string>> {
+		const sql = this.ctx.storage.sql;
+		const writers = new Map<string, string>();
+		for (const id of ids) {
+			const row = sql
+				.exec<{ by: string | null; approvedBy: string | null }>(
+					`SELECT message.sent_by AS by, outgoing.approved_by AS approvedBy
+					FROM message JOIN outgoing ON outgoing.message = message.id WHERE message.id = ?`,
+					id,
+				)
+				.toArray()[0];
+			if (row?.by && row.approvedBy === null) writers.set(id, row.by);
+		}
+		if (writers.size === 0) return new Set();
+		let paused: Set<string>;
+		try {
+			paused = await heldWriters(createDb(this.env.DB), [...new Set(writers.values())]);
+		} catch (error) {
+			console.error("mailbox: D1 didn't say which agents are paused; their mail waits", {
+				name: error instanceof Error ? error.name : "unknown",
+			});
+			const later = Date.now() + PAUSE_UNKNOWN_MS;
+			for (const id of writers.keys()) {
+				sql.exec(
+					"UPDATE outgoing SET next_at = ? WHERE message = ? AND state = 'waiting'",
+					later,
+					id,
+				);
+			}
+			return new Set(writers.keys());
+		}
+		const taken = [...writers].filter(([, by]) => paused.has(by)).map(([id]) => id);
+		const held = this.ctx.storage.transactionSync(() =>
+			taken.filter((id) => {
+				const changed =
+					sql
+						.exec(
+							`UPDATE outgoing SET state = 'held', next_at = NULL
+							WHERE message = ? AND state = 'waiting' RETURNING message`,
+							id,
+						)
+						.toArray().length > 0;
+				if (changed) writeSentEvent(sql, "message.held", id);
+				return changed;
+			}),
+		);
+		if (held.length > 0) await this.#tellSoon();
+		return new Set(taken);
+	}
+
 	/** Hands a message to Email Service or Resend once, and says how that went. Never throws. */
 	async #deliver(id: string, row: Trying): Promise<Delivered> {
 		const written = JSON.parse(row.request) as EmailMessageBuilder;
@@ -1369,8 +1430,9 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 				Date.now(),
 			)
 			.toArray();
+		const taken = await this.#holdPaused(due.map(({ id }) => id));
 		// Each is tried only if it still waits when its turn comes.
-		for (const { id } of due) await this.#tryNow(id, "due");
+		for (const { id } of due) if (!taken.has(id)) await this.#tryNow(id, "due");
 		const indexed = await indexBatch(this.ctx.storage, (message) =>
 			searchable(this.env.RAW_MAIL, message),
 		);

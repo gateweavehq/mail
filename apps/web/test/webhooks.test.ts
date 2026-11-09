@@ -881,6 +881,35 @@ describe("an agent's own webhooks", () => {
 		expect((await refusal(space.slug, pausing)).status).toBe(404);
 	});
 
+	it("hear nothing while their agent is paused, retries neither, and hear again once resumed", async () => {
+		const space = await workspace();
+		const agent = await world.agentOf(space);
+		const path = newPath();
+		// The first try fails, so a retry waits.
+		answers.set(path, [500]);
+		await agentHook(agent.key, path);
+		await arrive(space.signUps.address, { subject: "Before the pause" });
+		await deliveredTo(path);
+		expect((await world.auth("/agents/pause", { agentId: agent.id })).status).toBe(200);
+		await arrive(space.signUps.address, { subject: "While paused" });
+		await pause(7000);
+		expect(await deliveredTo(path, 2, 0)).toHaveLength(1);
+
+		// Paused, its webhooks are kept, as its keys are, and they hear what arrives once it runs.
+		expect((await world.auth("/agents/resume", { agentId: agent.id })).status).toBe(200);
+		await arrive(space.signUps.address, { subject: "Once resumed" });
+		const [, again] = await deliveredTo(path, 2);
+		expect(JSON.parse(again?.body ?? "{}").data.message.subject).toBe("Once resumed");
+		expect((await ownHooks(agent.key)).webhooks[0]?.deliveries).toEqual([
+			expect.objectContaining({ event: "message.received", status: "delivered" }),
+			expect.objectContaining({
+				event: "message.received",
+				status: "failed",
+				error: "The agent was paused.",
+			}),
+		]);
+	});
+
 	it("go with the key that made them, retries too", async () => {
 		const space = await workspace();
 		const agent = await world.agentOf(space);

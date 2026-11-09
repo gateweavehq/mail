@@ -47,7 +47,8 @@ export async function currentCaller(slug: string): Promise<Caller | null> {
 	}
 	const key = /^bearer\s+(\S+)$/i.exec(headers.get("authorization")?.trim() ?? "")?.[1];
 	const agent = key ? await findAgentByKey(db, key) : null;
-	if (!agent || agent.slug !== slug) return null;
+	// A paused agent's key reaches nothing, as a revoked one doesn't; the gateways say why.
+	if (!agent || "paused" in agent || agent.slug !== slug) return null;
 	const membership = await findMembership(db, slug, agent.userId);
 	return membership && { userId: agent.userId, membership };
 }
