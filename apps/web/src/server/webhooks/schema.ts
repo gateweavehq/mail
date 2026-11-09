@@ -46,8 +46,15 @@ CREATE TABLE seen_event (
 ) STRICT, WITHOUT ROWID;
 `;
 
+// An agent's own webhook names its membership; the workspace's own, which owners and admins make,
+// name none.
+const VERSION_2 = "ALTER TABLE webhook ADD COLUMN agent_member_id TEXT;";
+
 /** Each brings the schema from the version before it. Append only: objects keep what they ran. */
-export const MIGRATIONS: ((sql: SqlStorage) => void)[] = [(sql) => sql.exec(VERSION_1)];
+export const MIGRATIONS: ((sql: SqlStorage) => void)[] = [
+	(sql) => sql.exec(VERSION_1),
+	(sql) => sql.exec(VERSION_2),
+];
 
 /** Runs the migrations this object hasn't, all or none. */
 export function migrate(storage: Pick<DurableObjectStorage, "sql" | "transactionSync">): void {

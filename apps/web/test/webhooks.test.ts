@@ -618,3 +618,286 @@ describe("webhooks", () => {
 		expect(await deliveredTo(path, 2, 0)).toHaveLength(1);
 	});
 });
+
+/** An agent's own webhook, as the agent API gives it. */
+interface AgentHook {
+	id: string;
+	url: string;
+	events: string[];
+	mailboxIds: string[] | null;
+	active: boolean;
+	secretStart: string;
+	deliveries?: { event: string; status: string; error: string | null }[];
+}
+
+/** Asks the agent API with an agent's key: what a route takes besides its path, in a JSON body. */
+async function asAgent<T = Record<string, unknown>>(
+	key: string,
+	method: string,
+	path: string,
+	data?: Record<string, unknown>,
+): Promise<{ status: number; body: T & { error?: string } }> {
+	const response = await world.mail.fetch(`${origin}/api/v1${path}`, {
+		method,
+		headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+		...(data === undefined ? {} : { body: JSON.stringify(data) }),
+	});
+	return { status: response.status, body: (await response.json()) as T & { error?: string } };
+}
+
+/** An agent's own webhook for this path at the receiver, with its secret. */
+async function agentHook(key: string, path: string, fields: Record<string, unknown> = {}) {
+	const made = await asAgent<{ webhook: AgentHook; secret: string }>(key, "POST", "/webhooks", {
+		url: `https://${RECEIVER}${path}`,
+		events: ["message.received"],
+		...fields,
+	});
+	expect(made.body.error).toBeUndefined();
+	expect(made.status).toBe(200);
+	return made.body;
+}
+
+async function ownHooks(key: string) {
+	const listed = await asAgent<{ webhooks: AgentHook[]; max: number }>(key, "GET", "/webhooks");
+	expect(listed.status).toBe(200);
+	return listed.body;
+}
+
+/** Gives the agent the sign-ups mailbox to read and send from, or takes it away. */
+function grant(space: { slug: string; signUps: { id: string } }, memberId: string, on: boolean) {
+	return world.directory(space.slug, {
+		action: "set-mailbox-access",
+		mailboxId: space.signUps.id,
+		everyone: false,
+		memberIds: on ? [memberId] : [],
+		senderIds: on ? [memberId] : [],
+	});
+}
+
+describe("an agent's own webhooks", () => {
+	it("are made, changed, tested and deleted with its key, and only its own", async () => {
+		const space = await workspace();
+		// Each takes the sign-ups mailbox from the one before, which needs none here.
+		const other = await world.agentOf(space);
+		const agent = await world.agentOf(space);
+		// The workspace's own are its admins', however many an agent has.
+		const theirs = await hook(space.slug, newPath());
+		for (let n = 1; n < 10; n++) await hook(space.slug, newPath());
+
+		const path = newPath();
+		const made = await agentHook(agent.key, path, {
+			events: ["message.sent", "message.received"],
+			mailboxes: [space.signUps.name],
+		});
+		expect(made.secret).toMatch(/^whsec_[A-Za-z0-9+/]{32}$/);
+		expect(made.webhook).toMatchObject({
+			url: `https://${RECEIVER}${path}`,
+			events: ["message.received", "message.sent"],
+			mailboxIds: [space.signUps.id],
+			active: true,
+		});
+		expect(await ownHooks(agent.key)).toEqual({
+			webhooks: [{ ...made.webhook, deliveries: [] }],
+			max: 3,
+		});
+		expect((await ownHooks(other.key)).webhooks).toEqual([]);
+
+		// Only of mailboxes it may read, never at Mail itself, and only its own to change.
+		const fields = { url: `https://${RECEIVER}/x`, events: ["message.received"] };
+		expect(
+			await asAgent(agent.key, "POST", "/webhooks", { ...fields, mailboxes: [space.billing.id] }),
+		).toMatchObject({ status: 404, body: { error: expect.stringMatching(/^No mailbox/) } });
+		expect(
+			await asAgent(agent.key, "POST", "/webhooks", { ...fields, url: `${origin}/api/v1/x` }),
+		).toMatchObject({ status: 400, body: { error: expect.stringMatching(/Mail itself/) } });
+		for (const id of [made.webhook.id, theirs.id]) {
+			const asker = id === theirs.id ? agent.key : other.key;
+			expect((await asAgent(asker, "PATCH", `/webhooks/${id}`, { active: false })).status).toBe(
+				404,
+			);
+			expect((await asAgent(asker, "POST", `/webhooks/${id}/test`, {})).status).toBe(404);
+			expect((await asAgent(asker, "DELETE", `/webhooks/${id}`)).status).toBe(404);
+		}
+		expect((await asAgent(agent.key, "PATCH", `/webhooks/${made.webhook.id}`, {})).status).toBe(
+			400,
+		);
+
+		// A new URL, every mailbox it may read, and a new secret, which signs what goes from then on.
+		const moved = newPath();
+		const changed = await asAgent<{ webhook: AgentHook; secret: string }>(
+			agent.key,
+			"PATCH",
+			`/webhooks/${made.webhook.id}`,
+			{ url: `https://${RECEIVER}${moved}`, mailboxes: null, newSecret: true },
+		);
+		expect(changed.status).toBe(200);
+		expect(changed.body.webhook).toMatchObject({
+			url: `https://${RECEIVER}${moved}`,
+			mailboxIds: null,
+		});
+		expect(changed.body.secret).not.toBe(made.secret);
+		expect(changed.body.secret.startsWith(changed.body.webhook.secretStart)).toBe(true);
+		expect(await asAgent(agent.key, "POST", `/webhooks/${made.webhook.id}/test`, {})).toMatchObject(
+			{ status: 200, body: { queued: true } },
+		);
+		const [test] = await deliveredTo(moved);
+		if (!test) throw new Error("expected a test");
+		expect(signedWith(test, changed.body.secret)).toBe(true);
+		expect(JSON.parse(test.body)).toMatchObject({
+			type: "webhook.test",
+			data: { webhookId: made.webhook.id },
+		});
+
+		// Three of its own at most, beside the workspace's ten.
+		await agentHook(agent.key, newPath());
+		await agentHook(agent.key, newPath());
+		expect(await asAgent(agent.key, "POST", "/webhooks", fields)).toMatchObject({
+			status: 409,
+			body: { error: "An agent can have at most 3 webhooks of its own." },
+		});
+		await agentHook(other.key, newPath());
+		const eleventh = { action: "create", input: { ...fields, mailboxIds: null } };
+		expect((await refusal(space.slug, eleventh)).status).toBe(409);
+
+		expect(await asAgent(agent.key, "DELETE", `/webhooks/${made.webhook.id}`)).toMatchObject({
+			status: 200,
+			body: { deleted: true },
+		});
+		expect((await ownHooks(agent.key)).webhooks).toHaveLength(2);
+	});
+
+	it("tell only of mailboxes the agent may read now, and not of what it did itself", async () => {
+		const space = await workspace();
+		const agent = await world.agentOf(space);
+		const key = { authorization: `Bearer ${agent.key}` };
+		const path = newPath();
+		const { secret } = await agentHook(agent.key, path, {
+			events: ["message.received", ...SENT_EVENTS],
+		});
+		// The workspace's own hears everything, to tell when the agent's would have been told too.
+		const all = newPath();
+		await hook(space.slug, all, null, ["message.received", ...SENT_EVENTS]);
+
+		await arrive(space.billing.address, { subject: "Not the agent's" });
+		await arrive(space.signUps.address, { subject: "The agent's" });
+		await deliveredTo(all, 2);
+		const [first] = await deliveredTo(path);
+		if (!first) throw new Error("expected a delivery");
+		expect(signedWith(first, secret)).toBe(true);
+		expect(JSON.parse(first.body)).toMatchObject({
+			type: "message.received",
+			data: { mailbox: { id: space.signUps.id }, message: { subject: "The agent's" } },
+		});
+
+		// Held, or sent as its policy lets it, is what it did itself; a person's approval isn't, nor
+		// what a recipient's server did.
+		const fine = `ok@${space.slug}.example.org`;
+		const policy = await world.auth("/agents/set-policy", {
+			agentId: agent.id,
+			sendPerDay: 20,
+			allowed: [fine],
+		});
+		expect(policy.status).toBe(200);
+		expect((await written(space, key, { to: [fine], subject: "Mine alone" })).state).toBe("sent");
+		const subject = `Approve me, ${space.slug}`;
+		const held = await written(space, key, { to: ["ada@example.org"], subject });
+		expect(held.state).toBe("held");
+		const approved = await outbox(space, world.owner.headers, {
+			action: "approve",
+			message: held.id,
+		});
+		expect(approved.status).toBe(200);
+		await deliveredTo(all, 5);
+		const handed = (await world.mail.emails()).find((email) => email.subject === subject);
+		if (!handed) throw new Error("expected the message at Email Service");
+		await world.mail.runQueue(SENDING_EVENTS, [
+			sendingEvent("delivered", {
+				messageId: handed.messageId,
+				sender: space.signUps.address,
+				recipient: "ada@example.org",
+			}),
+		]);
+		await deliveredTo(all, 6);
+		const told = await toldAt(path, 3);
+		expect(told.map((body) => body.type)).toEqual([
+			"message.received",
+			"message.sent",
+			"message.delivered",
+		]);
+		expect(told[1]?.data).toMatchObject({
+			message: { id: held.id, writtenBy: { id: agent.memberId } },
+			by: { name: "Owner", agent: false },
+		});
+
+		// Once it may no longer read the mailbox it hears nothing of it, and given it again, it does.
+		await grant(space, agent.memberId, false);
+		await arrive(space.signUps.address, { subject: "While it can't read it" });
+		await deliveredTo(all, 7);
+		await pause(1500);
+		expect(await deliveredTo(path, 4, 0)).toHaveLength(3);
+		await grant(space, agent.memberId, true);
+		await arrive(space.signUps.address, { subject: "Once it can again" });
+		const [, , , again] = await toldAt(path, 4);
+		expect(again?.data.message.subject).toBe("Once it can again");
+	});
+
+	it("drop a retry once the agent may no longer read its mailbox, and go with the agent", async () => {
+		const space = await workspace();
+		const agent = await world.agentOf(space);
+		const path = newPath();
+		// The first try fails, so a retry waits.
+		answers.set(path, [500]);
+		const made = await agentHook(agent.key, path);
+		await arrive(space.signUps.address, { subject: "Retried" });
+		await deliveredTo(path);
+		await grant(space, agent.memberId, false);
+		await pause(7000);
+		expect(await deliveredTo(path, 2, 0)).toHaveLength(1);
+		expect((await ownHooks(agent.key)).webhooks[0]?.deliveries).toEqual([
+			expect.objectContaining({
+				event: "message.received",
+				status: "failed",
+				error: "The agent may no longer read that mailbox.",
+			}),
+		]);
+
+		expect((await world.auth("/agents/delete", { agentId: agent.id })).status).toBe(200);
+		const pausing = { action: "update", id: made.webhook.id, patch: { active: false } };
+		expect((await refusal(space.slug, pausing)).status).toBe(404);
+	});
+
+	it("are an admin's to pause, resume, test or delete, but not to redirect", async () => {
+		const space = await workspace();
+		const agent = await world.agentOf(space);
+		const path = newPath();
+		const made = await agentHook(agent.key, path);
+		const id = made.webhook.id;
+
+		await changed(space.slug, { action: "update", id, patch: { active: false } });
+		expect((await ownHooks(agent.key)).webhooks[0]?.active).toBe(false);
+		const own =
+			"Only the agent that made this webhook can change where it goes and what it hears. You can pause, test or delete it.";
+		for (const patch of [
+			{ url: `https://${RECEIVER}/elsewhere` },
+			{ events: ["message.sent"] },
+			{ mailboxIds: [space.billing.id] },
+		]) {
+			expect(await refusal(space.slug, { action: "update", id, patch })).toEqual({
+				status: 409,
+				error: own,
+			});
+		}
+		expect(await refusal(space.slug, { action: "rotate", id })).toEqual({
+			status: 409,
+			error: "Only the agent that made this webhook can give it a new secret.",
+		});
+		await changed(space.slug, { action: "update", id, patch: { active: true } });
+		await changed(space.slug, { action: "test", id });
+		const [test] = await deliveredTo(path);
+		if (!test) throw new Error("expected a test");
+		expect(signedWith(test, made.secret)).toBe(true);
+
+		await changed(space.slug, { action: "delete", id });
+		expect((await ownHooks(agent.key)).webhooks).toEqual([]);
+	});
+});

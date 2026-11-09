@@ -74,7 +74,7 @@ async function change<T extends object = object>(
 export function WebhooksSettings({ data }: { data: WorkspaceWebhooks }) {
 	const [creating, setCreating] = useState(false);
 	const [newSecret, setNewSecret] = useState<NewSecret | null>(null);
-	const { webhooks, deliveries, mailboxes } = data;
+	const { webhooks, deliveries, mailboxes, agents } = data;
 
 	return (
 		<section aria-labelledby="webhooks-heading" className="space-y-4">
@@ -96,7 +96,8 @@ export function WebhooksSettings({ data }: { data: WorkspaceWebhooks }) {
 						>
 							Standard Webhooks
 						</a>
-						, so the receiver can check that it came from Mail.
+						, so the receiver can check that it came from Mail. An agent can make a few of its own
+						with its key, which hear only of mailboxes it may read; you can pause or delete them.
 					</p>
 				</div>
 				<Button onClick={() => setCreating(true)}>
@@ -117,6 +118,12 @@ export function WebhooksSettings({ data }: { data: WorkspaceWebhooks }) {
 							webhook={webhook}
 							deliveries={deliveries.filter((delivery) => delivery.webhookId === webhook.id)}
 							mailboxes={mailboxes}
+							madeBy={
+								webhook.agentMemberId === null
+									? null
+									: (agents.find((agent) => agent.memberId === webhook.agentMemberId)?.name ??
+										"an agent")
+							}
 							onSecret={setNewSecret}
 						/>
 					))}
@@ -170,7 +177,9 @@ function SecretReveal({ newSecret, onDone }: { newSecret: NewSecret; onDone: () 
 
 /** Which mailboxes a webhook hears of, in words. */
 function mailboxesHeard(webhook: Webhook, mailboxes: WorkspaceWebhooks["mailboxes"]): string {
-	if (webhook.mailboxIds === null) return "Every mailbox";
+	if (webhook.mailboxIds === null) {
+		return webhook.agentMemberId === null ? "Every mailbox" : "Every mailbox it may read";
+	}
 	const names = mailboxes
 		.filter((mailbox) => webhook.mailboxIds?.includes(mailbox.id))
 		.map((mailbox) => mailbox.name);
@@ -182,11 +191,14 @@ function WebhookRow({
 	webhook,
 	deliveries,
 	mailboxes,
+	madeBy,
 	onSecret,
 }: {
 	webhook: Webhook;
 	deliveries: WebhookDelivery[];
 	mailboxes: WorkspaceWebhooks["mailboxes"];
+	/** The agent that made it for itself; null for the workspace's own. */
+	madeBy: string | null;
 	onSecret: (secret: NewSecret) => void;
 }) {
 	const { slug } = useWorkspace();
@@ -257,6 +269,7 @@ function WebhookRow({
 					</p>
 					<p className="text-xs text-muted-foreground">{scope.join(" · ")}</p>
 					<p className="text-xs text-muted-foreground">
+						{madeBy !== null && <>Made by {madeBy}, for itself · </>}
 						Secret <span className="font-mono">{webhook.secretStart}…</span>
 					</p>
 				</div>
@@ -278,11 +291,16 @@ function WebhookRow({
 						</Button>
 					</DropdownMenuTrigger>
 					<DropdownMenuContent align="end">
-						<DropdownMenuItem onSelect={() => setAction("edit")}>Edit</DropdownMenuItem>
+						{/* Where an agent's own goes, and its secret, are the agent's to change. */}
+						{madeBy === null && (
+							<DropdownMenuItem onSelect={() => setAction("edit")}>Edit</DropdownMenuItem>
+						)}
 						<DropdownMenuItem onSelect={() => setActive(!webhook.active)}>
 							{webhook.active ? "Pause" : "Resume"}
 						</DropdownMenuItem>
-						<DropdownMenuItem onSelect={() => setAction("rotate")}>New secret</DropdownMenuItem>
+						{madeBy === null && (
+							<DropdownMenuItem onSelect={() => setAction("rotate")}>New secret</DropdownMenuItem>
+						)}
 						<DropdownMenuSeparator />
 						<DropdownMenuItem
 							className="text-destructive focus:text-destructive"

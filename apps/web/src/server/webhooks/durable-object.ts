@@ -1,7 +1,9 @@
 import { DurableObject } from "cloudflare:workers";
 import { and, eq, inArray } from "drizzle-orm";
 import type { z } from "zod";
+import { canReadMailbox } from "../../lib/roles";
 import {
+	MAX_AGENT_WEBHOOKS,
 	MAX_WEBHOOKS,
 	type SentEventType,
 	WEBHOOK_TEST_EVENT,
@@ -18,6 +20,7 @@ import { isAgentMembership } from "../auth/agents";
 import { createDb, schema } from "../db";
 import type { SentFacts } from "../mailbox/events";
 import { decoded, sender } from "../mailbox/people";
+import { toRole } from "../workspaces";
 import { migrate } from "./schema";
 import {
 	attempt,
@@ -65,8 +68,8 @@ export interface SentEvent {
 /** A member as the workspace has them now, for naming who wrote, approved or rejected mail. */
 type Known = { name: string; agent: boolean };
 
-/** D1 binds at most 100 values in a statement; one is the workspace's. */
-const MEMBERS_AT_ONCE = 90;
+/** D1 binds at most 100 values in a statement; a few are the workspace's. */
+const IDS_AT_ONCE = 90;
 
 /** What the gateway knows of the workspace a change is for, and where people reach the app. */
 export interface WebhookLink {
@@ -76,6 +79,16 @@ export interface WebhookLink {
 }
 
 export type Refused = { ok: false; status: 400 | 404 | 409; error: string };
+
+/** Who asks: an owner or admin, for every webhook of the workspace, or an agent, for its own. */
+export type Asker = { admin: true } | { agent: string };
+
+const agentOf = (asker: Asker): string | null => ("agent" in asker ? asker.agent : null);
+
+/** What an admin may not do to a webhook an agent made for itself. */
+const AGENTS_OWN =
+	"Only the agent that made this webhook can change where it goes and what it hears. You can pause, test or delete it.";
+const AGENTS_SECRET = "Only the agent that made this webhook can give it a new secret.";
 
 type Fields = z.output<typeof webhookInput>;
 type Patch = z.output<typeof webhookPatch>;
@@ -98,9 +111,19 @@ type WebhookRow = {
 	mailboxIds: string | null;
 	active: number;
 	secret: string;
+	agentMemberId: string | null;
 	createdAt: number;
 	updatedAt: number;
 };
+
+/** An active webhook, as `accept` reads it. */
+type Listening = { id: string; events: WebhookEventType[]; agent: string | null };
+
+/**
+ * Of some agents, those still in the workspace, and the agents and mailboxes, as `pair` names them,
+ * where the agent may read the mailbox now.
+ */
+type Readers = { present: Set<string>; reading: Set<string> };
 
 type DeliveryRow = {
 	id: string;
@@ -115,10 +138,10 @@ type DeliveryRow = {
 	updatedAt: number;
 };
 
-type Claim = { id: string; attempts: number };
+type Claim = { id: string; attempts: number; mailboxId: string | null; agent: string | null };
 
 const WEBHOOK_COLUMNS = `id, url, events, mailbox_ids AS mailboxIds, active, secret,
-	created_at AS createdAt, updated_at AS updatedAt`;
+	agent_member_id AS agentMemberId, created_at AS createdAt, updated_at AS updatedAt`;
 const DELIVERY_COLUMNS = `id, webhook_id AS webhookId, event, status, attempts,
 	response_status AS responseStatus, error, next_attempt_at AS nextAttemptAt,
 	created_at AS createdAt, updated_at AS updatedAt`;
@@ -133,7 +156,8 @@ const refused = (status: Refused["status"], error: string): Refused => ({
  * A workspace's webhooks, with their secrets, and the deliveries on their way to them. Mailboxes
  * hand it what they stored, from an outbox of their own; it queues one delivery for each webhook
  * that listens, and sends them from its alarm, retrying for about a day. Only the Worker reaches
- * it: the gateway, after checking that an owner or admin asks, and the workspace's mailboxes.
+ * it: the gateway, after checking that an owner or admin asks; the agent API, for an agent's own,
+ * with the agent's key; and the workspace's mailboxes.
  */
 export class Webhooks extends DurableObject<Cloudflare.Env> {
 	constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
@@ -141,12 +165,19 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 		migrate(ctx.storage);
 	}
 
-	/** The webhooks, oldest first, with each one's latest deliveries. */
-	list(): { webhooks: Webhook[]; deliveries: WebhookDelivery[] } {
+	/** The webhooks the asker may see, oldest first, with each one's latest deliveries. */
+	list(asker: Asker): { webhooks: Webhook[]; deliveries: WebhookDelivery[] } {
 		const sql = this.ctx.storage.sql;
-		const rows = sql
-			.exec<WebhookRow>(`SELECT ${WEBHOOK_COLUMNS} FROM webhook ORDER BY created_at, id`)
-			.toArray();
+		const agent = agentOf(asker);
+		const rows = (
+			agent === null
+				? sql.exec<WebhookRow>(`SELECT ${WEBHOOK_COLUMNS} FROM webhook ORDER BY created_at, id`)
+				: sql.exec<WebhookRow>(
+						`SELECT ${WEBHOOK_COLUMNS} FROM webhook WHERE agent_member_id = ?
+						ORDER BY created_at, id`,
+						agent,
+					)
+		).toArray();
 		const deliveries = rows.flatMap((row) =>
 			sql
 				.exec<DeliveryRow>(
@@ -161,10 +192,14 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 		return { webhooks: rows.map(toWebhook), deliveries };
 	}
 
-	/** Adds a webhook, with a new secret that only this answer gives. */
+	/**
+	 * Adds a webhook, with a new secret that only this answer gives: the workspace's own for an
+	 * admin, the agent's own for an agent. Each kind counts against its own limit.
+	 */
 	create(
 		link: WebhookLink,
 		fields: Fields,
+		asker: Asker,
 	): { ok: true; webhook: Webhook; secret: string } | Refused {
 		const refusal = urlRefusal(fields.url, link.origin);
 		if (refusal) return refused(400, refusal);
@@ -172,20 +207,28 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 		const now = Date.now();
 		const id = crypto.randomUUID();
 		const secret = newSecret();
+		const agent = agentOf(asker);
 		return this.ctx.storage.transactionSync(() => {
-			const { n } = sql.exec<{ n: number }>("SELECT count(*) AS n FROM webhook").one();
-			if (n >= MAX_WEBHOOKS) {
+			const { n } = sql
+				.exec<{ n: number }>("SELECT count(*) AS n FROM webhook WHERE agent_member_id IS ?", agent)
+				.one();
+			if (agent === null && n >= MAX_WEBHOOKS) {
 				return refused(409, `A workspace can have at most ${MAX_WEBHOOKS} webhooks.`);
+			}
+			if (agent !== null && n >= MAX_AGENT_WEBHOOKS) {
+				return refused(409, `An agent can have at most ${MAX_AGENT_WEBHOOKS} webhooks of its own.`);
 			}
 			this.#remember(link);
 			sql.exec(
-				`INSERT INTO webhook (id, url, events, mailbox_ids, active, secret, created_at, updated_at)
-				VALUES (?, ?, ?, ?, 1, ?, ?, ?)`,
+				`INSERT INTO webhook (id, url, events, mailbox_ids, active, secret, agent_member_id,
+					created_at, updated_at)
+				VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?)`,
 				id,
 				fields.url,
 				JSON.stringify(fields.events),
 				fields.mailboxIds === null ? null : JSON.stringify(fields.mailboxIds),
 				secret,
+				agent,
 				now,
 				now,
 			);
@@ -198,9 +241,14 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 	/**
 	 * Changes a webhook. Of what it had yet to deliver, it drops what it no longer wants: everything
 	 * once it is paused, and what tells of a mailbox or an event it no longer hears. A new URL takes
-	 * the rest.
+	 * the rest. An admin only pauses or resumes one an agent made for itself.
 	 */
-	update(link: WebhookLink, id: string, patch: Patch): { ok: true; webhook: Webhook } | Refused {
+	update(
+		link: WebhookLink,
+		id: string,
+		patch: Patch,
+		asker: Asker,
+	): { ok: true; webhook: Webhook } | Refused {
 		if (patch.url !== undefined) {
 			const refusal = urlRefusal(patch.url, link.origin);
 			if (refusal) return refused(400, refusal);
@@ -208,8 +256,13 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 		const sql = this.ctx.storage.sql;
 		const now = Date.now();
 		return this.ctx.storage.transactionSync(() => {
-			const row = this.#row(id);
+			const row = this.#row(id, asker);
 			if (!row) return refused(404, "No such webhook.");
+			const redirects =
+				patch.url !== undefined || patch.events !== undefined || patch.mailboxIds !== undefined;
+			if ("admin" in asker && row.agentMemberId !== null && redirects) {
+				return refused(409, AGENTS_OWN);
+			}
 			this.#remember(link);
 			const mailboxIds =
 				patch.mailboxIds === undefined
@@ -235,10 +288,10 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 	}
 
 	/** Deletes a webhook and what it had not delivered. */
-	remove(id: string): { ok: true } | Refused {
+	remove(id: string, asker: Asker): { ok: true } | Refused {
 		const sql = this.ctx.storage.sql;
 		return this.ctx.storage.transactionSync(() => {
-			if (!this.#row(id)) return refused(404, "No such webhook.");
+			if (!this.#row(id, asker)) return refused(404, "No such webhook.");
 			sql.exec("DELETE FROM delivery WHERE webhook_id = ?", id);
 			sql.exec("DELETE FROM webhook WHERE id = ?", id);
 			return { ok: true as const };
@@ -246,27 +299,32 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 	}
 
 	/** Replaces a webhook's secret. Deliveries fail until the receiver has the new one. */
-	rotate(id: string): { ok: true; secret: string } | Refused {
+	rotate(id: string, asker: Asker): { ok: true; webhook: Webhook; secret: string } | Refused {
 		const sql = this.ctx.storage.sql;
 		const secret = newSecret();
 		return this.ctx.storage.transactionSync(() => {
-			if (!this.#row(id)) return refused(404, "No such webhook.");
+			const row = this.#row(id, asker);
+			if (!row) return refused(404, "No such webhook.");
+			// The agent couldn't learn it, and would no longer know its deliveries for Mail's.
+			if ("admin" in asker && row.agentMemberId !== null) return refused(409, AGENTS_SECRET);
 			sql.exec(
 				"UPDATE webhook SET secret = ?, updated_at = ? WHERE id = ?",
 				secret,
 				Date.now(),
 				id,
 			);
-			return { ok: true as const, secret };
+			const changed = this.#row(id);
+			if (!changed) throw new Error("The webhook just changed isn't there");
+			return { ok: true as const, webhook: toWebhook(changed), secret };
 		});
 	}
 
 	/** Queues a `webhook.test` delivery, whatever the webhook listens to, one at a time. */
-	async test(link: WebhookLink, id: string): Promise<{ ok: true } | Refused> {
+	async test(link: WebhookLink, id: string, asker: Asker): Promise<{ ok: true } | Refused> {
 		const sql = this.ctx.storage.sql;
 		const now = Date.now();
 		const queued = this.ctx.storage.transactionSync(() => {
-			const row = this.#row(id);
+			const row = this.#row(id, asker);
 			if (!row) return refused(404, "No such webhook.");
 			if (row.active !== 1) return refused(409, "Resume the webhook first.");
 			const waiting = sql
@@ -290,10 +348,16 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 		return queued;
 	}
 
+	/** Removes the webhooks an agent made for itself, and what they had not delivered. */
+	removeAgent(memberId: string): void {
+		this.ctx.storage.transactionSync(() => this.#forget(memberId));
+	}
+
 	/**
 	 * Takes what a mailbox of the workspace stored, and queues a delivery of each event for every
-	 * webhook that listens to it there. An event handed over again is queued once. Throws when it
-	 * can't tell, which has the mailbox hand the events over again later.
+	 * webhook that listens to it there: of an agent's own, only those of an agent that may read the
+	 * mailbox now, and not of what it did itself. An event handed over again is queued once. Throws
+	 * when it can't tell, which has the mailbox hand the events over again later.
 	 */
 	async accept(workspaceId: string, mailboxId: string, events: MailEvent[]): Promise<void> {
 		const listening = this.#listening(mailboxId);
@@ -308,9 +372,12 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 				this.ctx.storage.sql.exec("SELECT 1 FROM seen_event WHERE id = ?", event.id).toArray()
 					.length === 0,
 		);
+		const agents = [
+			...new Set(listening.flatMap((hook) => (hook.agent === null ? [] : [hook.agent]))),
+		];
 		// Named as they are now, and only while they are there: a deleted workspace sends nothing.
 		const db = createDb(this.env.DB);
-		const [workspace, mailbox, members] = await Promise.all([
+		const [workspace, mailbox, members, readers] = await Promise.all([
 			db
 				.select({ slug: schema.organization.slug })
 				.from(schema.organization)
@@ -324,6 +391,10 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 				)
 				.get(),
 			this.#members(workspaceId, named),
+			this.#readers(
+				workspaceId,
+				agents.map((agent) => ({ agent, mailboxId })),
+			),
 		]);
 		if (!workspace) {
 			await this.destroy();
@@ -333,13 +404,18 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 		const sql = this.ctx.storage.sql;
 		const now = Date.now();
 		const queued = this.ctx.storage.transactionSync(() => {
+			// An agent no longer in the workspace takes its webhooks with it.
+			for (const agent of agents) if (!readers.present.has(agent)) this.#forget(agent);
 			let any = false;
 			for (const event of events) {
 				if (sql.exec("SELECT 1 FROM seen_event WHERE id = ?", event.id).toArray().length > 0) {
 					continue;
 				}
-				// As the webhooks are now: one may have changed while the names were looked up.
-				const hooks = this.#listening(mailboxId).filter((hook) => hook.events.includes(event.type));
+				// As the webhooks are now: one may have changed while the names were looked up, and an
+				// agent's made meanwhile isn't known to hear the mailbox.
+				const hooks = this.#listening(mailboxId).filter(
+					(hook) => hook.events.includes(event.type) && hears(hook, event, mailboxId, readers),
+				);
 				if (hooks.length === 0) continue;
 				sql.exec("INSERT INTO seen_event (id, at) VALUES (?, ?)", event.id, now);
 				const where = {
@@ -433,9 +509,11 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 			const now = Date.now();
 			const due = sql
 				.exec<Claim>(
-					`SELECT id, attempts + 1 AS attempts FROM delivery
-					WHERE status = 'pending' AND next_attempt_at <= ?
-					ORDER BY next_attempt_at LIMIT ?`,
+					`SELECT delivery.id, delivery.attempts + 1 AS attempts, delivery.mailbox_id AS mailboxId,
+						webhook.agent_member_id AS agent
+					FROM delivery LEFT JOIN webhook ON webhook.id = delivery.webhook_id
+					WHERE delivery.status = 'pending' AND delivery.next_attempt_at <= ?
+					ORDER BY delivery.next_attempt_at LIMIT ?`,
 					now,
 					BATCH_SIZE,
 				)
@@ -451,11 +529,21 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 			}
 			return due;
 		});
+		const readers = await this.#readersOf(claims);
 		let next = 0;
 		const worker = async () => {
 			while (next < claims.length) {
 				const claim = claims[next++];
 				if (!claim) break;
+				// An agent's own webhook gets only what tells of a mailbox it may still read.
+				if (claim.agent !== null && claim.mailboxId !== null) {
+					// Not known now: tried again once its claim runs out.
+					if (!readers) continue;
+					if (!readers.reading.has(pair(claim.agent, claim.mailboxId))) {
+						this.#failOne(claim.id, "The agent may no longer read that mailbox.", Date.now());
+						continue;
+					}
+				}
 				// It may have waited behind slow receivers, and its webhook may have been paused, changed
 				// or deleted, or its secret replaced, since.
 				const sending = this.#stillToSend(claim.id);
@@ -495,6 +583,26 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 		return { payload: delivery.payload, secret: webhook.secret, url: webhook.url };
 	}
 
+	/** Which agents may still read what their claimed deliveries tell of; null when D1 didn't say. */
+	async #readersOf(claims: Claim[]): Promise<Readers | null> {
+		const pairs = claims.flatMap((claim) =>
+			claim.agent !== null && claim.mailboxId !== null
+				? [{ agent: claim.agent, mailboxId: claim.mailboxId }]
+				: [],
+		);
+		if (pairs.length === 0) return { present: new Set(), reading: new Set() };
+		const workspaceId = this.#meta("workspace");
+		if (!workspaceId) return null;
+		try {
+			return await this.#readers(workspaceId, pairs);
+		} catch (error) {
+			console.error("webhooks: D1 didn't answer; an agent's deliveries wait", {
+				name: error instanceof Error ? error.name : "unknown",
+			});
+			return null;
+		}
+	}
+
 	#record(claim: Claim, outcome: Outcome, now: number): void {
 		const delay = RETRY_DELAYS_MS[claim.attempts - 1];
 		const status = outcome.ok ? "delivered" : delay === undefined ? "failed" : "pending";
@@ -513,18 +621,26 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 		);
 	}
 
-	/** The active webhooks that hear of this mailbox's mail, with what they listen to. */
-	#listening(mailboxId: string): { id: string; events: WebhookEventType[] }[] {
+	/**
+	 * The active webhooks that hear of this mailbox's mail, with what they listen to and the agent
+	 * that made each for itself.
+	 */
+	#listening(mailboxId: string): Listening[] {
 		return this.ctx.storage.sql
-			.exec<{ id: string; events: string; mailboxIds: string | null }>(
-				"SELECT id, events, mailbox_ids AS mailboxIds FROM webhook WHERE active = 1",
+			.exec<{ id: string; events: string; mailboxIds: string | null; agent: string | null }>(
+				`SELECT id, events, mailbox_ids AS mailboxIds, agent_member_id AS agent FROM webhook
+				WHERE active = 1`,
 			)
 			.toArray()
 			.filter(
 				(row) =>
 					row.mailboxIds === null || (JSON.parse(row.mailboxIds) as string[]).includes(mailboxId),
 			)
-			.map((row) => ({ id: row.id, events: JSON.parse(row.events) as WebhookEventType[] }));
+			.map((row) => ({
+				id: row.id,
+				events: JSON.parse(row.events) as WebhookEventType[],
+				agent: row.agent,
+			}));
 	}
 
 	#queue(
@@ -576,12 +692,23 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 		);
 	}
 
-	#row(id: string): WebhookRow | null {
-		return (
-			this.ctx.storage.sql
-				.exec<WebhookRow>(`SELECT ${WEBHOOK_COLUMNS} FROM webhook WHERE id = ?`, id)
-				.toArray()[0] ?? null
+	/** A webhook, if there is one with this id that the asker, when named, may see. */
+	#row(id: string, asker?: Asker): WebhookRow | null {
+		const row = this.ctx.storage.sql
+			.exec<WebhookRow>(`SELECT ${WEBHOOK_COLUMNS} FROM webhook WHERE id = ?`, id)
+			.toArray()[0];
+		if (!row) return null;
+		const agent = asker ? agentOf(asker) : null;
+		return agent === null || row.agentMemberId === agent ? row : null;
+	}
+
+	#forget(memberId: string): void {
+		const sql = this.ctx.storage.sql;
+		sql.exec(
+			"DELETE FROM delivery WHERE webhook_id IN (SELECT id FROM webhook WHERE agent_member_id = ?)",
+			memberId,
 		);
+		sql.exec("DELETE FROM webhook WHERE agent_member_id = ?", memberId);
 	}
 
 	/** Keeps which workspace this is and where the app is, as the gateway last said. */
@@ -622,27 +749,73 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 				),
 			),
 		].filter((id) => id !== null);
-		const known = new Map<string, Known>();
 		const db = createDb(this.env.DB);
 		const { member, user } = schema;
-		for (let at = 0; at < ids.length; at += MEMBERS_AT_ONCE) {
-			const rows = await db
+		const rows = await inChunks(ids, (some) =>
+			db
 				.select({ id: member.id, name: user.name, role: member.role })
 				.from(member)
 				.innerJoin(user, eq(member.userId, user.id))
-				.where(
-					and(
-						eq(member.organizationId, workspaceId),
-						inArray(member.id, ids.slice(at, at + MEMBERS_AT_ONCE)),
-					),
-				)
-				.all();
-			for (const row of rows) {
-				// As stored, not as `toRole` reads a role it doesn't know, which is for what they may do.
-				known.set(row.id, { name: row.name, agent: isAgentMembership(row.role) });
-			}
+				.where(and(eq(member.organizationId, workspaceId), inArray(member.id, some)))
+				.all(),
+		);
+		// As stored, not as `toRole` reads a role it doesn't know, which is for what they may do.
+		return new Map(
+			rows.map((row) => [row.id, { name: row.name, agent: isAgentMembership(row.role) }]),
+		);
+	}
+
+	/**
+	 * Of these agents, those still in the workspace, and of each agent and mailbox, whether the
+	 * agent may read that mailbox now, as `canReadMailbox` decides for its routes.
+	 */
+	async #readers(
+		workspaceId: string,
+		pairs: { agent: string; mailboxId: string }[],
+	): Promise<Readers> {
+		const reading = new Set<string>();
+		if (pairs.length === 0) return { present: new Set(), reading };
+		const agents = [...new Set(pairs.map((one) => one.agent))];
+		const mailboxIds = [...new Set(pairs.map((one) => one.mailboxId))];
+		const db = createDb(this.env.DB);
+		const { mailbox, mailboxAccess, member } = schema;
+		const [roles, grants, boxes] = await Promise.all([
+			inChunks(agents, (some) =>
+				db
+					.select({ id: member.id, role: member.role })
+					.from(member)
+					.where(and(eq(member.organizationId, workspaceId), inArray(member.id, some)))
+					.all(),
+			),
+			inChunks(agents, (some) =>
+				db
+					.select({ memberId: mailboxAccess.memberId, mailboxId: mailboxAccess.mailboxId })
+					.from(mailboxAccess)
+					.where(inArray(mailboxAccess.memberId, some))
+					.all(),
+			),
+			inChunks(mailboxIds, (some) =>
+				db
+					.select({ id: mailbox.id, everyone: mailbox.everyone })
+					.from(mailbox)
+					.where(and(eq(mailbox.organizationId, workspaceId), inArray(mailbox.id, some)))
+					.all(),
+			),
+		]);
+		const roleOf = new Map(roles.map((row) => [row.id, toRole(row.role)]));
+		const granted = new Set(grants.map((row) => pair(row.memberId, row.mailboxId)));
+		const everyone = new Map(boxes.map((row) => [row.id, row.everyone]));
+		for (const { agent, mailboxId } of pairs) {
+			const role = roleOf.get(agent);
+			const open = everyone.get(mailboxId);
+			if (role === undefined || open === undefined) continue;
+			const readable = canReadMailbox(role, {
+				everyone: open,
+				granted: granted.has(pair(agent, mailboxId)),
+			});
+			if (readable) reading.add(pair(agent, mailboxId));
 		}
-		return known;
+		return { present: new Set(roleOf.keys()), reading };
 	}
 
 	/** Has the alarm run by then, unless it runs sooner anyway. */
@@ -650,6 +823,29 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 		const current = await this.ctx.storage.getAlarm();
 		if (current === null || current > at) await this.ctx.storage.setAlarm(at);
 	}
+}
+
+/** An agent and a mailbox, as `Readers` keeps them. Both are UUIDs. */
+const pair = (agent: string, mailboxId: string) => `${agent}/${mailboxId}`;
+
+/**
+ * Whether a webhook that listens to an event's type hears of this one: an agent's own only of a
+ * mailbox the agent may read, and not of what it did itself, such as holding mail it wrote or
+ * sending what needed no approval.
+ */
+function hears(hook: Listening, event: MailEvent, mailboxId: string, readers: Readers): boolean {
+	if (hook.agent === null) return true;
+	if (!readers.reading.has(pair(hook.agent, mailboxId))) return false;
+	return event.type === "message.received" || event.sent.by !== hook.agent;
+}
+
+/** Reads ids a statement at a time, as D1 binds at most 100 values in one. */
+async function inChunks<T>(ids: string[], read: (some: string[]) => Promise<T[]>): Promise<T[]> {
+	const all: T[] = [];
+	for (let at = 0; at < ids.length; at += IDS_AT_ONCE) {
+		all.push(...(await read(ids.slice(at, at + IDS_AT_ONCE))));
+	}
+	return all;
 }
 
 /** Where an event happened, and where people reach the app. */
@@ -763,6 +959,7 @@ function toWebhook(row: WebhookRow): Webhook {
 		mailboxIds: row.mailboxIds === null ? null : (JSON.parse(row.mailboxIds) as string[]),
 		active: row.active === 1,
 		secretStart: secretStart(row.secret),
+		agentMemberId: row.agentMemberId,
 		createdAt: row.createdAt,
 		updatedAt: row.updatedAt,
 	};

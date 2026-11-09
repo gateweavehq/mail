@@ -2,7 +2,7 @@ import { appOrigin } from "../origin";
 import { readUpTo, textOf } from "../streams";
 import { accessFor, agentOfRequest } from "./access";
 import { ApiError, INTERNAL_FAILURE, logFailure } from "./mail-access";
-import { API_PATH, jsonSchema, openApiDocument, pathNames, takenBy } from "./openapi";
+import { API_PATH, hasBody, jsonSchema, openApiDocument, pathNames, takenBy } from "./openapi";
 import { OPERATIONS, type Operation, type Route } from "./operations";
 
 /** The most a request's body may be: a message's text is at most 100,000 characters. */
@@ -127,7 +127,7 @@ export async function handleApiRequest(request: Request): Promise<Response> {
 
 /**
  * What a request asks, from its path, then its query string for a GET or DELETE or its JSON body
- * for a POST: only the inputs its route takes. A query string's numbers and booleans are read as
+ * for a POST or PATCH: only the inputs its route takes. A query string's numbers and booleans are read as
  * such, as the input has them; anything else is left for the input to refuse.
  */
 async function inputOf(
@@ -145,7 +145,7 @@ async function inputOf(
 		}
 	}
 	const taken: Record<string, unknown> = {};
-	if (known.route.method === "POST") {
+	if (hasBody(known.route)) {
 		// Read only so far, whatever the request says its length is, or doesn't.
 		const read = await readUpTo(request.body, MAX_BODY);
 		if (!read) return failure("The request is too large.", 413);

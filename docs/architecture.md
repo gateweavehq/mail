@@ -210,16 +210,19 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     Owners and admins see on the workspace's page which agent made each address, and can remove
     it.
   - **The MCP server and the agent API** (`server/mcp/` at `/mcp`, `server/agent-api/` under
-    `/api/v1`). An agent reaches with its key what the REST routes give it, as ten operations:
-    `list_mailboxes`, `search_email`, `read_email`, `wait_for_email`, `get_verification_code`,
-    `send_email`, `reply`, `list_addresses`, `create_address` and `end_address`. Each is defined
+    `/api/v1`). An agent reaches with its key what the REST routes give it, as fifteen
+    operations: `list_mailboxes`, `search_email`, `read_email`, `wait_for_email`,
+    `get_verification_code`, `send_email`, `reply`, `list_addresses`, `create_address`,
+    `end_address`, and for webhooks of its own `list_webhooks`, `create_webhook`, `update_webhook`,
+    `delete_webhook` and `test_webhook`. Each is defined
     once, in `agent-api/operations.ts`: its input and output as zod schemas (the outputs in
     `outputs.ts`), its words, and its REST route. The MCP server makes a tool of each, the API a
     route (`GET /api/v1/mailboxes`, `GET /api/v1/verification-code` and so on), and
     `/api/v1/openapi.json` is written from the same schemas (`z.toJSONSchema`), so a tool, its
     route and the document can't say different things. A route takes its inputs from its path,
     then from its query string for a GET or DELETE, reading numbers and booleans as the input
-    has them, or from its JSON body for a POST (1 MB at most, however it is sent), and answers
+    has them, or from its JSON body for a POST or PATCH (1 MB at most, however it is sent), and
+    answers
     what the tool would, checked against the same schema, or `{ "error" }` with 400, 401, 403,
     404, 409, 413 or 429 (with `Retry-After` when known). A failure of Mail's own is a 500 over
     REST and a tool error over MCP, in the same words, and is logged by its kind alone, as what a
@@ -266,7 +269,7 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     through `POST /api/webhooks/<workspace>`, which asks where the request is from and that an
     owner or admin asks, and checks that a chosen mailbox is the workspace's. A webhook points
     over https (plain http only where the app itself runs on it), never at Mail's own host, and a
-    workspace has at most ten.
+    workspace has at most ten of its own, beside those its agents make.
     - **One object per workspace** (`Webhooks`) holds them, their secrets and the deliveries on
       their way. Nothing but the gateway and the workspace's mailboxes reach it, and secrets never
       leave it but in the answer that makes one, which the page shows once.
@@ -313,6 +316,18 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
       deleted workspace's object is cleared with it, and clears itself should it find the workspace
       gone. When D1 doesn't answer its alarm, the alarm sets itself a minute on rather than throw,
       since Cloudflare stops retrying one that keeps throwing.
+    - **An agent's own** (`webhook.agent_member_id`, the object's schema version 2). An agent makes
+      up to three with its key, through the agent API, so that it hears of mail without an admin
+      setting a webhook up for it. They hear of every mailbox it may read, or those it names among
+      them, and only while it may: as each event is queued, the object asks D1 whether the agent
+      is still in the workspace and may read the mailbox (`canReadMailbox`, as its routes do), and
+      asks again before each attempt, so a retry about a mailbox taken from it is dropped. Of mail
+      it writes, they aren't told what it did itself (`by` is the agent: holding mail, or sending
+      what needed no approval), only what people and servers did. Deleting the agent removes them,
+      as does the object or the webhooks page on finding the agent gone. Owners and admins see them
+      on Settings › Webhooks, named by their agent, and may pause, resume, test or delete them, but
+      not change where they go or what they hear, nor make them a new secret, which the agent
+      couldn't learn. An agent sees only its own, and their deliveries.
     - **Its own zone.** The Worker runs with `global_fetch_strictly_public`, so a webhook to a host
       on Mail's own zone goes in through Cloudflare, past that host's security settings and to
       whatever Worker serves it, as anyone's request would, never straight to the origin.

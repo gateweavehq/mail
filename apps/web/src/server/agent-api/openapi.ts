@@ -25,6 +25,9 @@ export function jsonSchema(schema: z.ZodType, io: "input" | "output"): Schema {
 export const pathNames = (route: Route) =>
 	[...route.path.matchAll(/\{(\w+)\}/g)].map((match) => match[1] ?? "");
 
+/** Whether a route takes its inputs, besides its path's, from a JSON body rather than a query. */
+export const hasBody = (route: Route) => route.method === "POST" || route.method === "PATCH";
+
 /** The inputs a route takes besides its path's. */
 export function takenBy(operation: Operation, route: Route): string[] {
 	const inPath = pathNames(route);
@@ -35,7 +38,7 @@ const FAILURE_WORDS: Record<FailureStatus | 413 | 500, string> = {
 	400: "The request isn't one it takes, or names no mailbox, message or address it can tell.",
 	401: "No agent key, or one that doesn't work: revoked, or its agent deleted.",
 	403: "Your key may not do this here, as your grants or policy have it.",
-	404: "No such mailbox, message, thread or address that you may reach.",
+	404: "No such mailbox, message, thread, address or webhook that you may reach.",
 	409: "It can't be done as things are, as when what you answer names nobody.",
 	413: "The body is larger than any request takes.",
 	429: "Too many for now. Retry-After, when there, says in how many seconds to try again.",
@@ -64,7 +67,7 @@ export function openApiDocument(origin: string) {
 			};
 			const parameters = [
 				...pathNames(route).map((name) => parameter(name, "path")),
-				...(route.method === "POST" ? [] : taken.map((name) => parameter(name, "query"))),
+				...(hasBody(route) ? [] : taken.map((name) => parameter(name, "query"))),
 			];
 			const body: Schema = {
 				type: "object",
@@ -72,14 +75,7 @@ export function openApiDocument(origin: string) {
 				required: taken.filter((name) => required.has(name)),
 			};
 			const failures = [
-				...new Set([
-					400,
-					401,
-					404,
-					...operation.refusals,
-					...(route.method === "POST" ? [413] : []),
-					500,
-				]),
+				...new Set([400, 401, 404, ...operation.refusals, ...(hasBody(route) ? [413] : []), 500]),
 			].sort((a, b) => a - b);
 			paths[route.path] = {
 				...paths[route.path],
@@ -89,7 +85,7 @@ export function openApiDocument(origin: string) {
 					description: operation.description,
 					"x-mcp-tool": operation.name,
 					...(parameters.length > 0 ? { parameters } : {}),
-					...(route.method === "POST"
+					...(hasBody(route)
 						? { requestBody: { required: true, content: { "application/json": { schema: body } } } }
 						: {}),
 					responses: {
@@ -114,7 +110,7 @@ export function openApiDocument(origin: string) {
 			title: "Gateweave Mail agent API",
 			version: "1.0.0",
 			description: [
-				"What an AI agent can do with Gateweave Mail, with its key: read and search the mailboxes it was given, wait for mail and sign-in codes, send and reply, and make addresses of its own. Each operation is also a tool of Mail's MCP server, at /mcp, named in x-mcp-tool.",
+				"What an AI agent can do with Gateweave Mail, with its key: read and search the mailboxes it was given, wait for mail and sign-in codes, send and reply, make addresses of its own, and hear of mail through webhooks of its own. Each operation is also a tool of Mail's MCP server, at /mcp, named in x-mcp-tool.",
 				"An owner or admin makes the agent and its key in the workspace's settings, under Agents. The key names the workspace; send it as a bearer token. Mail an agent writes to anyone its policy doesn't name waits for a person to approve it.",
 				`Mail is how a stranger reaches an agent. ${UNTRUSTED}`,
 			].join("\n\n"),

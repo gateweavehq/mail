@@ -30,18 +30,31 @@ export type DeliveryEventType = "message.delivered" | "message.bounced" | "messa
 /** Sent only when an admin asks for a test delivery, whatever the webhook subscribes to. */
 export const WEBHOOK_TEST_EVENT = "webhook.test";
 
+/** The workspace's own, which owners and admins make. An agent's own don't count among them. */
 export const MAX_WEBHOOKS = 10;
+
+/** The most an agent may make for itself, through the agent API. */
+export const MAX_AGENT_WEBHOOKS = 3;
 
 /** The most mailboxes one webhook names; past that, it may as well hear of every mailbox. */
 export const MAX_WEBHOOK_MAILBOXES = 50;
 
-/** A workspace's subscription to its events. Its secret is shown once, when it is made. */
+/**
+ * A subscription to the workspace's events. Its secret is shown once, when it is made. An agent's
+ * own hears only of mailboxes it may read, as it may when each event is queued and sent, and not
+ * of what it did itself.
+ */
 export interface Webhook {
 	id: string;
 	url: string;
 	events: WebhookEventType[];
-	/** Only these mailboxes' mail, or every mailbox's when null, those made later too. */
+	/**
+	 * Only these mailboxes' mail, or every mailbox's when null, those made later too: for an
+	 * agent's own, every mailbox it may read.
+	 */
 	mailboxIds: string[] | null;
+	/** The agent that made it for itself, by membership; null for the workspace's own. */
+	agentMemberId: string | null;
 	/** A paused webhook queues nothing and drops what it had not delivered. */
 	active: boolean;
 	/** The secret's first characters, to tell secrets apart. */
@@ -205,6 +218,8 @@ export interface WorkspaceWebhooks {
 	deliveries: WebhookDelivery[];
 	/** The workspace's mailboxes, to choose from and to name those a webhook hears of. */
 	mailboxes: { id: string; name: string }[];
+	/** The agents that made webhooks of their own, by membership, to name them. */
+	agents: { memberId: string; name: string }[];
 }
 
 /** A change, as the page sends it to `/api/webhooks/<workspace>`. */

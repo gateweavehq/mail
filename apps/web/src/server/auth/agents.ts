@@ -575,6 +575,10 @@ export function agentMembers({ db }: { db: Database }) {
 						db.delete(member).where(eq(member.userId, agent.id)),
 						db.delete(user).where(eq(user.id, agent.id)),
 					]);
+					// And the webhooks it made for itself. Imported here, as the webhooks object reads
+					// this module.
+					const { removeAgentWebhooks } = await import("../webhooks");
+					await removeAgentWebhooks(agent.organizationId, agent.memberId);
 					return ctx.json({ id: agent.id });
 				},
 			),

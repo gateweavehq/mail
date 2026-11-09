@@ -62,6 +62,33 @@ const addressOutput = z.looseObject({
 	expiresAt: z.string().nullable(),
 });
 
+const webhookOutput = z.looseObject({
+	id: z.string(),
+	url: z.string(),
+	events: z.array(z.string()),
+	mailboxIds: z
+		.array(z.string())
+		.nullable()
+		.describe("The mailboxes it hears of; null for every mailbox you may read."),
+	active: z.boolean(),
+	secretStart: z.string().describe("The secret's first characters, to tell secrets apart."),
+	createdAt: z.string(),
+	updatedAt: z.string(),
+});
+const webhookDeliveryOutput = z.looseObject({
+	id: z.string().describe("Its webhook-id header, the same on every retry."),
+	event: z.string(),
+	status: z.string().describe('"pending" while it is to be tried again, "delivered" or "failed".'),
+	attempts: z.number(),
+	responseStatus: z
+		.number()
+		.nullable()
+		.describe("What your receiver answered last; null when it didn't, as on a timeout."),
+	error: z.string().nullable(),
+	nextAttemptAt: z.string().nullable(),
+	createdAt: z.string(),
+});
+
 const threadOutput = z.looseObject({
 	id: z.string(),
 	subject: z.string(),
@@ -146,4 +173,27 @@ export const OUTPUTS = {
 	}),
 	create_address: addressOutput,
 	end_address: z.looseObject({ ended: z.boolean() }),
+	list_webhooks: z.looseObject({
+		webhooks: z.array(
+			webhookOutput.extend({
+				deliveries: z.array(webhookDeliveryOutput).describe("The latest, newest first."),
+			}),
+		),
+		max: z.number().describe("How many webhooks you may have."),
+	}),
+	create_webhook: z.looseObject({
+		webhook: webhookOutput,
+		secret: z
+			.string()
+			.describe("The whsec_ secret to check signatures with. Only this answer gives it."),
+	}),
+	update_webhook: z.looseObject({
+		webhook: webhookOutput,
+		secret: z
+			.string()
+			.optional()
+			.describe("The new secret, when you asked for one. Only this answer gives it."),
+	}),
+	delete_webhook: z.looseObject({ deleted: z.boolean() }),
+	test_webhook: z.looseObject({ queued: z.boolean() }),
 } as const;
