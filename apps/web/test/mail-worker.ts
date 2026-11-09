@@ -102,6 +102,20 @@ function failure(address) {
 	if (failing[1] === "lost") return new Error("The connection went away");
 	return new Error((failing[1] === "busy" ? "E_RATE_LIMIT_EXCEEDED" : "E_DAILY_LIMIT_EXCEEDED") + ": try later");
 }
+// As Email Service does (measured 2026-11-09), a file whose content is a string goes as those
+// characters, not as the Base64 they spell. What went is kept as Base64, to compare with requests.
+function asSent(file) {
+	const content = file.content;
+	const bytes =
+		typeof content === "string"
+			? new TextEncoder().encode(content)
+			: ArrayBuffer.isView(content)
+				? new Uint8Array(content.buffer, content.byteOffset, content.byteLength)
+				: new Uint8Array(content);
+	let binary = "";
+	for (const byte of bytes) binary += String.fromCharCode(byte);
+	return { ...file, content: btoa(binary) };
+}
 export default class Outbox extends WorkerEntrypoint {
 	async send(message) {
 		const recipients = [message.to, message.cc ?? []].flat();
@@ -110,7 +124,8 @@ export default class Outbox extends WorkerEntrypoint {
 			if (error) throw error;
 		}
 		const messageId = "<" + crypto.randomUUID() + "@outbox.test>";
-		sent.push({ ...message, messageId });
+		const attachments = message.attachments?.map(asSent);
+		sent.push({ ...message, ...(attachments ? { attachments } : {}), messageId });
 		return { messageId };
 	}
 	async fetch() {

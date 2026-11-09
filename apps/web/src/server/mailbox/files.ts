@@ -64,6 +64,14 @@ export function base64Size(content: string): number | null {
 	return (content.length / 4) * 3 - padding;
 }
 
+/** The bytes this Base64 holds. */
+export function bytesOfBase64(content: string): Uint8Array {
+	const binary = atob(content);
+	const bytes = new Uint8Array(binary.length);
+	for (let at = 0; at < binary.length; at++) bytes[at] = binary.charCodeAt(at);
+	return bytes;
+}
+
 export type FilesChecked =
 	| { ok: true; files: OutgoingFile[]; bytes: number }
 	| { ok: false; error: string };
