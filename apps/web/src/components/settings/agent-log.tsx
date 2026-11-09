@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "#/components/ui/button";
 import { useWorkspace } from "#/components/workspace/context";
 import {
@@ -35,7 +35,12 @@ export function AgentLog({
 	const [older, setOlder] = useState<AgentLogEntry[]>([]);
 	const [next, setNext] = useState<AgentLogPage["next"]>(null);
 	const [busy, setBusy] = useState(false);
-	const [failed, setFailed] = useState(false);
+	/** Whether the newest page of the chosen kind couldn't be read. */
+	const [unread, setUnread] = useState(false);
+	/** Whether the older entries asked for couldn't be read. */
+	const [olderFailed, setOlderFailed] = useState(false);
+	// Bumped as a kind is chosen, so an answer asked for under another kind is let go.
+	const choice = useRef(0);
 
 	// Asked again as the page's own is, while a kind is chosen.
 	// biome-ignore lint/correctness/useExhaustiveDependencies: a new `newest` is the page refreshing.
@@ -44,10 +49,13 @@ export function AgentLog({
 		let gone = false;
 		getAgentLog({ data: { slug, agentId: agent.id, kind, before: null } })
 			.then((page) => {
-				if (!gone) setOfKind(page);
+				if (gone) return;
+				// None: the agent was deleted meanwhile, or the caller is no longer an admin.
+				if (page) setOfKind(page);
+				setUnread(page === null);
 			})
 			.catch(() => {
-				if (!gone) setFailed(true);
+				if (!gone) setUnread(true);
 			});
 		return () => {
 			gone = true;
@@ -55,12 +63,16 @@ export function AgentLog({
 	}, [slug, agent.id, kind, newest]);
 
 	const choose = (chosen: AgentLogKind | null) => {
+		if (chosen === kind) return;
+		choice.current += 1;
 		setKind(chosen);
 		setOfKind(null);
 		setKept(null);
 		setOlder([]);
 		setNext(null);
-		setFailed(false);
+		setBusy(false);
+		setUnread(false);
+		setOlderFailed(false);
 	};
 
 	const first = kept ?? (kind === null ? newest : ofKind);
@@ -74,18 +86,20 @@ export function AgentLog({
 
 	const showOlder = async () => {
 		if (!first || !cursor) return;
+		const asked = choice.current;
 		setBusy(true);
-		setFailed(false);
+		setOlderFailed(false);
 		try {
 			const page = await getAgentLog({ data: { slug, agentId: agent.id, kind, before: cursor } });
+			if (asked !== choice.current) return;
 			if (!page) throw new Error("The log is gone");
 			setKept(first);
 			setOlder((shown) => [...shown, ...page.entries]);
 			setNext(page.next);
 		} catch {
-			setFailed(true);
+			if (asked === choice.current) setOlderFailed(true);
 		} finally {
-			setBusy(false);
+			if (asked === choice.current) setBusy(false);
 		}
 	};
 
@@ -108,7 +122,7 @@ export function AgentLog({
 				))}
 			</fieldset>
 			{!first ? (
-				failed ? (
+				unread ? (
 					<p role="alert" className="text-sm text-destructive">
 						The log couldn't be read just now. Try again in a moment.
 					</p>
@@ -131,7 +145,7 @@ export function AgentLog({
 							<Button type="button" size="sm" variant="outline" disabled={busy} onClick={showOlder}>
 								{busy ? "Loading…" : "Show older"}
 							</Button>
-							{failed && (
+							{olderFailed && (
 								<p role="alert" className="text-sm text-destructive">
 									The older entries couldn't be read. Try again.
 								</p>

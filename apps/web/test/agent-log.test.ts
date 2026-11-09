@@ -295,6 +295,53 @@ describe("an agent's log", () => {
 		).toBe(400);
 	});
 
+	it("keeps a subject without the code it gives, and a search without its words", async () => {
+		const space = await workspace();
+		const agent = await agentOf(space);
+		await arrive(space.signUps.address, { subject: "771204 is your sign-in code", body: "Hi." });
+		await arrive(space.signUps.address, { subject: "", body: "No subject at all." });
+		const code = await asAgent(agent.key, "GET", "/verification-code", {
+			to: space.signUps.address,
+			from: "shop.example",
+			subject: "sign-in",
+			timeoutSeconds: 0,
+		});
+		expect(code.body).toMatchObject({ found: true, code: "771204" });
+		const box = `/mailboxes/${space.signUps.id}`;
+		// What it finds doesn't matter here, as the index catches up after mail arrives.
+		const searched = await asAgent(agent.key, "GET", `${box}/threads`, { query: "subject" });
+		expect(searched.status).toBe(200);
+		// Its next page isn't another search, and a list without words isn't one at all.
+		await asAgent(agent.key, "GET", `${box}/threads`, { query: "subject", cursor: "1.x" });
+		const listed = await asAgent(agent.key, "GET", `${box}/threads`);
+		const thread = (listed.body.threads as { id: string; subject: string }[]).find(
+			(one) => one.subject === "",
+		);
+		expect(thread).toBeDefined();
+		const read = await asAgent(agent.key, "GET", `${box}/threads/${thread?.id}`);
+		expect(read.status).toBe(200);
+
+		const reads = await log(space, agent.id, "?kind=reads");
+		expect(actionsOf(reads.entries)).toEqual(["message.read", "mail.searched", "code.read"]);
+		expect(reads.entries[2]).toMatchObject({ subject: "••• is your sign-in code" });
+		expect(reads.entries[1]).toMatchObject({
+			by: { agent: true },
+			mailbox: { id: space.signUps.id },
+			subject: null,
+			detail: null,
+		});
+		// A message without a subject keeps an empty one, so its page can still open its thread.
+		expect(reads.entries[0]).toMatchObject({ subject: "", thread: thread?.id });
+
+		const rows = await world.mail.db
+			.prepare("SELECT * FROM agent_log WHERE organization_id = ?")
+			.bind(space.workspaceId)
+			.all();
+		const stored = JSON.stringify(rows.results);
+		expect(stored).not.toContain("771204");
+		expect(stored).not.toContain("No subject at all");
+	});
+
 	it("pages through older entries, and keeps only those of the last 90 days", async () => {
 		const space = await workspace();
 		const agent = await agentOf(space);

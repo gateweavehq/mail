@@ -9,6 +9,7 @@ import {
 	MAX_LOGGED_DETAIL,
 	MAX_LOGGED_SUBJECT,
 } from "../lib/agent-log";
+import { withoutCode } from "../lib/verification-code";
 import { type Database, schema } from "./db";
 
 // An agent's log: what it did with its key, and what people did to it. It takes the database as
@@ -31,8 +32,9 @@ export interface AgentLogNote {
 	detail?: string | null;
 }
 
+// An empty subject stays one, so the page says "(no subject)" and opens its thread.
 const cut = (value: string | null | undefined, most: number) =>
-	value ? value.slice(0, most) : null;
+	value == null ? null : value.slice(0, most);
 
 /**
  * Writes entries to agents' logs, each with the time it is written. A log that can't be written
@@ -54,7 +56,8 @@ export async function noteAgent(
 		mailboxId: note.mailboxId ?? null,
 		targetId: note.targetId ?? null,
 		threadId: note.threadId ?? null,
-		subject: cut(note.subject, MAX_LOGGED_SUBJECT),
+		// Subjects often carry a sign-in code, which the log never keeps.
+		subject: cut(note.subject == null ? null : withoutCode(note.subject), MAX_LOGGED_SUBJECT),
 		detail: cut(note.detail, MAX_LOGGED_DETAIL),
 		at,
 	}));

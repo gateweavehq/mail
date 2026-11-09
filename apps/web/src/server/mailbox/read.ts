@@ -196,6 +196,18 @@ export async function listThreads(
 ): Promise<ThreadsPage | null> {
 	const box = await openMailbox(slug, mailboxId);
 	if (!box) return null;
+	// A search finds by what messages say, so an agent's is noted, once for its first page, and
+	// without its words, which can be what it looked for in them.
+	if (box.member.keyed && query && before === null) {
+		const { workspaceId, memberId } = box.member.membership;
+		await noteAgent(db, {
+			workspaceId,
+			agentMemberId: memberId,
+			by: "agent",
+			action: "mail.searched",
+			mailboxId: box.id,
+		});
+	}
 	const first = before === null && !query;
 	const [rows, from, held] = await Promise.all([
 		query ? box.stub.search(query, before, PAGE_SIZE + 1) : box.stub.threads(before, PAGE_SIZE + 1),
