@@ -216,6 +216,20 @@ export const agentAddressPolicy = sqliteTable("agent_address_policy", {
 });
 
 /**
+ * An agent an owner or admin paused. While its row is here, its keys do nothing
+ * (`findAgentByKey`), what it wrote that waits to be tried again goes to a person instead, and its
+ * own webhooks hear nothing. Resuming it deletes the row. It belongs to the membership, so it goes
+ * with the agent.
+ */
+export const agentPause = sqliteTable("agent_pause", {
+	memberId: text("member_id")
+		.primaryKey()
+		.references(() => member.id, { onDelete: "cascade" }),
+	pausedBy: text("paused_by").references(() => user.id, { onDelete: "set null" }),
+	pausedAt: integer("paused_at", { mode: "timestamp_ms" }).notNull(),
+});
+
+/**
  * A workspace's key for a mail provider, sealed with the deployment's `SECRETS_KEY` and the
  * workspace's id (`server/secrets.ts`). It is never sent to a browser: pages see its last four
  * characters. It goes with the workspace.

@@ -17,7 +17,7 @@ import { isAdminRole } from "../../lib/roles";
 import { type Suppression, suppressedRefusal } from "../../lib/suppressions";
 import { bearsKey } from "../access";
 import { db } from "../auth";
-import { agentPolicyOf } from "../auth/agents";
+import { AGENT_PAUSED, agentPolicyOf, pausedAmong } from "../auth/agents";
 import { appOrigin } from "../origin";
 import { sendingWith } from "../providers/keys";
 import { allowAgentSend, allowSend } from "../rate-limit";
@@ -283,7 +283,13 @@ export async function outboxAnswer(
 	// against its own day either way.
 	let hold = false;
 	if (agent) {
-		const policy = await agentPolicyOf(db, memberId);
+		// Asked again here, as reading and cleaning a large message takes a while: a pause meanwhile
+		// stops it before it goes.
+		const [policy, paused] = await Promise.all([
+			agentPolicyOf(db, memberId),
+			pausedAmong(db, [memberId]),
+		]);
+		if (paused.size > 0) return refuse(AGENT_PAUSED, 403);
 		if (policy.sendPerDay === 0) {
 			return refuse("This agent isn't let send mail. An owner or admin can change that.", 403);
 		}

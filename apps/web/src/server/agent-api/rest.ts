@@ -1,6 +1,6 @@
 import { appOrigin } from "../origin";
 import { readUpTo, textOf } from "../streams";
-import { accessFor, agentOfRequest } from "./access";
+import { accessFor, agentOfRequest, type NoAgent, noAgentAnswer } from "./access";
 import { ApiError, INTERNAL_FAILURE, logFailure } from "./mail-access";
 import { API_PATH, hasBody, jsonSchema, openApiDocument, pathNames, takenBy } from "./openapi";
 import { OPERATIONS, type Operation, type Route } from "./operations";
@@ -80,7 +80,7 @@ export async function handleApiRequest(request: Request): Promise<Response> {
 	const matched = here.find(({ known }) => known.route.method === request.method);
 	if (!matched?.found) return failure(`This route takes ${allow}.`, 405, { allow });
 	const agent = await agentOfRequest(request);
-	if (!("key" in agent)) return unauthorized(agent.hadKey);
+	if (!("key" in agent)) return unauthorized(agent);
 
 	const { known, found } = matched;
 	const input = await inputOf(request, url, known, found);
@@ -203,16 +203,10 @@ function failure(
 	);
 }
 
-function unauthorized(hadKey: boolean): Response {
-	return failure(
-		hadKey
-			? "That agent key doesn't work: it was revoked, or its agent deleted."
-			: "Mail's agent API takes an agent's key, as a bearer token. An owner or admin makes one in the workspace's settings, under Agents.",
-		401,
-		{
-			"www-authenticate": hadKey
-				? 'Bearer realm="Gateweave Mail", error="invalid_token"'
-				: 'Bearer realm="Gateweave Mail"',
-		},
+function unauthorized(why: NoAgent): Response {
+	const { error, status, challenge } = noAgentAnswer(
+		why,
+		"Mail's agent API takes an agent's key, as a bearer token. An owner or admin makes one in the workspace's settings, under Agents.",
 	);
+	return failure(error, status, status === 401 ? { "www-authenticate": challenge } : {});
 }

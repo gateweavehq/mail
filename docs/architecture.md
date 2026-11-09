@@ -175,6 +175,23 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     Agents are kept off the members page and out of Better Auth's role and removal endpoints;
     deleting one, from its own page, takes its keys and grants, and a deleted workspace takes its
     agents.
+  - **Pausing an agent** stops it and keeps everything it has, for when it does what it
+    shouldn't. An owner or admin pauses it on the Agents page, which shows who did it and when
+    (`agent_pause`, keyed by membership). While it is paused, `findAgentByKey` answers that it is,
+    so its keys do nothing anywhere: the MCP server and the agent API answer 403 with "This agent
+    is paused…", and the app's own routes know the key no more than a revoked one. A request it
+    began before is told the same once it next asks, and a send asks again just before the
+    message goes, after reading and cleaning it; mail a provider already took is out of reach.
+    What it wrote that waits to be tried again goes to a person instead: the mailbox's alarm asks
+    D1 which of the writers of what is due are paused, or no longer members, as an agent deleted
+    while paused takes its pause with it, and holds their mail for approval (`message.held`).
+    Mail a person approved is theirs and goes on. When D1 doesn't answer, the alarm puts all of it
+    off a minute rather than send what a paused agent wrote. Mail already held stays held, and
+    people may still approve or reject it. Its own webhooks hear nothing while it is paused, and a
+    retry that comes due fails ("The agent was paused."), within the ten seconds the webhooks
+    object trusts what D1 last said. Mail to its addresses still arrives in the mailbox for people to read. Pausing
+    needs no recent sign-in, so it is quick; resuming, which gives its keys back, does, as making
+    a key does.
   - **Addresses an agent makes** (`server/directory/agent-addresses.ts`), such as one for each
     sign-up or task. An owner or admin sets how many it may hold at once, how long each may last
     and on which proved domains (`agent_address_policy`, keyed by membership, set on the Agents

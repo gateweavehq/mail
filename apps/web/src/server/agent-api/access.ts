@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { currentCaller } from "../access";
 import { db } from "../auth";
-import { agentPolicyOf, findAgentByKey, isAgentKey } from "../auth/agents";
+import { AGENT_PAUSED, agentPolicyOf, findAgentByKey, isAgentKey } from "../auth/agents";
 import { schema } from "../db";
 import { listDirectory } from "../directory";
 import { addressPolicyOf } from "../directory/agent-address-store";
@@ -14,20 +14,45 @@ import type { Asker, Refused } from "../webhooks";
 import { webhooksStub } from "../webhooks";
 import { type Answer, ApiError, type MailAccess } from "./mail-access";
 
+/** What an agent is told when its key no longer works. */
+const REVOKED = "That agent key doesn't work: it was revoked, or its agent deleted.";
+
 /** The webhooks object's refusal, in its words, with its status. */
 const refusal = (refused: Refused) => new ApiError(refused.error, refused.status);
 
+/** Why a request has no agent to act for: no key at all, one that doesn't work, or a paused one. */
+export type NoAgent = { hadKey: false } | { hadKey: true; paused: boolean };
+
 /**
- * The agent whose key a request bears as its bearer token, with the key, or why there is none:
- * no key at all, or one that doesn't work. Session cookies never count here.
+ * The agent whose key a request bears as its bearer token, with the key, or why there is none.
+ * Session cookies never count here.
  */
 export async function agentOfRequest(
 	request: Request,
-): Promise<{ key: string; userId: string; slug: string } | { hadKey: boolean }> {
+): Promise<{ key: string; userId: string; slug: string } | NoAgent> {
 	const key = /^Bearer\s+(\S+)$/i.exec(request.headers.get("authorization")?.trim() ?? "")?.[1];
-	const agent = key && isAgentKey(key) ? await findAgentByKey(db, key) : null;
-	if (!key || !agent) return { hadKey: key !== undefined };
+	if (key === undefined) return { hadKey: false };
+	const agent = isAgentKey(key) ? await findAgentByKey(db, key) : null;
+	if (!agent) return { hadKey: true, paused: false };
+	if ("paused" in agent) return { hadKey: true, paused: true };
 	return { key, userId: agent.userId, slug: agent.slug };
+}
+
+/** What a request without an agent to act for is told, and with which status. */
+export function noAgentAnswer(
+	why: NoAgent,
+	without: string,
+): { error: string; status: 401 | 403; challenge: string } {
+	if (why.hadKey && why.paused) {
+		return { error: AGENT_PAUSED, status: 403, challenge: 'Bearer realm="Gateweave Mail"' };
+	}
+	return why.hadKey
+		? {
+				error: REVOKED,
+				status: 401,
+				challenge: 'Bearer realm="Gateweave Mail", error="invalid_token"',
+			}
+		: { error: without, status: 401, challenge: 'Bearer realm="Gateweave Mail"' };
 }
 
 /**
@@ -36,13 +61,27 @@ export async function agentOfRequest(
  * `currentCaller`: the key, which the gateway checked, is all that decides.
  */
 export function accessFor(slug: string, key: string): MailAccess {
+	/**
+	 * Whether the agent was paused since the request began. A route finds no caller then, as for a
+	 * key revoked, so this tells the agent which it was: a paused one keeps its key.
+	 */
+	const pausedSince = async () => {
+		const agent = await findAgentByKey(db, key);
+		return agent !== null && "paused" in agent;
+	};
 	const caller = async () => {
 		const found = await currentCaller(slug);
-		// Revoked since the request began, or its agent removed.
 		if (!found) {
-			throw new ApiError("That agent key doesn't work: it was revoked, or its agent deleted.", 401);
+			if (await pausedSince()) throw new ApiError(AGENT_PAUSED, 403);
+			// Revoked since the request began, or its agent removed.
+			throw new ApiError(REVOKED, 401);
 		}
 		return found.membership;
+	};
+	/** A page a route gave, or none: as the agent may no longer read it, or as it was paused. */
+	const unlessPaused = async <T>(page: T | null): Promise<T | null> => {
+		if (page === null && (await pausedSince())) throw new ApiError(AGENT_PAUSED, 403);
+		return page;
 	};
 	/** Asks one of the agent's routes, with its key, as its own request would. */
 	const ask = async (
@@ -56,6 +95,9 @@ export function accessFor(slug: string, key: string): MailAccess {
 			...(body === null ? {} : { body: JSON.stringify(body) }),
 		});
 		const response = await answerOf(request);
+		if ((response.status === 401 || response.status === 404) && (await pausedSince())) {
+			return { status: 403, body: { ok: false, error: AGENT_PAUSED } };
+		}
 		return {
 			status: response.status,
 			body: (await response.json().catch(() => ({}))) as Record<string, unknown>,
@@ -69,9 +111,9 @@ export function accessFor(slug: string, key: string): MailAccess {
 			caller(),
 			findAgentByKey(db, key),
 		]);
-		if (!agent) {
-			throw new ApiError("That agent key doesn't work: it was revoked, or its agent deleted.", 401);
-		}
+		if (!agent) throw new ApiError(REVOKED, 401);
+		// Paused after `caller` looked.
+		if ("paused" in agent) throw new ApiError(AGENT_PAUSED, 403);
 		const asker: Asker = { agent: memberId, key: agent.keyId };
 		return {
 			stub: webhooksStub(workspaceId),
@@ -118,10 +160,14 @@ export function accessFor(slug: string, key: string): MailAccess {
 			const { memberId } = await caller();
 			return allowAgentWait(memberId);
 		},
-		messages: (mailboxId, before) => listMessages(slug, mailboxId, before),
-		threads: (mailboxId, before, query) => listThreads(slug, mailboxId, before, query),
-		thread: (mailboxId, threadId, before) => openThread(slug, mailboxId, threadId, before),
-		message: (mailboxId, messageId) => openMessage(slug, mailboxId, messageId),
+		messages: async (mailboxId, before) =>
+			unlessPaused(await listMessages(slug, mailboxId, before)),
+		threads: async (mailboxId, before, query) =>
+			unlessPaused(await listThreads(slug, mailboxId, before, query)),
+		thread: async (mailboxId, threadId, before) =>
+			unlessPaused(await openThread(slug, mailboxId, threadId, before)),
+		message: async (mailboxId, messageId) =>
+			unlessPaused(await openMessage(slug, mailboxId, messageId)),
 		addresses: (mailboxId, action: AgentAddressAction | null) =>
 			ask(
 				mailboxPath(mailboxId, "addresses"),
