@@ -582,7 +582,15 @@ describe("receiving through Resend", () => {
 		});
 		expect(created.status).toBe(200);
 		const { agent } = (await created.json()) as { agent: { id: string; memberId: string } };
-		// An address of the mailbox's that the agent made, as its key would have.
+		// The mailbox is given to it, and an address on it is one it made, as its key would have.
+		const given = await directory(box.slug, {
+			action: "set-mailbox-access",
+			mailboxId: box.mailboxId,
+			everyone: false,
+			memberIds: [agent.memberId],
+			senderIds: [],
+		});
+		expect(given.status).toBe(200);
 		await addAddress(box, 0, "made-by-agent");
 		await mail.db
 			.prepare("UPDATE mail_address SET agent_member_id = ? WHERE local_part = ? AND domain_id = ?")
@@ -594,6 +602,10 @@ describe("receiving through Resend", () => {
 		expect((await deliver(webhook, eventFor(forAgent))).status).toBe(200);
 		const forPeople = receivedFor(box, { subject: "For people" });
 		expect((await deliver(webhook, eventFor(forPeople))).status).toBe(200);
+		// To the mailbox's own address first and the agent's after: still the agent's, and both kept.
+		const help = `help@${box.domains[0]?.name}`;
+		const forBoth = receivedFor(box, { subject: "For both", to: help }, { to: [help, to] });
+		expect((await deliver(webhook, eventFor(forBoth))).status).toBe(200);
 
 		const page = await mail.fetch(`${origin}/api/agents/${box.slug}/${agent.id}`, {
 			headers: owner.headers,
@@ -602,7 +614,10 @@ describe("receiving through Resend", () => {
 		const { received: came } = (await page.json()) as {
 			received: { subject: string; to: string[] }[];
 		};
-		expect(came).toEqual([expect.objectContaining({ subject: "For the agent", to: [to] })]);
+		expect(came).toEqual([
+			expect.objectContaining({ subject: "For both", to: [help, to] }),
+			expect.objectContaining({ subject: "For the agent", to: [to] }),
+		]);
 	});
 
 	it("refuses what isn't signed with the workspace's secret, or came too long ago", async () => {

@@ -59,6 +59,8 @@ export interface AgentActivity {
 	wrote: AgentMessage[];
 	/** What came to the addresses it made, newest first. */
 	received: AgentMessage[];
+	/** The mailboxes it was given that didn't answer just now, so the lists may lack theirs. */
+	unread: { id: string; name: string }[];
 }
 
 /** One agent's page, for owners and admins. Null for anyone else, or an agent not of the workspace. */

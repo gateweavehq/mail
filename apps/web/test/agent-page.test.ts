@@ -138,6 +138,50 @@ describe("an agent's page", () => {
 		const after = (await (await page(space, agent.id, world.owner.headers)).json()) as Activity;
 		expect(after.held).toEqual([]);
 		expect(after.wrote).toHaveLength(2);
+
+		// Once its grant goes, what it wrote there stays on its page, though it reads the mailbox no more.
+		const taken = await world.directory(space.slug, {
+			action: "set-mailbox-access",
+			mailboxId: space.signUps.id,
+			everyone: false,
+			memberIds: [],
+			senderIds: [],
+		});
+		expect(taken.ok).toBe(true);
+		const ungranted = (await (await page(space, agent.id, world.owner.headers)).json()) as Activity;
+		expect(ungranted.mailboxes).toEqual([]);
+		expect(ungranted.wrote).toHaveLength(2);
+		expect(ungranted.received.map((one) => one.subject)).toEqual(["For the agent"]);
+	});
+
+	it("counts mail to the mailbox's address and its own at once as its, whichever copy comes first", async () => {
+		const space = await workspace();
+		const agent = await agentOf(space);
+		const made = await rest(agent.key, `/mailboxes/${space.signUps.id}/addresses`, {
+			domain: space.domain,
+			localPart: "both-at-once",
+			days: 2,
+		});
+		expect(made.status).toBe(200);
+		// Email Routing hands each recipient its own copy of the same mail.
+		const theirs = `both-at-once@${space.domain}`;
+		const messageId = `${crypto.randomUUID()}@shop.example`;
+		await arrive(space.signUps.address, { subject: "To both", messageId });
+		await arrive(theirs, { subject: "To both", messageId });
+
+		const activity = (await (await page(space, agent.id, world.owner.headers)).json()) as Activity;
+		expect(activity.received).toHaveLength(1);
+		expect(activity.received[0]).toMatchObject({ subject: "To both" });
+		expect(activity.received[0]?.to.sort()).toEqual([space.signUps.address, theirs].sort());
+
+		// The mailbox keeps the one copy, which says it came to both.
+		const threads = await world.mail.fetch(`${origin}/api/mail/${space.slug}/${space.signUps.id}`, {
+			headers: world.owner.headers,
+		});
+		const listed = (await threads.json()) as { messages: { subject: string; cameTo: string[] }[] };
+		const copies = listed.messages.filter((one) => one.subject === "To both");
+		expect(copies).toHaveLength(1);
+		expect(copies[0]?.cameTo.sort()).toEqual([space.signUps.address, theirs].sort());
 	});
 
 	it("is shown to nobody but the workspace's owners and admins", async () => {
@@ -159,6 +203,14 @@ describe("an agent's page", () => {
 			["a member", member.headers],
 			["someone outside", stranger.headers],
 			["the agent itself", { authorization: `Bearer ${agent.key}` }],
+			// A key makes the request the key's, whatever cookies come with it.
+			[
+				"an owner's cookies with a key",
+				{
+					...world.owner.headers,
+					authorization: `Bearer ${agent.key}`,
+				},
+			],
 			["nobody signed in", {}],
 		] as const) {
 			const response = await page(space, agent.id, headers);

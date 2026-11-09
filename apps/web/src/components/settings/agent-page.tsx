@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import { ArrowLeft, Bot, Clock } from "lucide-react";
+import { ArrowLeft, Bot, Clock, ShieldCheck } from "lucide-react";
 import type { ReactNode } from "react";
 import { senderName } from "#/components/mail/message-view";
 import { sentLabel } from "#/components/mail/sent-status";
@@ -19,7 +19,7 @@ const NAMED_RECIPIENTS = 2;
  */
 export function AgentPage({ activity }: { activity: AgentActivity }) {
 	const { slug } = useWorkspace();
-	const { agent, mailboxes, addresses, held, wrote, received } = activity;
+	const { agent, mailboxes, addresses, held, wrote, received, unread } = activity;
 	const lastUsed = Math.max(0, ...agent.keys.map((key) => key.lastUsedAt ?? 0));
 	return (
 		<div className="space-y-8">
@@ -45,7 +45,7 @@ export function AgentPage({ activity }: { activity: AgentActivity }) {
 								? "No keys."
 								: lastUsed === 0
 									? "Its keys were never used."
-									: `A key of it was last used ${formatRelative(lastUsed)}.`}
+									: `Its keys were last used ${formatRelative(lastUsed)}.`}
 						</p>
 					</div>
 					<PauseButton agent={agent} />
@@ -54,6 +54,12 @@ export function AgentPage({ activity }: { activity: AgentActivity }) {
 				<p className="text-sm text-muted-foreground">
 					{policySummary(agent.policy)} {addressPolicySummary(agent.addressPolicy)}
 				</p>
+				{unread.length > 0 && (
+					<p role="status" className="text-sm text-destructive">
+						{unread.map((box) => box.name).join(", ")} didn't answer just now, so what it did there
+						may be missing below. The page asks again in a moment.
+					</p>
+				)}
 			</div>
 
 			<Section title="Mailboxes" id="agent-mailboxes">
@@ -123,8 +129,9 @@ export function AgentPage({ activity }: { activity: AgentActivity }) {
 					id="agent-held"
 				>
 					<p className="text-sm text-muted-foreground">
-						It wrote {held.length === 1 ? "this" : "these"} to someone it may not mail on its own.
-						Open one to approve or reject it.
+						{held.length === 1 ? "It waits" : "They wait"} for a person to approve or reject{" "}
+						{held.length === 1 ? "it" : "them"}, from {held.length === 1 ? "its" : "each one's"}{" "}
+						thread.
 					</p>
 					<Messages messages={held} kind="wrote" />
 				</Section>
@@ -211,6 +218,17 @@ function Messages({ messages, kind }: { messages: AgentMessage[]; kind: "wrote" 
 								</span>
 								<span className="flex min-w-0 flex-wrap items-baseline gap-x-2 text-xs text-muted-foreground">
 									{who && <span className="min-w-0 truncate">{who}</span>}
+									{kind === "received" && message.verifiedDomain && (
+										// The domain, not only a mark: the name beside it is the sender's to write.
+										<span
+											className="flex min-w-0 items-center gap-1 self-center"
+											title={`Cloudflare checked that ${message.verifiedDomain} sent it`}
+										>
+											<ShieldCheck className="size-3.5 shrink-0" aria-hidden />
+											<span className="sr-only">Sent from </span>
+											<span className="truncate">{message.verifiedDomain}</span>
+										</span>
+									)}
 									<span className="shrink-0">in {message.mailbox.name}</span>
 									{status && <span className="shrink-0 font-medium text-foreground">{status}</span>}
 								</span>

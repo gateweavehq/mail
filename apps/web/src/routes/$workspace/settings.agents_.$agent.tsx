@@ -19,8 +19,11 @@ function AgentRoute() {
 	const router = useRouter();
 	useDocumentTitle(activity ? activity.agent.name : "Agent");
 
-	// Fresh while someone looks: every so often, and on coming back to the tab.
+	// Fresh while someone looks: every so often, and on coming back to the tab. An agent that isn't
+	// there won't come back.
+	const found = activity !== null;
 	useEffect(() => {
+		if (!found) return;
 		const look = () => {
 			if (document.visibilityState === "visible") void router.invalidate();
 		};
@@ -30,7 +33,7 @@ function AgentRoute() {
 			clearInterval(timer);
 			document.removeEventListener("visibilitychange", look);
 		};
-	}, [router]);
+	}, [router, found]);
 
 	if (!activity) {
 		return (

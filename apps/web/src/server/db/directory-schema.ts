@@ -230,6 +230,24 @@ export const agentPause = sqliteTable("agent_pause", {
 });
 
 /**
+ * Every mailbox an agent was ever given, kept after its grant goes, as what it wrote stays there:
+ * its page asks only these. A trigger adds the row as a grant is made, however that comes about
+ * (migration 0019). It goes with the agent, or the mailbox.
+ */
+export const agentMailbox = sqliteTable(
+	"agent_mailbox",
+	{
+		memberId: text("member_id")
+			.notNull()
+			.references(() => member.id, { onDelete: "cascade" }),
+		mailboxId: text("mailbox_id")
+			.notNull()
+			.references(() => mailbox.id, { onDelete: "cascade" }),
+	},
+	(table) => [primaryKey({ columns: [table.memberId, table.mailboxId] })],
+);
+
+/**
  * A workspace's key for a mail provider, sealed with the deployment's `SECRETS_KEY` and the
  * workspace's id (`server/secrets.ts`). It is never sent to a browser: pages see its last four
  * characters. It goes with the workspace.

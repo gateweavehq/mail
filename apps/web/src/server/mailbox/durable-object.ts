@@ -48,6 +48,19 @@ export const MAX_LISTED = 100;
 /** The most senders a thread's listing names. */
 const MAX_SENDERS = 5;
 
+/**
+ * The longest list of a mailbox's addresses one received message keeps, as copies for more of them
+ * arrive: past it, the first ones stay.
+ */
+const MAX_ENVELOPE_TO = 2_000;
+
+/** The addresses an envelope's list names, lower case. */
+const recipientsOf = (envelopeTo: string) =>
+	envelopeTo
+		.split(",")
+		.map((address) => address.trim().toLowerCase())
+		.filter(Boolean);
+
 /** How many of a thread's first messages its listing looks through for senders. */
 const SENDERS_READ = 200;
 
@@ -402,7 +415,11 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 	async #finishOne(id: string, key: string): Promise<"stored" | "duplicate" | "gone"> {
 		const sql = this.ctx.storage.sql;
 		const mine = sql
-			.exec<{ object: string }>("SELECT object FROM message WHERE id = ? AND state = 'pending'", id)
+			.exec<{ object: string; envelopeTo: string; cameFor: string | null }>(
+				`SELECT object, envelope_to AS envelopeTo, came_for AS cameFor
+				FROM message WHERE id = ? AND state = 'pending'`,
+				id,
+			)
 			.toArray()[0];
 		if (!mine) return "gone";
 		const earlier = sql
@@ -425,13 +442,26 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			if (hash !== null) sql.exec("UPDATE message SET body_hash = ? WHERE id = ?", hash, other.id);
 		}
 		const same = sql
-			.exec(
-				"SELECT 1 FROM message WHERE delivery_key = ? AND body_hash = ? AND state = 'stored' LIMIT 1",
+			.exec<{ id: string; envelopeTo: string; cameFor: string | null }>(
+				`SELECT id, envelope_to AS envelopeTo, came_for AS cameFor FROM message
+				WHERE delivery_key = ? AND body_hash = ? AND state = 'stored' LIMIT 1`,
 				key,
 				myHash,
 			)
 			.toArray();
-		if (same.length > 0) {
+		const kept = same[0];
+		if (kept) {
+			// Email Routing hands each recipient its own copy, so this may be the same mail for another
+			// of the mailbox's addresses: the copy kept says it came to that one too, and for the agent
+			// that made it, when the first copy came for none.
+			const to = [...new Set([...recipientsOf(kept.envelopeTo), ...recipientsOf(mine.envelopeTo)])];
+			const envelopeTo = to.join(", ");
+			sql.exec(
+				"UPDATE message SET envelope_to = ?, came_for = ? WHERE id = ?",
+				envelopeTo.length <= MAX_ENVELOPE_TO ? envelopeTo : kept.envelopeTo,
+				kept.cameFor ?? mine.cameFor,
+				kept.id,
+			);
 			// The mail goes before its row. Should deleting it fail, the row is still pending, and the
 			// alarm removes both.
 			await this.env.RAW_MAIL.delete(mine.object);
@@ -1077,12 +1107,13 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 					take,
 				)
 				.toArray();
-		// From the held ones, by `outgoing_due`: an agent can have written far more than waits.
+		// From the held ones, by `outgoing_due`: an agent can have written far more than waits. The
+		// `+` keeps SQLite from going through all it wrote by `message_sent_by` instead.
 		const held = sql
 			.exec<StoredSummary>(
 				`SELECT ${SUMMARY} FROM message
 				WHERE id IN (SELECT message FROM outgoing WHERE state = 'held')
-					AND sent_by = ? AND state = 'stored'
+					AND +sent_by = ? AND +state = 'stored'
 				ORDER BY arrived_at DESC, id DESC LIMIT ?`,
 				memberId,
 				take,

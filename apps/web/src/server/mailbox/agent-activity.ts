@@ -2,7 +2,7 @@ import { getRequestHeaders } from "@tanstack/react-start/server";
 import { and, asc, eq } from "drizzle-orm";
 import { AGENT_PAGE_LISTED, type AgentActivity, type AgentMessage } from "../../lib/agents";
 import { isAdminRole } from "../../lib/roles";
-import { currentMember } from "../access";
+import { bearsKey, currentMember } from "../access";
 import { db, getAuth } from "../auth";
 import { schema } from "../db";
 import { liveAt } from "../directory/agent-address-store";
@@ -13,10 +13,12 @@ import { envelopeRecipients, listed, senderNames } from "./read";
 /**
  * What an agent of this workspace has, wrote and received, for an owner or admin signed in: its
  * mailboxes and the addresses it made, the mail it wrote, what of that waits for a person, and the
- * mail that came to its addresses, from every mailbox of the workspace, newest first. Null for
+ * mail that came to its addresses, from every mailbox it was ever given, newest first. Null for
  * anyone else, and for an agent of another workspace, so its id gives nothing away.
  */
 export async function agentActivity(slug: string, agentId: string): Promise<AgentActivity | null> {
+	// A request with a key is the key's, whatever cookies come with it, and keys see no agent's page.
+	if (bearsKey(getRequestHeaders())) return null;
 	const member = await currentMember(slug);
 	if (!member || !isAdminRole(member.membership.role)) return null;
 	const { workspaceId, memberId: me } = member.membership;
@@ -27,12 +29,16 @@ export async function agentActivity(slug: string, agentId: string): Promise<Agen
 	const agent = agents.find((one) => one.id === agentId);
 	if (!agent) return null;
 
-	const { mailbox, mailboxAccess, mailAddress, mailDomain } = schema;
+	const { agentMailbox, mailbox, mailboxAccess, mailAddress, mailDomain } = schema;
 	const [mailboxes, grants, addresses] = await Promise.all([
+		// Each it was ever given, as what it wrote stays where it wrote it after its grant goes.
 		db
 			.select({ id: mailbox.id, name: mailbox.name })
-			.from(mailbox)
-			.where(eq(mailbox.organizationId, workspaceId))
+			.from(agentMailbox)
+			.innerJoin(mailbox, eq(mailbox.id, agentMailbox.mailboxId))
+			.where(
+				and(eq(agentMailbox.memberId, agent.memberId), eq(mailbox.organizationId, workspaceId)),
+			)
 			.orderBy(asc(mailbox.name), asc(mailbox.id))
 			.all(),
 		db
@@ -57,13 +63,16 @@ export async function agentActivity(slug: string, agentId: string): Promise<Agen
 	const names = new Map(mailboxes.map((box) => [box.id, box.name]));
 	const sends = new Map(grants.map((grant) => [grant.mailboxId, grant.send]));
 
-	// Every mailbox, as what it wrote stays where it wrote it after its grant is taken away.
-	const found = await Promise.all(
+	// A mailbox that doesn't answer, such as one whose object still runs the code from before a
+	// deploy, leaves the others to show, and the page says which it couldn't read.
+	const settled = await Promise.allSettled(
 		mailboxes.map(async (box) => ({
 			box,
 			rows: await mailboxStub(box.id).ofAgent(agent.memberId, AGENT_PAGE_LISTED),
 		})),
 	);
+	const found = settled.flatMap((one) => (one.status === "fulfilled" ? [one.value] : []));
+	const unread = mailboxes.filter((_, at) => settled[at]?.status === "rejected");
 	const all = found.flatMap(({ rows }) => [...rows.wrote, ...rows.received]);
 	const people = await senderNames(workspaceId, all);
 	const shown = (pick: (rows: (typeof found)[number]["rows"]) => StoredSummary[]) =>
@@ -94,6 +103,7 @@ export async function agentActivity(slug: string, agentId: string): Promise<Agen
 		held: shown((rows) => rows.held),
 		wrote: shown((rows) => rows.wrote),
 		received: shown((rows) => rows.received),
+		unread,
 	};
 }
 
