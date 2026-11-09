@@ -94,7 +94,7 @@ describe("migrate", () => {
 				maybe_sent: 0,
 				key_version: null,
 				// Version 10's: its copy carries no files.
-				files: 0,
+				files: "[]",
 			},
 		]);
 		sent("held");

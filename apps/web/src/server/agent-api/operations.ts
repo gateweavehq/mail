@@ -122,12 +122,12 @@ const textInput = z
 	.string()
 	.max(MAX_TEXT)
 	.refine((text) => text.trim().length > 0, "The text is empty.")
-	.describe("Plain text. With html, leave it out to have it made from the html.");
+	.describe("Plain text. Give it or html, not both: with html, Mail makes the text from it.");
 const htmlInput = z
 	.string()
 	.max(MAX_HTML)
 	.describe(
-		'The message as HTML, beside its text. Show an attached image with <img src="cid:…"> and the image\'s contentId.',
+		'The message as HTML, instead of text, which Mail makes from it. It goes as Mail shows mail, so scripts, forms, SVG, media and frames are left out. Show an attached image with <img src="cid:…"> and the image\'s contentId.',
 	);
 const attachmentsInput = z
 	.array(
@@ -154,7 +154,7 @@ const attachmentsInput = z
 				.max(100)
 				.optional()
 				.describe(
-					"For an image the html shows: the id its cid: names, such as logo. Leave it out for a file to attach.",
+					"For a PNG, JPEG, GIF or WebP image the html shows: the id its cid: names, such as logo. Leave it out for a file to attach.",
 				),
 		}),
 	)
@@ -405,7 +405,7 @@ const sendEmail = operation({
 	name: "send_email",
 	title: "Send email",
 	description:
-		"Sends a message from a mailbox you may send from: text, HTML or both, with files if you like. Mail to anyone your policy doesn't name waits for a person to approve it (state: held), and counts against your messages a day either way.",
+		"Sends a message from a mailbox you may send from: text or HTML, with files if you like. Mail to anyone your policy doesn't name waits for a person to approve it (state: held), and counts against your messages a day either way.",
 	input: z.object({
 		mailbox: mailboxInput,
 		to: addressesInput.min(1).describe(`To and cc together take ${MAX_RECIPIENTS} at most.`),
@@ -446,7 +446,7 @@ const reply = operation({
 	name: "reply",
 	title: "Reply",
 	description:
-		"Answers a message in its thread, to whoever it asks answers to go to, from the address it came to: text, HTML or both, with files if you like. Waits for approval as send_email does.",
+		"Answers a message in its thread, to whoever it asks answers to go to, from the address it came to: text or HTML, with files if you like. Waits for approval as send_email does.",
 	input: z.object({
 		mailbox: mailboxInput,
 		messageId: idInput,

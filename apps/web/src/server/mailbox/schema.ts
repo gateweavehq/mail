@@ -231,7 +231,7 @@ ALTER TABLE event ADD COLUMN data TEXT;
 // How many files a message the mailbox sends carries. Their bytes stay in its copy in R2, which each
 // try reads them from, so none are in the request kept here.
 const VERSION_10 = `
-ALTER TABLE outgoing ADD COLUMN files INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE outgoing ADD COLUMN files TEXT NOT NULL DEFAULT '[]';
 `;
 
 /** Each brings the schema from the version before it. Append only: objects keep what they ran. */

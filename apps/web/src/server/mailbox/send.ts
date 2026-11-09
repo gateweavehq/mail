@@ -27,6 +27,7 @@ import {
 	addressHeader,
 	dateHeader,
 	headerText,
+	inCopyOrder,
 	newOwnId,
 	type Outgoing,
 	plainName,
@@ -36,6 +37,7 @@ import {
 import type { Sent } from "./durable-object";
 import { checkFiles } from "./files";
 import { firstHeader, parseHeaders, readHeaderBlock } from "./headers";
+import { sendableHtml } from "./html";
 import type { mailboxStub } from "./index";
 import { openMailbox } from "./read";
 import { envelopeAddresses, replySender, senderAddresses } from "./senders";
@@ -127,11 +129,15 @@ const recipientsOf = (row: { envelopeTo: string }) =>
  * `POST /api/mail/<workspace>/<mailbox>/outbox`. A person who may read the mailbox may, signed in.
  * An agent may only send, with its key, from a mailbox it was let send from, as its policy allows:
  * what it writes to anyone else waits for a person to approve it.
+ *
+ * `given` is the body already read, as the agents' API hands it over: a message's files would
+ * otherwise be written out and read again.
  */
 export async function outboxAnswer(
 	request: Request,
 	slug: string,
 	mailboxId: string,
+	given?: unknown,
 ): Promise<Response> {
 	// A key decides alone, as `currentCaller` has it, and no browser sends one by itself. A
 	// session's cookie comes along wherever a request is from, so then ask where that is.
@@ -141,14 +147,16 @@ export async function outboxAnswer(
 	}
 	const box = await openMailbox(slug, mailboxId, { people: !keyed });
 	if (!box) return refuse("Not found", 404);
-	// Read only so far, whatever the request says its length is, as files make a send large.
-	const read = await readUpTo(request.body, MAX_SEND_BODY);
-	if (!read) return refuse("That is too large to send: files can hold 10 MB together.", 413);
-	let body: unknown = null;
-	try {
-		body = JSON.parse(textOf(read));
-	} catch {
-		body = null;
+	let body: unknown = given ?? null;
+	if (given === undefined) {
+		// Read only so far, whatever the request says its length is, as files make a send large.
+		const read = await readUpTo(request.body, MAX_SEND_BODY);
+		if (!read) return refuse(TOO_LARGE, 413);
+		try {
+			body = JSON.parse(textOf(read));
+		} catch {
+			body = null;
+		}
 	}
 	const parsed = Action.safeParse(body);
 	if (!parsed.success) return refuse("That isn't something we can send.", 400);
@@ -212,9 +220,19 @@ export async function outboxAnswer(
 	}
 	const lower = recipients.map((address) => address.toLowerCase());
 	if (new Set(lower).size !== lower.length) return refuse("An address is there twice.", 400);
-	const files = checkFiles(action.attachments);
+	// Whoever approves an agent's message sees its HTML, so its text is made from that, not written
+	// beside it to say something else.
+	if (agent && action.text.trim() && action.html?.trim()) {
+		return refuse(
+			"Give text or HTML, not both: Mail makes the text from the HTML, so that whoever approves it sees all that goes.",
+			400,
+		);
+	}
+	// Kept to what the page shows of it, so the copy shows what goes.
+	const cleaned = action.html?.trim() ? await sendableHtml(action.html) : null;
+	const html = cleaned?.trim() ? cleaned : null;
+	const files = checkFiles(action.attachments, { html: html !== null });
 	if (!files.ok) return refuse(files.error, 400);
-	const html = action.html?.trim() ? action.html : null;
 	// What a reader without HTML sees, made from the HTML when none was written.
 	const text =
 		action.text.trim() || html === null
@@ -312,13 +330,16 @@ export async function outboxAnswer(
 		ownId: message.ownId,
 		references: answering.references,
 		request: sendRequest(message),
-		files: files.files.length,
+		files: inCopyOrder(files.files).map(({ content: _content, ...file }) => file),
 		provider,
 		draft: action.draft,
 		hold,
 	});
 	return sentAnswer(sent);
 }
+
+const TOO_LARGE =
+	"That is too large to send: a request takes 16 MB at most, and a message's files 10 MB together.";
 
 function sentAnswer(sent: Sent): Response {
 	if (sent.ok) return answer(sent);

@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
-import PostalMime from "postal-mime";
-import { COPY_UNREAD_CODE, type SendStatus, SUPPRESSED_CODE } from "../../lib/outbox";
+import PostalMime, { type Attachment } from "postal-mime";
+import { type SendStatus, SUPPRESSED_CODE } from "../../lib/outbox";
 import { KEY_CHANGED, RESEND_CODE, type SendsWith } from "../../lib/providers";
 import type { SentEventType } from "../../lib/webhooks";
 import { createDb } from "../db";
@@ -9,9 +9,18 @@ import { RESEND_API, type ResendFailure, sendWithResend } from "../providers/res
 import { suppressedAmong } from "../suppressions";
 import type { MailEvent } from "../webhooks/durable-object";
 import { bodyHash } from "./body";
+import type { SentFile } from "./compose";
 import { DELIVERIES_JSON, type DeliveryEvent, RECIPIENT_COUNT, recordDelivery } from "./deliveries";
-import { type Outcome, outcomeOf, resendOutcome, STALE_SENDING_MS, WAITS_MS } from "./delivery";
+import {
+	copyOutcome,
+	type Outcome,
+	outcomeOf,
+	resendOutcome,
+	STALE_SENDING_MS,
+	WAITS_MS,
+} from "./delivery";
 import { listed, type SentFacts, writeSentEvent } from "./events";
+import { base64Size } from "./files";
 import { indexBatch } from "./indexing";
 import { LINKED_THREADS, migrate } from "./schema";
 import { ftsQuery, searchable } from "./search";
@@ -112,8 +121,8 @@ export interface Sending {
 	 * its files, which each try reads from the copy.
 	 */
 	request: EmailMessageBuilder;
-	/** How many files the copy carries. */
-	files: number;
+	/** The files the copy carries, in its order, to find them there at each try. */
+	files: SentFile[];
 	/** How it goes: by its domain's setting when it was written. */
 	provider: SendsWith;
 	/** The draft's own id, which makes a second send of it the first one's. */
@@ -168,8 +177,8 @@ type Trying = {
 	maybeSent: number;
 	/** Which saving of the workspace's Resend key the last try used. */
 	keyVersion: string | null;
-	/** How many files its copy carries, which the try reads from there. */
-	files: number;
+	/** The files its copy carries, as JSON, which the try reads from there. */
+	files: string;
 };
 
 /** Who a message goes to, To and Cc, as its request names them. */
@@ -504,7 +513,10 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 		// The same draft again, as when its answer was lost: what became of it, not a second send.
 		const earlier = this.drafted(sending.draft);
 		if (earlier) return earlier;
-		const size = new TextEncoder().encode(sending.raw).length;
+		// Mail writes its copies in ASCII, so their length is their size, without a second copy.
+		const size = /[\u0080-￿]/.test(sending.raw)
+			? new TextEncoder().encode(sending.raw).length
+			: sending.raw.length;
 		const held = sql
 			.exec<{ bytes: number; latest: number }>("SELECT bytes, latest FROM held")
 			.one();
@@ -551,7 +563,8 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 				sending.provider,
 				sending.workspaceId,
 				id,
-				sending.files,
+				// A gateway of the version before gives none.
+				JSON.stringify(sending.files ?? []),
 			);
 		});
 		await this.#alarmBy(Date.now() + PENDING_MS);
@@ -764,12 +777,13 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 	/** Hands a message to Email Service or Resend once, and says how that went. Never throws. */
 	async #deliver(id: string, row: Trying): Promise<Delivered> {
 		const written = JSON.parse(row.request) as EmailMessageBuilder;
-		const files = row.files > 0 ? await this.#filesOf(id) : [];
-		if (files === null) {
+		const kept = JSON.parse(row.files) as SentFile[];
+		const files = kept.length > 0 ? await this.#filesOf(id, kept) : [];
+		if (!Array.isArray(files)) {
 			// Nothing was asked of a provider, though an earlier try through Resend may have sent it.
 			return {
 				ok: false,
-				outcome: { state: row.maybeSent === 1 ? "uncertain" : "refused", code: COPY_UNREAD_CODE },
+				outcome: copyOutcome(files.unread, row.attempts, Date.now(), row.maybeSent === 1),
 				detail: null,
 				answered: false,
 				maybeSent: false,
@@ -841,34 +855,50 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 	}
 
 	/**
-	 * The files of a message the mailbox sends, read from its copy, in Base64, as both providers take
-	 * them. Null when the copy can't be read, or is gone.
+	 * The files of a message the mailbox sends, in Base64, as both providers take them: their bytes
+	 * read from its copy, and their names, types and ids as they were checked when it was written, so
+	 * nothing reading the copy does to those reaches the providers. `unread` when R2 failed, or when
+	 * the copy is gone or doesn't hold the files kept for it, one for one and byte for byte.
 	 */
-	async #filesOf(id: string): Promise<EmailAttachment[] | null> {
+	async #filesOf(
+		id: string,
+		kept: SentFile[],
+	): Promise<EmailAttachment[] | { unread: "unavailable" | "wrong" }> {
 		const row = this.ctx.storage.sql
 			.exec<{ object: string }>("SELECT object FROM message WHERE id = ?", id)
 			.toArray()[0];
-		if (!row) return null;
+		if (!row) return { unread: "wrong" };
+		let bytes: ArrayBuffer;
 		try {
 			const object = await this.env.RAW_MAIL.get(row.object);
-			if (!object) return null;
-			const email = await PostalMime.parse(await object.arrayBuffer(), {
-				attachmentEncoding: "base64",
-			});
-			return email.attachments.map((file): EmailAttachment => {
-				const contentId = file.contentId?.replace(/^<|>$/g, "") || null;
-				const sent = {
-					content: typeof file.content === "string" ? file.content : "",
-					filename: file.filename ?? "file",
-					type: file.mimeType,
-				};
-				return contentId === null
-					? { ...sent, disposition: "attachment" }
-					: { ...sent, disposition: "inline", contentId };
-			});
+			if (!object) return { unread: "wrong" };
+			bytes = await object.arrayBuffer();
 		} catch {
-			return null;
+			return { unread: "unavailable" };
 		}
+		let found: Attachment[];
+		try {
+			found = (await PostalMime.parse(bytes, { attachmentEncoding: "base64" })).attachments;
+		} catch {
+			return { unread: "wrong" };
+		}
+		if (found.length !== kept.length) return { unread: "wrong" };
+		const files: EmailAttachment[] = [];
+		for (const [at, file] of kept.entries()) {
+			const read = found[at];
+			const content = typeof read?.content === "string" ? read.content : null;
+			const contentId = read?.contentId?.replace(/^<|>$/g, "") || null;
+			if (content === null || base64Size(content) !== file.bytes || contentId !== file.contentId) {
+				return { unread: "wrong" };
+			}
+			const sent = { content, filename: file.filename, type: file.type };
+			files.push(
+				file.contentId === null
+					? { ...sent, disposition: "attachment" }
+					: { ...sent, disposition: "inline", contentId: file.contentId },
+			);
+		}
+		return files;
 	}
 
 	/**

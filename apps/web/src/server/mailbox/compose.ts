@@ -17,7 +17,27 @@ export interface OutgoingFile {
 	content: string;
 	/** For an image the HTML shows, the id its `cid:` names; null for a file attached. */
 	contentId: string | null;
+	/** How many bytes it holds. */
+	bytes: number;
 }
+
+/** What the mailbox keeps of a file it sends, to find it in the copy again at each try. */
+export type SentFile = Omit<OutgoingFile, "content">;
+
+/** A message's files in the order its copy holds them: the inline images, then the rest. */
+export function inCopyOrder<File extends SentFile>(files: File[]): File[] {
+	return [
+		...files.filter((file) => file.contentId !== null),
+		...files.filter((file) => file.contentId === null),
+	];
+}
+
+/**
+ * The type a file has in the copy. A calendar's is read back as text, in Unicode and with new line
+ * ends, so the copy keeps it as bytes, and each try gives it its own type again.
+ */
+export const copyType = (type: string) =>
+	type === "text/calendar" || type === "application/ics" ? "application/octet-stream" : type;
 
 /** What a person writes, with what threads it. */
 export interface Outgoing {
@@ -193,7 +213,7 @@ function parameter(key: string, value: string): string {
 
 const filePart = (file: OutgoingFile): Part => ({
 	headers: [
-		`Content-Type: ${file.type};\r\n ${parameter("name", file.filename)}`,
+		`Content-Type: ${copyType(file.type)};\r\n ${parameter("name", file.filename)}`,
 		`Content-Disposition: ${file.contentId === null ? "attachment" : "inline"};\r\n ${parameter("filename", file.filename)}`,
 		...(file.contentId === null ? [] : [`Content-ID: <${file.contentId}>`]),
 		"Content-Transfer-Encoding: base64",
@@ -202,13 +222,19 @@ const filePart = (file: OutgoingFile): Part => ({
 });
 
 /** Parts as one, under a boundary nothing in them can hold: Base64 has no `_`. */
-function multipart(subtype: "alternative" | "related" | "mixed", parts: Part[]): Part {
+function multipart(
+	subtype: "alternative" | "related" | "mixed",
+	parts: Part[],
+	root: string | null = null,
+): Part {
 	const boundary = `=_${crypto.randomUUID()}`;
 	const each = parts.map(
 		(part) => `--${boundary}\r\n${part.headers.join("\r\n")}\r\n\r\n${part.body}\r\n`,
 	);
+	// RFC 2387 has `multipart/related` name the type of its first part.
+	const type = root === null ? "" : `\r\n type="${root}";`;
 	return {
-		headers: [`Content-Type: multipart/${subtype};\r\n boundary="${boundary}"`],
+		headers: [`Content-Type: multipart/${subtype};${type}\r\n boundary="${boundary}"`],
 		body: `${each.join("")}--${boundary}--`,
 	};
 }
@@ -222,7 +248,10 @@ function bodyOf(message: Outgoing): Part {
 	let body =
 		message.html === null ? text : multipart("alternative", [text, textPart("html", message.html)]);
 	const inline = message.files.filter((file) => file.contentId !== null);
-	if (inline.length > 0) body = multipart("related", [body, ...inline.map(filePart)]);
+	if (inline.length > 0) {
+		const root = message.html === null ? "text/plain" : "multipart/alternative";
+		body = multipart("related", [body, ...inline.map(filePart)], root);
+	}
 	const attached = message.files.filter((file) => file.contentId === null);
 	if (attached.length > 0) body = multipart("mixed", [body, ...attached.map(filePart)]);
 	return body;

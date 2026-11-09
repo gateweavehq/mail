@@ -84,9 +84,16 @@ export function fileNameRefusal(name: string): string | null {
 		return `A file's name takes 1 to ${MAX_FILE_NAME} characters.`;
 	}
 	// biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are what it finds.
-	if (/[\x00-\x1f\x7f/\\]/.test(name)) {
+	if (/[\x00-\x1f\x7f-\x9f/\\]/.test(name)) {
 		return "A file's name can't hold a slash, a backslash or a control character.";
 	}
+	// Marks that turn text around, so that "invoice\u202Efdp.html" reads as "invoicelmth.pdf".
+	if (/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/.test(name)) {
+		return "A file's name can't hold a mark that turns its text around.";
+	}
+	// Mail reads "=?…?=" in a name as encoded text, which would give the file another name.
+	if (name.includes("=?")) return "A file's name can't hold =?, which mail reads as encoded text.";
+	if (/^[. ]+$/.test(name)) return "A file's name needs more than dots.";
 	// Windows drops dots and spaces at a name's end, so "a.exe." opens as "a.exe".
 	const kind = /\.([^.]*)$/.exec(name.replace(/[. ]+$/, ""))?.[1]?.toLowerCase() ?? "";
 	return REFUSED_KINDS.has(kind)
@@ -120,7 +127,7 @@ export function refusalReason(code: string | null, detail: string | null = null)
 		case SUPPRESSED_CODE:
 			return "An address it goes to came onto this workspace's suppression list while it waited, so Mail didn't send it. An owner or admin can see the list in Settings, under Suppressions.";
 		case COPY_UNREAD_CODE:
-			return "Mail couldn't read its files just then, so it didn't send it. Send it again.";
+			return "Mail couldn't read its files from its copy, so it didn't send it. Write it again.";
 		case "E_RECIPIENT_SUPPRESSED":
 			return "An address it goes to bounced before or asked not to get mail, so Email Service won't send to it.";
 		case "E_SENDER_DOMAIN_NOT_AVAILABLE":

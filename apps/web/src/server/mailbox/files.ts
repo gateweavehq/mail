@@ -1,6 +1,7 @@
 /** Files a message carries, checked as a request to send gives them. */
 import { fileNameRefusal, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS } from "../../lib/outbox";
 import type { OutgoingFile } from "./compose";
+import { INLINE_TYPES } from "./html";
 
 /** A file as a request to send gives it. */
 export interface GivenFile {
@@ -69,10 +70,10 @@ export type FilesChecked =
 
 /**
  * The files of a message, or why they can't go: too many or too large together, a name or kind
- * Mail doesn't send, content that isn't Base64, or two inline images with one id. Only the Base64 is
- * read, never decoded, so a large file isn't held twice.
+ * Mail doesn't send, content that isn't Base64, or an inline part that isn't an image the message's
+ * HTML can show. Only the Base64 is read, never decoded, so a large file isn't held twice.
  */
-export function checkFiles(given: GivenFile[]): FilesChecked {
+export function checkFiles(given: GivenFile[], { html }: { html: boolean }): FilesChecked {
 	if (given.length > MAX_ATTACHMENTS) {
 		return { ok: false, error: `A message carries ${MAX_ATTACHMENTS} files at most.` };
 	}
@@ -83,7 +84,8 @@ export function checkFiles(given: GivenFile[]): FilesChecked {
 		const filename = file.filename.trim();
 		const refusal = fileNameRefusal(filename);
 		if (refusal) return { ok: false, error: refusal };
-		const content = file.content.replace(/\s+/g, "");
+		// Copied only when it must be, as a file may be 10 MB.
+		const content = /\s/.test(file.content) ? file.content.replace(/\s+/g, "") : file.content;
 		const size = base64Size(content);
 		if (size === null) return { ok: false, error: `The content of ${filename} isn't Base64.` };
 		if (size === 0) return { ok: false, error: `${filename} is empty.` };
@@ -98,6 +100,20 @@ export function checkFiles(given: GivenFile[]): FilesChecked {
 		}
 		const contentId = file.contentId?.trim() || null;
 		if (contentId !== null) {
+			// Only an image the page shows: an inline text part is read as the message's own text, and an
+			// image the page can't show would go unseen by whoever approves the message.
+			if (!html) {
+				return {
+					ok: false,
+					error: `${filename} has a content id, but there is no HTML to show it.`,
+				};
+			}
+			if (!INLINE_TYPES.has(type)) {
+				return {
+					ok: false,
+					error: `Only a PNG, JPEG, GIF or WebP image goes inline, and ${filename} is ${type}.`,
+				};
+			}
 			if (!CONTENT_ID.test(contentId)) {
 				return {
 					ok: false,
@@ -109,7 +125,7 @@ export function checkFiles(given: GivenFile[]): FilesChecked {
 			}
 			ids.add(contentId.toLowerCase());
 		}
-		files.push({ filename, type, content, contentId });
+		files.push({ filename, type, content, contentId, bytes: size });
 	}
 	return { ok: true, files, bytes };
 }

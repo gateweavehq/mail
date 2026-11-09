@@ -409,20 +409,34 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
       says who wrote it (`message.sent_by`, a membership), and counts toward the mailbox's size; a
       full mailbox doesn't send.
     - **HTML and files go in the copy, and from it** (`files.ts`). A message carries text, and
-      HTML and files when its writer gives them; the composer writes text alone for now. Text is
-      made from the HTML when none is written, and a message with neither isn't sent. It takes at
-      most 20 files, 10 MB together, in Base64, each named in 200 characters at most without a path.
-      A file's type comes from its name when none is given, and an image the HTML shows by `cid:`
-      has that content id. The kinds of file Resend refuses (`.exe`, `.js`, `.bat`, `.msi` and the
-      rest of `REFUSED_KINDS`) are refused for both providers, as many mail servers refuse them
-      too, when the message is written and before anything counts. The copy in R2 is the whole
-      message in MIME (`multipart/alternative` for the HTML, `related` for the images it shows,
-      `mixed` for files), while the object keeps only the text and HTML in its request and the
-      number of files (`outgoing.files`). Each try reads the files back from the copy, so a held
-      message sends what its approver could open, and a try that can't read it sends nothing:
-      it is refused (`mail:copy_unread`), or `uncertain` after a try that may have gone. Base64
-      makes 10 MB about 13.4, so the API takes a body of 16 MB to send (`MAX_SEND_BODY`), and so
-      does the MCP handler.
+      HTML and files when its writer gives them; the composer writes text alone for now.
+      - **What a person approves is what goes.** The HTML is kept to what the message's page shows
+        of mail (`sendableHtml` in `html.ts`, the rules `cleanHtml` uses): no scripts, forms, SVG,
+        media or frames, and nothing of what they hold. Text is made from the HTML when none is
+        written, and a message with neither isn't sent. An agent gives text or HTML, never both,
+        as text written beside the HTML could say what the page doesn't show.
+      - **Files.** At most 20, 10 MB together, in Base64. A file's type comes from its name when
+        none is given. Only a PNG, JPEG, GIF or WebP image goes inline, by the content id its
+        `cid:` names, and only beside HTML: an inline text part would be read as the message's own
+        text. A name has at most 200 characters and no path, control character, mark that turns
+        its text around, or `=?`, which mail reads as encoded text. The kinds of file Resend refuses
+        (`.exe`, `.js`, `.bat`, `.msi` and the rest of `REFUSED_KINDS`) are refused for both
+        providers, as many mail servers refuse them too. All of this is decided when the message is
+        written, before anything counts.
+      - **Each try reads the files from the copy.** The copy in R2 is the whole message in MIME
+        (`multipart/alternative` for the HTML, `related` for the images it shows, `mixed` for
+        files). The object keeps the text and HTML in its request, and a list of the files with
+        their names, types, content ids and sizes (`outgoing.files`). A try takes each file's bytes
+        from the copy and the rest from that list, so nothing reading the copy does to a name
+        reaches the providers, and it sends nothing when the copy doesn't hold those files, one for
+        one and byte for byte: the message is refused (`mail:copy_unread`), or `uncertain` after a
+        try that may have gone. R2 failing is tried again as a busy moment is. A calendar is kept as
+        `application/octet-stream` in the copy, as a reader would decode it as text and change its
+        line ends, and goes as `text/calendar`.
+      - **Sizes.** Base64 makes 10 MB about 13.4, so the API takes a body of 16 MB to send
+        (`MAX_SEND_BODY`), and so does the MCP handler, for every tool, as it reads a request
+        before it knows which tool it calls. The agents' API hands the message to the outbox as
+        it read it, rather than writing it out to be read again.
     - **Its own id keeps the thread.** Email Service makes the `Message-ID` and refuses one from
       the sender, and nothing says the id it returns is the header's. So Mail gives each message an
       id of its own, `<uuid@domain>`, puts it last in `References`, and keeps it as the copy's own:

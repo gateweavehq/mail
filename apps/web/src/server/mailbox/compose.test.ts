@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
 	addressHeader,
 	headerText,
+	inCopyOrder,
 	MAX_HEADER_VALUE,
 	newOwnId,
 	type Outgoing,
@@ -97,14 +98,27 @@ describe("rawCopy with HTML and files", () => {
 		text: "Your invoice is attached.",
 		html: '<p>Your <b>invoice</b> is attached.</p><img src="cid:logo@acme.test">',
 		files: [
-			{ filename: "invoice 42.pdf", type: "application/pdf", content: pdf, contentId: null },
-			{ filename: "logo.png", type: "image/png", content: logo, contentId: "logo@acme.test" },
-			{ filename: long, type: "application/pdf", content: pdf, contentId: null },
+			{
+				filename: "invoice 42.pdf",
+				type: "application/pdf",
+				content: pdf,
+				contentId: null,
+				bytes: 3000,
+			},
+			{
+				filename: "logo.png",
+				type: "image/png",
+				content: logo,
+				contentId: "logo@acme.test",
+				bytes: 11,
+			},
+			{ filename: long, type: "application/pdf", content: pdf, contentId: null, bytes: 3000 },
 			{
 				filename: 'odd "name".txt',
 				type: "text/plain",
 				content: base64([104, 105]),
 				contentId: null,
+				bytes: 2,
 			},
 		],
 	};
@@ -156,6 +170,48 @@ describe("rawCopy with HTML and files", () => {
 			expect(line.length).toBeLessThanOrEqual(998);
 			if (/name/.test(line)) expect(line.length).toBeLessThanOrEqual(78);
 		}
+	});
+
+	it("holds the files in the order a try finds them, and names the root of its related part", () => {
+		expect(inCopyOrder(written.files).map((file) => file.filename)).toEqual([
+			"logo.png",
+			"invoice 42.pdf",
+			long,
+			'odd "name".txt',
+		]);
+		const raw = rawCopy(written, new Date());
+		expect(raw).toMatch(
+			/Content-Type: multipart\/related;\r\n type="multipart\/alternative";\r\n boundary=/,
+		);
+	});
+
+	it("keeps a calendar as bytes, which reading it as text would change", async () => {
+		// CRLF and a Latin-1 byte, as a calendar may hold them.
+		const invite = base64([
+			...new TextEncoder().encode("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nSUMMARY:Caf"),
+			0xe9,
+			...new TextEncoder().encode("\r\nEND:VCALENDAR\r\n"),
+		]);
+		const raw = rawCopy(
+			{
+				...reply,
+				files: [
+					{
+						filename: "invite.ics",
+						type: "text/calendar",
+						content: invite,
+						contentId: null,
+						bytes: 59,
+					},
+				],
+			},
+			new Date(),
+		);
+		expect(raw).toContain("Content-Type: application/octet-stream;");
+		const [file, ...more] = (await PostalMime.parse(raw, { attachmentEncoding: "base64" }))
+			.attachments;
+		expect(more).toEqual([]);
+		expect(file?.content).toBe(invite);
 	});
 
 	it("is one text part when there is no HTML or file", () => {
