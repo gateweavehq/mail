@@ -40,7 +40,7 @@ describe("the HTML that goes beside a message's text", () => {
 			"<p><strong>bold</strong> and <em>italic</em>, or <em>italic</em>, not snake_case_words</p>\n",
 		);
 		expect(htmlOfText("[the page](https://example.org/a?b=1&c=2)")).toBe(
-			'<p><a href="https://example.org/a?b=1&#38;c=2">the page</a></p>\n',
+			'<p><a href="https://example.org/a?b=1&amp;c=2">the page</a></p>\n',
 		);
 		expect(htmlOfText("- one\n- two\n\n1. first\n2. second")).toBe(
 			"<ul>\n<li>one</li>\n<li>two</li>\n</ul>\n<ol>\n<li>first</li>\n<li>second</li>\n</ol>\n",
@@ -75,6 +75,34 @@ describe("the HTML that goes beside a message's text", () => {
 		expect(formatted("[bank.example](https://BANK.example/login)").html).toBe(
 			'<p><a href="https://BANK.example/login">bank.example</a></p>\n',
 		);
+		for (const spoof of [
+			"[bank.example.](https://evil.example)",
+			"[bank.example,](https://evil.example)",
+			"[bank.example:443](https://evil.example)",
+			"[bank.internal](https://evil.example)",
+			"[Log in at https://bank.example](https://evil.example)",
+			"[**https://bank.example**](https://evil.example)",
+			"[ada@bank.example](mailto:eve@evil.example)",
+			"[ada@bank.example](https://evil.example)",
+		]) {
+			expect(formatted(spoof).html).not.toContain("<a");
+		}
+		expect(formatted("[ada@bank.example](mailto:Ada@bank.example)").html).toContain(
+			'<a href="mailto:Ada@bank.example">',
+		);
+		expect(formatted("[Your statement](https://bank.example/s)").html).toContain(
+			'<a href="https://bank.example/s">',
+		);
+	});
+
+	it("ends a link's address at its first closing parenthesis, as the toolbar writes them", () => {
+		expect(formatted("[a](https://example.org/a)b) **x**").html).toBe(
+			'<p><a href="https://example.org/a">a</a>b) <strong>x</strong></p>\n',
+		);
+		const [value, start, end] = selection("[https://example.org/a)]");
+		const edit = insertLink(value, start, end);
+		expect(edit.insert).toBe("[https://example.org/a)](https://example.org/a%29)");
+		expect(formatted(edit.insert).html).toContain('href="https://example.org/a%29"');
 	});
 
 	it("keeps a task list's boxes as they were typed", () => {
@@ -95,7 +123,7 @@ describe("the HTML that goes beside a message's text", () => {
 
 	it("keeps lines that look like headings, rules or code as they were typed", () => {
 		expect(formatted("Total\n# 3 of them\n---\n```\n    indented\n===").html).toBe(
-			"<p>Total<br># 3 of them<br>---<br>```<br>indented<br>===</p>\n",
+			"<p>Total<br># 3 of them<br>---<br>```<br>&nbsp;&nbsp;&nbsp; indented<br>===</p>\n",
 		);
 		expect(formatted("> # not a heading\n> ---").html).toBe(
 			"<blockquote>\n<p># not a heading<br>---</p>\n</blockquote>\n",
@@ -103,6 +131,31 @@ describe("the HTML that goes beside a message's text", () => {
 		expect(formatted("`code` and ~~struck~~").html).toBe("<p>`code` and ~~struck~~</p>\n");
 		expect(formatted("**Plan**\n<div>a</div>\n| a | b |\n|---|---|").html).toBe(
 			"<p><strong>Plan</strong><br>&lt;div&gt;a&lt;/div&gt;<br>| a | b |<br>|---|---|</p>\n",
+		);
+		expect(formatted("**a**\n-\n+\nb").html).toBe("<p><strong>a</strong><br>-<br>+<br>b</p>\n");
+	});
+
+	it("keeps backslashes, entities and runs of spaces as they were typed", () => {
+		expect(formatted("**Share:** \\\\fileserver\\team\\*draft*").html).toBe(
+			"<p><strong>Share:</strong> \\\\fileserver\\team\\<em>draft</em></p>\n",
+		);
+		expect(formatted("**x** C:\\Users\\_tmp_ and \\\nend").html).toBe(
+			"<p><strong>x</strong> C:\\Users\\_tmp_ and \\<br>end</p>\n",
+		);
+		expect(formatted("write &lt;br&gt; or &#60; **x**").html).toBe(
+			"<p>write &amp;lt;br&amp;gt; or &amp;#60; <strong>x</strong></p>\n",
+		);
+		expect(formatted("Name    Value **x**").html).toBe(
+			"<p>Name&nbsp;&nbsp;&nbsp; Value <strong>x</strong></p>\n",
+		);
+	});
+
+	it("pairs bold and italic as they nest, and leaves a lone mark as it is", () => {
+		expect(htmlOfText("**bold *both* bold** and ***all***")).toBe(
+			"<p><strong>bold <em>both</em> bold</strong> and <strong><em>all</em></strong></p>\n",
+		);
+		expect(htmlOfText("*a **b* c** and a * b and 2*3*4")).toBe(
+			"<p><em>a **b</em> c** and a * b and 2<em>3</em>4</p>\n",
 		);
 	});
 
@@ -125,14 +178,33 @@ describe("the HTML that goes beside a message's text", () => {
 		);
 	});
 
+	it("goes on with a numbered list only at the next number, across a blank line too", () => {
+		expect(htmlOfText("Agenda:\n1. Budget\n2. Hiring\n\n15. November works for me.")).toBe(
+			"<p>Agenda:</p>\n<ol>\n<li>Budget</li>\n<li>Hiring</li>\n</ol>\n<p>15. November works for me.</p>\n",
+		);
+		expect(htmlOfText("1. a\n3. b")).toBe("<ol>\n<li>a</li>\n</ol>\n<p>3. b</p>\n");
+		expect(htmlOfText("1. a\n2) b")).toBe("<ol>\n<li>a</li>\n</ol>\n<p>2) b</p>\n");
+		expect(htmlOfText("1. a\n\n2. b")).toBe("<ol>\n<li>a</li>\n<li>b</li>\n</ol>\n");
+	});
+
 	it("finishes soon and whole on text no one would write", () => {
+		const long = 100_000;
 		for (const text of [
-			"* ".repeat(9000),
-			">".repeat(19_000),
-			"> ".repeat(5000),
-			"*a **a ".repeat(2800),
-			"a_".repeat(9900),
-			"*".repeat(30_000),
+			"* ".repeat(long / 2),
+			">".repeat(long),
+			"> ".repeat(long / 2),
+			"*a **a ".repeat(long / 7),
+			"a_".repeat(long / 2),
+			"*".repeat(long),
+			"*a(".repeat(long / 3),
+			"[_a".repeat(long / 3),
+			"*a_".repeat(long / 3),
+			"f(*p);\n".repeat(long / 7),
+			"[".repeat(long),
+			"[a](".repeat(long / 4),
+			`[${"a.".repeat(long / 2)}](https://example.org)`,
+			"- a\n".repeat(long / 4),
+			Array.from({ length: 3000 }, (_, i) => `${" ".repeat(i)}- a`).join("\n"),
 		]) {
 			const began = performance.now();
 			const { html } = formatted(text);
@@ -177,6 +249,26 @@ describe("bold and italic from the toolbar", () => {
 		expect(applied(...selectionAnd("Say ***[hello]*** now", 2))).toBe("Say *[hello]* now");
 		expect(applied(...selectionAnd("Say ***[hello]*** now", 1))).toBe("Say **[hello]** now");
 		expect(applied(...selectionAnd("Say *[hello]* now", 2))).toBe("Say ***[hello]*** now");
+	});
+
+	it("makes a selection bold as a whole, taking off the bold already inside it", () => {
+		expect(applied(...selectionAnd("[**Note:** read the **docs**]", 2))).toBe(
+			"**[Note: read the docs]**",
+		);
+		expect(applied(...selectionAnd("[*a* and *b*]", 1))).toBe("*[a and b]*");
+		expect(applied(...selectionAnd("[**Note: read the docs**]", 2))).toBe("[Note: read the docs]");
+	});
+
+	it("marks each line of a selection on its own, as a mark can't span lines", () => {
+		expect(applied(...selectionAnd("one [two\n\nthree] four", 2))).toBe(
+			"one [**two**\n\n**three**] four",
+		);
+		expect(applied(...selectionAnd("one [**two**\n**three**] four", 2))).toBe(
+			"one [two\nthree] four",
+		);
+		expect(htmlOfText("one **two**\n**three** four")).toBe(
+			"<p>one <strong>two</strong><br><strong>three</strong> four</p>\n",
+		);
 	});
 });
 

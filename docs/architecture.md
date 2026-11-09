@@ -412,15 +412,17 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
       HTML and files when its writer gives them.
       - **The composer writes text, and HTML from it.** What a person types is the text, and
         bold, italic, links, lists and quotes are its marks (`formatting.ts`), the ones mail used
-        before Markdown took them up. When the text uses any, HTML made from it goes beside it, by
-        `marked` with only those rules on: no HTML, headings, code, tables or images in the text are
-        read, and links go to the web and mail only. Lines are kept as typed: one that only looks
-        like a heading or a rule, "9. November", a line after a list, and a link it can't make or
-        whose words name another address all stay as they were written. A quote is someone
-        else's words, as a reply's is, so nothing in it is read as a mark, or its links could go
-        under the workspace's name to places their words don't say. Text that couldn't be read
-        quickly (past 20,000 characters, or nested past what the parser follows) goes as its
-        lines. The toolbar types the marks into the text, so each change can be undone, and the
+        before Markdown took them up. When the text uses any, HTML made from it goes beside it.
+        Mail reads those marks itself, in one pass over each line, rather than with a Markdown
+        library: no HTML, headings, code, tables or images in the text are read, links go to the
+        web and mail only, and nothing a person types can make the reading slow. Lines are kept as
+        typed, their spaces, backslashes and entities too: one that only looks like a heading or a
+        rule, "9. November" or a number that doesn't follow on, a line after a list, and a link it
+        can't make or whose words name another place, even a host Mail doesn't know, all stay as
+        they were written. A quote is someone else's words, as a reply's is, so nothing in it is
+        read as a mark, or its links could go under the workspace's name to places their words
+        don't say; the sender's name above it loses its brackets for the same reason. The toolbar
+        types the marks into the text, so each change can be undone, and the
         preview shows the HTML that will go, its links opening in a tab of their own. Files are
         attached, dropped or pasted (a file only, as a copied document holds a picture of itself
         beside its text), and checked against the limits below as they are added.

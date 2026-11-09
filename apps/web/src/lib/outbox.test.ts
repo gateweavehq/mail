@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { addedFilesRefusal, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, sendableType } from "./outbox";
+import { htmlOfText } from "./formatting";
+import {
+	addedFilesRefusal,
+	MAX_ATTACHMENT_BYTES,
+	MAX_ATTACHMENTS,
+	quoted,
+	sendableType,
+} from "./outbox";
 
 const file = (name: string, size = 100) => ({ name, size });
 
@@ -39,5 +46,19 @@ describe("the type a file goes with", () => {
 	it("is bytes for a message or a multipart, which mail can't carry as their own in Base64", () => {
 		expect(sendableType("message/rfc822")).toBe("application/octet-stream");
 		expect(sendableType("Multipart/Mixed")).toBe("application/octet-stream");
+	});
+});
+
+describe("a reply's quote", () => {
+	it("quotes each line under who wrote it", () => {
+		expect(quoted("Hi\r\n\nBye\n", "On Monday Ada wrote:")).toBe(
+			"\n\nOn Monday Ada wrote:\n> Hi\n>\n> Bye",
+		);
+	});
+
+	it("keeps a sender's name from making a link above the quote", () => {
+		const text = quoted("Hi", "On Monday [Your bank](https://evil.example) wrote:");
+		expect(text).toContain("On Monday Your bank(https://evil.example) wrote:");
+		expect(htmlOfText(`Thanks${text}`) ?? "").not.toContain("<a");
 	});
 });

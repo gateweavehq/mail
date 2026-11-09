@@ -1,21 +1,34 @@
-import { Marked, type Token } from "marked";
-
 /*
  * What a person writes in the composer is text, with the marks mail has long used for emphasis and
- * that Markdown grew from: **bold**, *italic*, [links](https://…), lists and > quotes. The text goes
- * as it was written, and when it uses any of these, HTML made from it goes beside it. Nothing else
- * of Markdown is read: no headings, code, tables, rules or HTML, so a line that only looks like one
- * stays as it was typed.
+ * that Markdown grew from: **bold**, *italic* (or _italic_), [links](https://…), lists and > quotes.
+ * The text goes as it was written, and when it uses any of these, HTML made from it goes beside it.
+ *
+ * Nothing else is read, and nothing is taken away: a line that only looks like a heading, a rule,
+ * code, a table or HTML, a backslash, an entity, a mark that pairs with nothing, all stay as they
+ * were typed. The marks are few, so they are read here rather than by a Markdown parser with most
+ * of it turned off: one pass over each line, in time that grows with the text, whatever it holds.
  *
  * A quote holds someone else's words, as a reply's does, so nothing in it is read as a mark: its
  * lines go as they were, or a link in them could say one address and go to another under the
- * workspace's name.
+ * workspace's name. For the same reason a link whose words name a place goes only to that place.
  */
 
-const off = () => undefined;
+const ESCAPED: Record<string, string> = {
+	"&": "&amp;",
+	"<": "&lt;",
+	">": "&gt;",
+	'"': "&quot;",
+	"'": "&#39;",
+};
 
 const escapeHtml = (text: string) =>
-	text.replace(/[&<>"']/g, (character) => `&#${character.charCodeAt(0)};`);
+	text.replace(/[&<>"']/g, (character) => ESCAPED[character] ?? "");
+
+/** Text as HTML shows it as typed: escaped, with its runs of spaces kept. */
+const textHtml = (text: string) => escapeHtml(text).replace(/ (?= )/g, "&nbsp;");
+
+/** A line as HTML shows it as typed, a space it starts with kept too. */
+const lineHtml = (text: string) => textHtml(text).replace(/^ /, "&nbsp;");
 
 /** A link's address as it may go: the web or mail, or a bare host, which is taken as the web. */
 function linkable(href: string): string | null {
@@ -24,113 +37,220 @@ function linkable(href: string): string | null {
 	return null;
 }
 
-/** Where an address goes, to compare a link's words with it: a web host, or a mail address. */
-function placeOf(address: string): string | null {
+/** Where an address goes: its host, without `www.`, and for mail, the address too. */
+function placeOf(address: string): { host: string; mail: string | null } | null {
 	try {
 		const url = new URL(address);
-		return (url.protocol === "mailto:" ? url.pathname : url.host).toLowerCase();
+		if (url.protocol === "mailto:") {
+			const mail = decodeURIComponent(url.pathname).toLowerCase();
+			return { host: mail.slice(mail.lastIndexOf("@") + 1), mail };
+		}
+		return { host: url.hostname.toLowerCase().replace(/^www\./, ""), mail: null };
 	} catch {
 		return null;
 	}
 }
 
-const markdown = new Marked({
-	gfm: true,
-	// A line break is a line break, as in any mail, not a space as in Markdown.
-	breaks: true,
-	tokenizer: {
-		code: off,
-		fences: off,
-		heading: off,
-		lheading: off,
-		hr: off,
-		html: off,
-		def: off,
-		table: off,
-		tag: off,
-		reflink: off,
-		codespan: off,
-		del: off,
-	},
-	renderer: {
-		link({ href, raw, text, tokens }) {
-			const target = linkable(href);
-			// An address that can't go as a link stays as it was typed rather than being lost, and so
-			// does a link whose words read as an address other than its own.
-			const shown = linkable(text.trim());
-			if (target === null || (shown !== null && placeOf(shown) !== placeOf(target))) {
-				return escapeHtml(raw);
-			}
-			return `<a href="${escapeHtml(target)}">${this.parser.parseInline(tokens)}</a>`;
-		},
-		// An image would load from wherever its address says once the mail is read.
-		image({ raw }) {
-			return escapeHtml(raw);
-		},
-		// A task list's box is a form control, which mail doesn't carry: it stays as typed.
-		checkbox({ checked }) {
-			return checked ? "[x] " : "[ ] ";
-		},
-	},
-});
-
 /**
- * Lines that would end the paragraph above them though their kind of block is turned off: what
- * looks like a heading, a rule, a code fence, HTML or a table. They are escaped to stay lines.
+ * What reads as a place in a link's words: a web address, a mail address, or anything with the
+ * shape of a host, in any script. A file's name, such as report.pdf, counts too, which only keeps
+ * that link as it was typed; a host under a domain no list knows yet would otherwise pass.
  */
-const LOOKS_LIKE_BLOCK =
-	/^([ \t]*)(?=#{1,6}(?:[ \t]|$)|`{3}|~{3}|(?:[-*_][ \t]*){3,}$|=+[ \t]*$|<|\|)/;
+const NAMED_PLACE =
+	/(?:https?:\/\/|www\.)[^\s/?#<>]+|[\p{L}\p{N}._%+-]+@[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)+|(?<![\p{L}\p{N}-])(?:[\p{L}\p{N}-]+\.)+\p{L}{2,}(?![\p{L}\p{N}-])/giu;
 
-/** A numbered line, which starts a list unless it is escaped. */
-const NUMBERED = /^([ \t]*\d{1,9})([.)])(?=[ \t]|$)/;
+/** Words longer than this aren't read for places, and the link stays as typed. */
+const MAX_LINK_WORDS = 500;
 
-/** A line that is an item of a list. */
-const LIST_ITEM = /^[ \t]*(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$)/;
-
-/**
- * The text as Markdown should read it to keep it as typed. A long run of `*` or `_` is escaped,
- * which is also what keeps Markdown's emphasis from taking time that grows with its square. A
- * numbered line starts a list only from 1 or after another numbered line, so that "9. November"
- * stays a date. A line that doesn't start with a space ends the list above it, where Markdown
- * would add it to the last item.
- */
-function guarded(lines: string[]): string {
-	let numbered = false;
-	let listing = false;
-	let blank = false;
-	return lines
-		.map((typed) => {
-			let line = typed
-				.replace(/[*_]{4,}/g, (run) => run.replace(/./g, "\\$&"))
-				.replace(LOOKS_LIKE_BLOCK, "$1\\");
-			const number = NUMBERED.exec(line);
-			if (number !== null && !numbered && Number(number[1]) !== 1) {
-				line = line.replace(NUMBERED, "$1\\$2");
-			}
-			if (!line.trim()) {
-				blank = true;
-				return line;
-			}
-			const item = LIST_ITEM.test(line);
-			const indented = /^[ \t]/.test(line);
-			const ends = listing && !blank && !item && !indented;
-			// An item's own further lines are indented, and the list goes on after them.
-			if (!listing || item || !indented) numbered = number !== null;
-			if (item) listing = true;
-			else if (!indented) listing = false;
-			blank = false;
-			return ends ? `\n${line}` : line;
-		})
-		.join("\n");
+/** Whether a link's words name only the place it goes to, or none. */
+function honest(words: string, target: string): boolean {
+	if (words.length > MAX_LINK_WORDS) return false;
+	const named = words.match(NAMED_PLACE);
+	if (!named) return true;
+	const goes = placeOf(target);
+	if (!goes) return false;
+	return named.every((place) => {
+		if (place.includes("@") && !/^(?:https?:\/\/|www\.)/i.test(place)) {
+			return place.toLowerCase() === goes.mail;
+		}
+		const host = placeOf(/^https?:\/\//i.test(place) ? place : `https://${place}`)?.host;
+		return host === goes.host;
+	});
 }
 
-/** Text that is formatted beyond this is sent as it is, so that writing it never takes long. */
-const MAX_FORMATTED = 20_000;
+type Run = { char: "*" | "_"; size: number; at: number; open: boolean; close: boolean };
+type Piece = { text: string } | { link: string; words: string } | { run: Run };
+
+const isSpace = (character: string | undefined) => character === undefined || /\s/.test(character);
+/** What `_` may follow to start emphasis, and come before to end it: a space, or these. */
+const OPENS_AFTER = /[\s([{"'“‘]/u;
+const CLOSES_BEFORE = /[\s.,;:!?)\]}"'”’]/u;
+
+/** For each place in a line, where the next of these characters is from there on, or -1. */
+function nextOf(line: string, found: (character: string) => boolean): Int32Array {
+	const next = new Int32Array(line.length + 1).fill(-1);
+	for (let at = line.length - 1; at >= 0; at--) {
+		next[at] = found(line[at] ?? "") ? at : (next[at + 1] ?? -1);
+	}
+	return next;
+}
+
+/**
+ * A line in pieces: text, links, and the runs of `*` or `_` that may mark emphasis, with what each
+ * run pairs with. A link is `[words](address)`, with no bracket in its words and no space in its
+ * address; one that can't go, or whose words name another place, stays text. Emphasis pairs runs
+ * of the same size, the nearest first, `*` inside a word too and `_` only at a word's edge, and a
+ * mark between a pair that pairs with nothing inside it stays as it was typed.
+ */
+function piecesOf(line: string): { pieces: Piece[]; partner: Map<number, number> } {
+	const pieces: Piece[] = [];
+	const bracket = nextOf(line, (character) => character === "[" || character === "]");
+	const closing = nextOf(line, (character) => character === ")");
+	const space = nextOf(line, (character) => /\s/.test(character));
+	let text = "";
+	const flush = () => {
+		if (text) pieces.push({ text });
+		text = "";
+	};
+	let at = 0;
+	while (at < line.length) {
+		const character = line[at] ?? "";
+		if (character === "[") {
+			const end = bracket[at + 1] ?? -1;
+			const close =
+				end === -1 || line[end] !== "]" || line[end + 1] !== "(" ? -1 : closing[end + 2];
+			if (close !== undefined && close > end + 2) {
+				const spaced = space[end + 2] ?? -1;
+				if (spaced === -1 || spaced > close) {
+					const words = line.slice(at + 1, end);
+					const target = linkable(line.slice(end + 2, close));
+					// An image, `![words](address)`, would load from there once the mail is read: it stays text.
+					if (line[at - 1] !== "!" && words.trim() && target !== null && honest(words, target)) {
+						flush();
+						pieces.push({ link: target, words });
+					} else {
+						text += line.slice(at, close + 1);
+					}
+					at = close + 1;
+					continue;
+				}
+			}
+		}
+		if (character === "*" || character === "_") {
+			let size = 1;
+			while (line[at + size] === character) size++;
+			const before = line[at - 1];
+			const after = line[at + size];
+			const usable = character === "*" ? size <= 3 : size === 1;
+			if (usable) {
+				flush();
+				pieces.push({
+					run: {
+						char: character,
+						size,
+						at,
+						// `_` only at the edge of words, so snake_case and C:\\Users\\_tmp_ stay.
+						open:
+							!isSpace(after) &&
+							(character === "*" || before === undefined || OPENS_AFTER.test(before)),
+						close:
+							!isSpace(before) &&
+							(character === "*" || after === undefined || CLOSES_BEFORE.test(after)),
+					},
+				});
+			} else {
+				text += line.slice(at, at + size);
+			}
+			at += size;
+			continue;
+		}
+		text += character;
+		at++;
+	}
+	flush();
+
+	// Each run is put on the stack once and taken off once.
+	const partner = new Map<number, number>();
+	const stack: number[] = [];
+	const open = new Map<string, number>();
+	const kind = (run: Run) => `${run.char}${run.size}`;
+	pieces.forEach((piece, index) => {
+		if (!("run" in piece)) return;
+		const { run } = piece;
+		if (run.close && (open.get(kind(run)) ?? 0) > 0) {
+			for (;;) {
+				const top = stack.pop();
+				if (top === undefined) break;
+				const opener = pieces[top];
+				if (!opener || !("run" in opener)) continue;
+				open.set(kind(opener.run), (open.get(kind(opener.run)) ?? 1) - 1);
+				if (kind(opener.run) === kind(run)) {
+					partner.set(top, index);
+					partner.set(index, top);
+					break;
+				}
+			}
+			return;
+		}
+		if (run.open) {
+			stack.push(index);
+			open.set(kind(run), (open.get(kind(run)) ?? 0) + 1);
+		}
+	});
+	return { pieces, partner };
+}
+
+const OPEN = ["", "<em>", "<strong>", "<strong><em>"];
+const CLOSE = ["", "</em>", "</strong>", "</em></strong>"];
+
+/** A line of the person's own as HTML, and whether it uses any marks. */
+function inline(line: string): { html: string; formatting: boolean } {
+	const { pieces, partner } = piecesOf(line);
+	let html = "";
+	let formatting = false;
+	pieces.forEach((piece, index) => {
+		if ("text" in piece) {
+			html += index === 0 ? lineHtml(piece.text) : textHtml(piece.text);
+		} else if ("link" in piece) {
+			html += `<a href="${escapeHtml(piece.link)}">${textHtml(piece.words)}</a>`;
+			formatting = true;
+		} else {
+			const other = partner.get(index);
+			if (other === undefined) {
+				html += piece.run.char.repeat(piece.run.size);
+			} else {
+				html += (other > index ? OPEN : CLOSE)[piece.run.size];
+				formatting = true;
+			}
+		}
+	});
+	return { html, formatting };
+}
+
+/** The runs of a line that pair, as offsets in it: where each pair opens and closes, and its size. */
+function emphasisPairs(line: string): { open: number; close: number; size: number }[] {
+	const { pieces, partner } = piecesOf(line);
+	const pairs: { open: number; close: number; size: number }[] = [];
+	for (const [index, other] of partner) {
+		const opener = pieces[index];
+		const closer = pieces[other];
+		if (other > index && opener && "run" in opener && closer && "run" in closer) {
+			pairs.push({ open: opener.run.at, close: closer.run.at, size: opener.run.size });
+		}
+	}
+	return pairs;
+}
+
+const QUOTE_LINE = /^[ \t]{0,3}>/;
+/** A bulleted item: its mark, then a space, then words. */
+const BULLET = /^[ \t]{0,3}[-*+][ \t]+(?=\S)/;
+/** A numbered item: up to nine digits, `.` or `)`, then a space, then words. */
+const NUMBER = /^[ \t]{0,3}(\d{1,9})([.)])[ \t]+(?=\S)/;
+/** A further line of an item, indented under it. */
+const FURTHER = /^(?: {2,}|\t)\S/;
 
 /** Quotes inside quotes deeper than this are kept as their lines, `>` and all. */
 const MAX_QUOTE_DEPTH = 10;
-
-const QUOTE_LINE = /^[ \t]{0,3}>/;
 
 /** Lines as they were typed: paragraphs at blank lines, each line kept, and its spaces. */
 function plain(lines: string[]): string {
@@ -141,10 +261,7 @@ function plain(lines: string[]): string {
 	}
 	return paragraphs
 		.filter((paragraph) => paragraph.length > 0)
-		.map(
-			(paragraph) =>
-				`<p>${paragraph.map((line) => escapeHtml(line).replace(/ (?= )/g, "&nbsp;")).join("<br>")}</p>\n`,
-		)
+		.map((paragraph) => `<p>${paragraph.map(lineHtml).join("<br>")}</p>\n`)
 		.join("");
 }
 
@@ -172,30 +289,86 @@ function quoted(lines: string[], depth: number): string {
 	return `<blockquote>\n${body}</blockquote>\n`;
 }
 
-/** The marks that make a message formatted. A bare address is linked by mail programs anyway. */
-const FORMATTING = new Set(["strong", "em", "list"]);
+type List = { numbered: boolean; next: number; delimiter: string; items: string[][] };
 
-/** The person's own lines as HTML, and whether they use any formatting. */
-function marked(lines: string[]): { html: string; formatting: boolean } {
-	try {
-		const tokens = markdown.lexer(guarded(lines));
-		let formatting = false;
-		markdown.walkTokens(tokens, (token: Token) => {
-			if (FORMATTING.has(token.type) || (token.type === "link" && token.raw.startsWith("["))) {
-				formatting = true;
-			}
-		});
-		return { html: markdown.parser(tokens), formatting };
-	} catch {
-		// Marks nested deeper than the parser can follow: the lines go as they are.
-		return { html: plain(lines), formatting: false };
+/**
+ * The person's own lines as HTML: paragraphs, and lists. A list goes on across blank lines while
+ * its items do, a numbered one only with the next number, so that "9. November" or a "15." after
+ * a list stays as typed. A line that doesn't start with a space ends the list above it.
+ */
+function own(lines: string[]): { html: string; formatting: boolean } {
+	let html = "";
+	let formatting = false;
+	let paragraph: string[] = [];
+	let list: List | null = null;
+	let blank = false;
+	const shown = (line: string) => {
+		const one = inline(line);
+		formatting ||= one.formatting;
+		return one.html;
+	};
+	const endParagraph = () => {
+		if (paragraph.length > 0) html += `<p>${paragraph.map(shown).join("<br>")}</p>\n`;
+		paragraph = [];
+	};
+	const endList = () => {
+		if (!list) return;
+		const tag = list.numbered ? "ol" : "ul";
+		const items = list.items.map((item) => `<li>${item.map(shown).join("<br>")}</li>\n`);
+		html += `<${tag}>\n${items.join("")}</${tag}>\n`;
+		formatting = true;
+		list = null;
+	};
+	for (const line of lines) {
+		if (!line.trim()) {
+			endParagraph();
+			blank = true;
+			continue;
+		}
+		const bullet = BULLET.exec(line);
+		const number = bullet ? null : NUMBER.exec(line);
+		const value = number ? Number(number[1]) : 0;
+		const current: List | null = list;
+		const goesOn =
+			current !== null &&
+			(bullet
+				? !current.numbered
+				: number !== null &&
+					current.numbered &&
+					value === current.next &&
+					number[2] === current.delimiter);
+		const starts = !goesOn && (bullet !== null || value === 1);
+		if (goesOn || starts) {
+			endParagraph();
+			if (starts) endList();
+			const mark = bullet ?? number;
+			list ??= {
+				numbered: number !== null,
+				next: 1,
+				delimiter: number?.[2] ?? "",
+				items: [],
+			};
+			list.items.push([line.slice(mark?.[0].length ?? 0)]);
+			list.next = value + 1;
+			blank = false;
+			continue;
+		}
+		if (list && !blank && FURTHER.test(line)) {
+			list.items[list.items.length - 1]?.push(line.trim());
+			continue;
+		}
+		endList();
+		paragraph.push(line);
+		blank = false;
 	}
+	endParagraph();
+	endList();
+	return { html, formatting };
 }
 
 /** The text as HTML, and whether it uses any formatting. */
 export function formatted(text: string): { html: string; formatting: boolean } {
 	const lines = text.replace(/\r\n?/g, "\n").split("\n");
-	if (text.length > MAX_FORMATTED) return { html: plain(lines), formatting: false };
 	let html = "";
 	let formatting = false;
 	for (const run of runs(lines)) {
@@ -203,9 +376,9 @@ export function formatted(text: string): { html: string; formatting: boolean } {
 			html += quoted(run.lines, 1);
 			formatting = true;
 		} else {
-			const own = marked(run.lines);
-			html += own.html;
-			formatting ||= own.formatting;
+			const mine = own(run.lines);
+			html += mine.html;
+			formatting ||= mine.formatting;
 		}
 	}
 	return { html, formatting };
@@ -229,19 +402,123 @@ export interface TextEdit {
 	selectTo: number;
 }
 
-/** How many of this character run back from `at`. */
-function runBack(value: string, at: number, character: string): number {
-	let count = 0;
-	while (at - count > 0 && value[at - count - 1] === character) count++;
-	return count;
+/** Where the line holding this place starts and ends. */
+function lineAround(value: string, at: number): { start: number; end: number } {
+	const start = at === 0 ? 0 : value.lastIndexOf("\n", at - 1) + 1;
+	const next = value.indexOf("\n", at);
+	return { start, end: next === -1 ? value.length : next };
 }
 
-/** How many of this character run on from `at`. */
-function runOn(value: string, at: number, character: string): number {
-	let count = 0;
-	while (value[at + count] === character) count++;
-	return count;
+/**
+ * Bold or italic on part of one line, from `start` to `end` in it: taken off when that is what one
+ * pair marks, inside or around it, and otherwise put on, over any of the same marks inside it.
+ * Spaces at its ends stay outside the marks. The new line and what is selected in it.
+ */
+function emphasized(
+	line: string,
+	start: number,
+	end: number,
+	stars: 1 | 2,
+): { line: string; selectFrom: number; selectTo: number } {
+	const mark = "*".repeat(stars);
+	let from = start;
+	let to = end;
+	while (from < to && /\s/.test(line[from] ?? "")) from++;
+	while (to > from && /\s/.test(line[to - 1] ?? "")) to--;
+	if (from === to) {
+		// A caret between marks with nothing in them takes them off; elsewhere they go in.
+		let before = 0;
+		while (line[start - before - 1] === "*") before++;
+		let after = 0;
+		while (line[start + after] === "*") after++;
+		if (before === after && (before === stars || before === 3)) {
+			return {
+				line: line.slice(0, start - stars) + line.slice(start + stars),
+				selectFrom: start - stars,
+				selectTo: start - stars,
+			};
+		}
+		return {
+			line: `${line.slice(0, start)}${mark}${mark}${line.slice(start)}`,
+			selectFrom: start + stars,
+			selectTo: start + stars,
+		};
+	}
+	const pairs = emphasisPairs(line).filter((pair) => pair.size === stars || pair.size === 3);
+	const around = pairs.find((pair) => pair.open + pair.size === from && pair.close === to);
+	if (around) {
+		return {
+			line: line.slice(0, from - stars) + line.slice(from, to) + line.slice(to + stars),
+			selectFrom: from - stars,
+			selectTo: to - stars,
+		};
+	}
+	const whole = pairs.find((pair) => pair.open === from && pair.close + pair.size === to);
+	if (whole) {
+		return {
+			line: line.slice(0, from) + line.slice(from + stars, to - stars) + line.slice(to),
+			selectFrom: from,
+			selectTo: to - 2 * stars,
+		};
+	}
+	// The same marks inside come off, so that the whole goes as one.
+	let inner = line.slice(from, to);
+	const cuts = pairs
+		.filter((pair) => pair.open >= from && pair.close + pair.size <= to)
+		.flatMap((pair) => [pair.open - from, pair.close - from])
+		.sort((one, other) => other - one);
+	for (const cut of cuts) inner = inner.slice(0, cut) + inner.slice(cut + stars);
+	return {
+		line: `${line.slice(0, from)}${mark}${inner}${mark}${line.slice(to)}`,
+		selectFrom: from + stars,
+		selectTo: from + stars + inner.length,
+	};
 }
+
+/**
+ * Makes the selection bold (`**`, two stars) or italic (`*`, one, which works inside a word too),
+ * or takes that off when it has it: three stars are both. With nothing selected, the marks go in
+ * with the caret between them. Over several lines, each line's part is changed, as marks pair
+ * within a line.
+ */
+export function toggleEmphasis(value: string, start: number, end: number, stars: 1 | 2): TextEdit {
+	// A selection that ends at a line's start doesn't take that line.
+	const stop = end > start && value[end - 1] === "\n" ? end - 1 : end;
+	const first = lineAround(value, start);
+	const last = lineAround(value, stop);
+	const lines = value.slice(first.start, last.end).split("\n");
+	if (lines.length === 1) {
+		const edit = emphasized(lines[0] ?? "", start - first.start, stop - first.start, stars);
+		return {
+			from: first.start,
+			to: last.end,
+			insert: edit.line,
+			selectFrom: first.start + edit.selectFrom,
+			selectTo: first.start + edit.selectTo,
+		};
+	}
+	let lineStart = first.start;
+	const changed = lines.map((line, index) => {
+		const from = index === 0 ? start - first.start : 0;
+		const to = index === lines.length - 1 ? stop - lineStart : line.length;
+		lineStart += line.length + 1;
+		// A line with nothing of it selected, or only spaces, stays as it is.
+		if (!line.slice(from, to).trim()) return line;
+		return emphasized(line, from, to, stars).line;
+	});
+	const insert = changed.join("\n");
+	// What follows the selection on its last line is as it was.
+	return {
+		from: first.start,
+		to: last.end,
+		insert,
+		selectFrom: start,
+		selectTo: first.start + insert.length - (last.end - stop),
+	};
+}
+
+/** The placeholder a new link's address starts as, selected so that what is typed replaces it. */
+export const LINK_PLACEHOLDER = "https://";
 
 /** The selection's spaces at each end, which marks leave outside, and the words between them. */
 function trimmed(selected: string): { lead: string; core: string; trail: string } {
@@ -250,53 +527,12 @@ function trimmed(selected: string): { lead: string; core: string; trail: string 
 	return { lead, core, trail: selected.slice(lead.length + core.length) };
 }
 
-/**
- * Makes the selection bold (`**`, two stars) or italic (`*`, one, which works inside a word too),
- * or takes that off when it has it: three stars are both. With nothing selected, the marks go in
- * with the caret between them.
- */
-export function toggleEmphasis(value: string, start: number, end: number, stars: 1 | 2): TextEdit {
-	const has = (count: number) => count === stars || count === 3;
-	const selected = value.slice(start, end);
-	const inside = runOn(selected, 0, "*");
-	if (
-		inside < selected.length &&
-		inside === runBack(selected, selected.length, "*") &&
-		has(inside)
-	) {
-		const inner = selected.slice(stars, -stars);
-		return {
-			from: start,
-			to: end,
-			insert: inner,
-			selectFrom: start,
-			selectTo: start + inner.length,
-		};
-	}
-	const before = runBack(value, start, "*");
-	if (before === runOn(value, end, "*") && has(before)) {
-		return {
-			from: start - stars,
-			to: end + stars,
-			insert: selected,
-			selectFrom: start - stars,
-			selectTo: end - stars,
-		};
-	}
-	const mark = "*".repeat(stars);
-	const { lead, core, trail } = trimmed(selected);
-	const at = start + lead.length + stars;
-	return {
-		from: start,
-		to: end,
-		insert: `${lead}${mark}${core}${mark}${trail}`,
-		selectFrom: at,
-		selectTo: at + core.length,
-	};
-}
-
-/** The placeholder a new link's address starts as, selected so that what is typed replaces it. */
-export const LINK_PLACEHOLDER = "https://";
+/** An address as a link's goes, with what would end it or split it written as `%` codes. */
+const asAddress = (address: string) =>
+	address.replace(
+		/[()\s<>[\]]/g,
+		(character) => `%${character.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`,
+	);
 
 /**
  * Makes the selection a link. An address selected becomes the link's address and words; other
@@ -305,16 +541,16 @@ export const LINK_PLACEHOLDER = "https://";
 export function insertLink(value: string, start: number, end: number): TextEdit {
 	const { lead, core, trail } = trimmed(value.slice(start, end));
 	const at = start + lead.length;
-	if (core && linkable(core) !== null) {
+	const words = core.replace(/[[\]]/g, "");
+	if (core && !/\s/.test(core) && linkable(core) !== null) {
 		return {
 			from: start,
 			to: end,
-			insert: `${lead}[${core}](${core})${trail}`,
+			insert: `${lead}[${words}](${asAddress(core)})${trail}`,
 			selectFrom: at + 1,
-			selectTo: at + 1 + core.length,
+			selectTo: at + 1 + words.length,
 		};
 	}
-	const words = core.replace(/[[\]]/g, "");
 	const address = at + words.length + 3;
 	return {
 		from: start,

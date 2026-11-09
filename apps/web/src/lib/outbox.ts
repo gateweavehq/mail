@@ -220,10 +220,15 @@ export const typedAddresses = (typed: string) =>
 		.map((address) => address.trim())
 		.filter(Boolean);
 
-/** A reply's text: room to write, then the message it answers, quoted. */
+/**
+ * A reply's text: room to write, then the message it answers, quoted. `said` names who wrote it,
+ * as the sender named themselves, and stands above the quote among the person's own lines, where
+ * marks are read: so it has no brackets, and a name can't make a link there.
+ */
 export function quoted(text: string, said: string): string {
 	const lines = text.replace(/\r\n?/g, "\n").trimEnd().split("\n");
 	const quote = lines.map((line) => (line ? `> ${line}` : ">")).join("\n");
+	const plain = said.replace(/[[\]]/g, "");
 	// Leave room for what the reply says above it.
-	return `\n\n${said}\n${quote}`.slice(0, MAX_TEXT - 10_000);
+	return `\n\n${plain}\n${quote}`.slice(0, MAX_TEXT - 10_000);
 }
