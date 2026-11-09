@@ -32,8 +32,9 @@ export interface ProviderKeyInfo {
 }
 
 /**
- * What Resend lets a key do, as its answer to listing domains says: everything, or only sending,
- * which is all Mail needs.
+ * What Resend lets a key do, as its answer to listing domains says: everything, or only sending.
+ * Sending is enough to send. Making the webhook that tells Mail what became of sent mail, and of
+ * mail Resend received, takes full access.
  */
 export type ResendAccess = "full" | "sending";
 

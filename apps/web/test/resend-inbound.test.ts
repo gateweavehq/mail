@@ -102,15 +102,18 @@ async function resend(request: Request): Promise<Response> {
 			const body = (await request.json()) as {
 				status?: "enabled" | "disabled";
 				endpoint?: string;
+				events?: string[];
 			};
 			if (body.status) found.status = body.status;
 			if (body.endpoint) found.endpoint = body.endpoint;
+			if (body.events) found.events = body.events;
 		}
 		return Response.json({
 			object: "webhook",
 			id: webhook,
 			status: found.status,
 			endpoint: found.endpoint,
+			events: found.events,
 		});
 	}
 	const email = /^\/emails\/receiving\/([^/]+)$/.exec(url.pathname)?.[1];
@@ -458,7 +461,7 @@ describe("receiving through Resend", () => {
 	it("makes one webhook for the workspace and removes it when no domain receives with Resend", async () => {
 		const box = await workspace();
 		const webhook = await receiving(box);
-		expect(webhook.events).toEqual(["email.received"]);
+		expect(webhook.events).toEqual(expect.arrayContaining(["email.received", "email.bounced"]));
 		expect(webhook.endpoint).toMatch(/^https:\/\/mail\.test\/api\/inbound\/resend\/[a-f0-9]{32}$/);
 		let listed = (await directory(box.slug)).body;
 		expect(listed.domains[0]?.receivesWith).toBe("resend");

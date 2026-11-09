@@ -138,8 +138,11 @@ These are load-bearing. Breaking one breaks users' data or security, usually sil
 16. **Resend's webhook admits only what the workspace's secret signed.** A delivery to
     `/api/inbound/resend/<channel>` carries no session: the channel finds the workspace, and the
     Svix signature, under the webhook's signing secret sealed in `resend_inbound`, within five
-    minutes, proves Resend sent it (`apps/web/src/server/resend-inbound.ts`). The webhook's body
-    names an email and nothing more is taken from it: who the mail is for, Resend's DMARC result
+    minutes, proves Resend sent it (`apps/web/src/server/resend-inbound.ts`). An event about sent
+    mail is data as in 17 (`apps/web/src/server/resend-events.ts`), and counts only when it was
+    sent from a mailbox address of the channel's workspace, as the key's Resend account may send
+    for others too. For received mail, the webhook's body names an email and nothing more is taken
+    from it: who the mail is for, Resend's DMARC result
     and the raw mail come from Resend's API with the workspace's key. Mail is stored only for that
     workspace's addresses on proved domains set to receive with Resend, and only for the envelope's
     recipient, which Resend names in the email's `to`: never for an address that is only in its
@@ -152,7 +155,8 @@ These are load-bearing. Breaking one breaks users' data or security, usually sil
     address on a proved domain that is also the domain the event came from, and only for a message
     that mailbox sent under that provider's id. Remote text is cut short and shown as text. A
     record only moves forward (`DELIVERY_RANK`), so a repeated or late event can't undo a bounce.
-    Log counts, never addresses. The same events fill the sending workspace's suppression list
+    Log counts, never addresses. Resend's events, through its webhook (16), keep the same rules.
+    The same events fill the sending workspace's suppression list
     (`apps/web/src/server/suppressions/`), only as `suppressionOf` reads them, and a bounce or a
     complaint only for a message that mailbox sent. An entry only gets stronger or longer until it
     ends or is removed, and an event from before a removal never brings it back. Every path that

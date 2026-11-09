@@ -659,6 +659,10 @@ test("an admin adds the workspace's Resend key, and a domain set to Resend sends
 
 	await sendsWith.selectOption("resend");
 	await expect(sendsWith).toHaveValue("resend");
+	// It sends, but a key that can only send can't make the webhook that tells what became of it.
+	await expect(row.getByRole("alert")).toContainText(
+		"can't learn what became of mail sent through Resend",
+	);
 	await page.reload();
 	await waitForHydration(page);
 	await expect(row.getByLabel("Sends with")).toHaveValue("resend");

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { DeliveryState } from "../../lib/delivery";
 import { RESEND_CODE, type ResendAccess } from "../../lib/providers";
 import { readUpTo, textOf } from "../streams";
 
@@ -282,20 +283,38 @@ async function call<T>(
 
 const MadeWebhook = z.object({ id: z.string().min(1).max(200), signing_secret: z.string().min(1) });
 
-/** The event Resend sends when it received mail, and the only one Mail asks for. */
+/** The event Resend sends when it received mail. */
 export const RECEIVED_EVENT = "email.received";
 
 /**
- * Makes a webhook in the key's Resend account that tells `endpoint` of each mail Resend receives.
- * The answer holds the webhook's id and the secret that signs its deliveries, which Resend shows
- * only now. Needs a key with full access.
+ * The events Resend sends about mail it sent, by what Mail records of each recipient. Resend sends
+ * one for each recipient, Cc too, naming only that one (measured 2026-11-09).
  */
-export function createReceivingWebhook(api: string, key: string, endpoint: string) {
+export const DELIVERY_EVENTS = {
+	"email.delivered": "delivered",
+	"email.delivery_delayed": "deferred",
+	"email.bounced": "bounced",
+	"email.complained": "complained",
+	"email.failed": "failed",
+	"email.suppressed": "rejected",
+} as const satisfies Record<string, DeliveryState>;
+
+export type DeliveryEventType = keyof typeof DELIVERY_EVENTS;
+
+/** Every event the workspace's webhook asks for: received mail, and what became of sent mail. */
+export const WEBHOOK_EVENTS: readonly string[] = [RECEIVED_EVENT, ...Object.keys(DELIVERY_EVENTS)];
+
+/**
+ * Makes a webhook in the key's Resend account that tells `endpoint` of each mail Resend receives,
+ * and of what became of each it sent. The answer holds the webhook's id and the secret that signs
+ * its deliveries, which Resend shows only now. Needs a key with full access.
+ */
+export function createWebhook(api: string, key: string, endpoint: string) {
 	return call(
 		api,
 		key,
 		"/webhooks",
-		{ method: "POST", body: { endpoint, events: [RECEIVED_EVENT] } },
+		{ method: "POST", body: { endpoint, events: WEBHOOK_EVENTS } },
 		(body) => {
 			const made = MadeWebhook.safeParse(body);
 			return made.success ? { id: made.data.id, secret: made.data.signing_secret } : null;
@@ -306,10 +325,14 @@ export function createReceivingWebhook(api: string, key: string, endpoint: strin
 const WebhookState = z.object({
 	status: z.string().max(100).nullish(),
 	endpoint: z.string().max(2_000).nullish(),
+	events: z.array(z.string().max(100)).max(100).nullish().catch(null),
 });
 
-/** What Resend has of a webhook: whether it is on, and where it sends; or that it is gone. */
-export type WebhookState = { on: boolean; endpoint: string | null } | "gone";
+/**
+ * What Resend has of a webhook: whether it is on, where it sends, and whether it asks for every
+ * event Mail needs, as one made before Mail recorded deliveries doesn't; or that it is gone.
+ */
+export type WebhookState = { on: boolean; endpoint: string | null; allEvents: boolean } | "gone";
 
 /**
  * What the key's Resend account has of this webhook. Resend turns off one whose deliveries keep
@@ -328,7 +351,12 @@ export async function webhookState(
 		(body): WebhookState | null => {
 			const read = WebhookState.safeParse(body);
 			if (!read.success) return null;
-			return { on: read.data.status !== "disabled", endpoint: read.data.endpoint ?? null };
+			const events = new Set(read.data.events ?? []);
+			return {
+				on: read.data.status !== "disabled",
+				endpoint: read.data.endpoint ?? null,
+				allEvents: WEBHOOK_EVENTS.every((event) => events.has(event)),
+			};
 		},
 	);
 	if (!found.ok && found.failure.code === `${RESEND_CODE}not_found`)
@@ -336,13 +364,16 @@ export async function webhookState(
 	return found;
 }
 
-/** Points a webhook at `endpoint` and turns it on, as Resend may have turned it off. */
+/**
+ * Points a webhook at `endpoint`, asks it for every event Mail needs, and turns it on, as Resend may
+ * have turned it off.
+ */
 export function repairWebhook(api: string, key: string, id: string, endpoint: string) {
 	return call(
 		api,
 		key,
 		`/webhooks/${encodeURIComponent(id)}`,
-		{ method: "PATCH", body: { endpoint, status: "enabled" } },
+		{ method: "PATCH", body: { endpoint, events: WEBHOOK_EVENTS, status: "enabled" } },
 		() => true,
 	);
 }

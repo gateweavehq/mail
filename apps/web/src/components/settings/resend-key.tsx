@@ -27,8 +27,8 @@ function failure(
 
 const accessWords = (access: ResendAccess) =>
 	access === "sending"
-		? "Resend takes it. It can only send, which is all Mail needs."
-		: "Resend takes it. It has full access to the Resend account; a sending-only key would be enough, and safer.";
+		? "Resend takes it. It can only send, so Mail can't make the webhook that tells it what became of the mail it sends, or of mail Resend receives."
+		: "Resend takes it. It has full access to the Resend account, which Mail needs to make the webhook that tells it what became of the mail it sends, and of mail Resend receives.";
 
 /** The workspace's Resend key, for owners and admins: add, check, replace or remove it. */
 export function ResendKey({

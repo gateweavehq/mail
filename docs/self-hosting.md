@@ -240,7 +240,10 @@ openssl rand -base64 32 | pnpm wrangler secret put SECRETS_KEY
 ```
 
 Then, in the workspace, an owner or admin verifies the domain at Resend, adds a Resend key under
-Settings › Domains, and sets the domain to send with Resend. A key that may only send is enough.
+Settings › Domains, and sets the domain to send with Resend. With a key that has full access,
+Mail makes a webhook in that Resend account, which tells it what became of each message and keeps
+the workspace's suppression list (see below for the address it needs). A key that may only send
+still sends, but Mail then learns nothing of bounces or complaints.
 Keep `SECRETS_KEY` as it is: the keys sealed with it can't be opened with another, and would have
 to be added again. Resend's own limits and quotas apply to that account.
 
@@ -248,9 +251,9 @@ Such a domain can receive through Resend too. In Resend, turn on receiving for t
 the MX record it shows; as a domain's mail goes to one place, use a subdomain when the domain
 already gets mail elsewhere. The workspace's key then needs full access, since a sending-only key
 can't read received mail. Set the domain to receive with Resend under Settings › Domains: Mail
-makes a webhook in that Resend account, pointing at `/api/inbound/resend/…` on the server's
+makes the webhook in that Resend account, pointing at `/api/inbound/resend/…` on the server's
 address (`BETTER_AUTH_URL`), which has to be reachable from the internet, and removes it when no
-domain receives with Resend. Resend turns off a webhook whose deliveries keep failing, as while
+domain sends or receives with Resend. Resend turns off a webhook whose deliveries keep failing, as while
 the server is down for long; "Check the webhook" on the same page turns it back on.
 Resend takes mail for every address on the domain, so mail to an address that doesn't exist in
 Mail is left out rather than refused, and stays in Resend.

@@ -1,15 +1,16 @@
 import { env } from "cloudflare:workers";
-import { and, eq, isNull, notExists } from "drizzle-orm";
+import { and, eq, isNull, notExists, or } from "drizzle-orm";
 import { z } from "zod";
-import { RESEND_CODE, type ReceivesWith } from "../lib/providers";
+import { RESEND_CODE, type ReceivesWith, type SendsWith } from "../lib/providers";
 import type { Database } from "./db";
 import { schema } from "./db";
-import { findAddress } from "./directory";
-import { judgedByResend, MailboxFullError, storeMail } from "./mailbox";
+import { directoryIn } from "./delivery-events";
+import { findAddress, setDomainSending } from "./directory";
+import { judgedByResend, MailboxFullError, mailboxStub, storeMail } from "./mailbox";
 import { openProviderKey } from "./providers/keys";
 import {
 	checkResendKey,
-	createReceivingWebhook,
+	createWebhook,
 	deleteWebhook,
 	getReceivedEmail,
 	RECEIVED_EVENT,
@@ -20,10 +21,15 @@ import {
 	webhookState,
 } from "./providers/resend";
 import { svixHeaders, verifySvix } from "./providers/svix";
+import { bareAddress, isDeliveryEvent, readResendEvent, recordResendEvent } from "./resend-events";
 import { isSealer, sealerFor } from "./secrets";
 import { readUpTo, streamOf, textOf } from "./streams";
 
 /**
+ * The workspace's webhook in the Resend account of its key, made once and shared by its domains:
+ * it tells Mail of mail Resend received, here, and of what became of mail it sent, which
+ * `resend-events.ts` records.
+ *
  * Mail for a domain whose MX is Resend's. Resend takes it, and its webhook tells Mail it came:
  * only the id, as the webhook carries no content. Mail then asks Resend's API for the email with the
  * workspace's key, which says whom it was delivered to and what Resend's MX found of its sender,
@@ -70,18 +76,29 @@ export type SetUp = { ok: true } | { ok: false; error: string; status: 409 | 502
 
 const refuse = (error: string, status: 409 | 502 = 409): SetUp => ({ ok: false, error, status });
 
+/** What the webhook is wanted for, which says what a key that can only send can't do. */
+type Purpose = "receiving" | "sending";
+
+const NEEDS_FULL_ACCESS: Record<Purpose, string> = {
+	receiving:
+		"Receiving through Resend needs a key with full access, as a key that can only send can't read received mail. Add one, then choose Resend again.",
+	sending:
+		"Mail can't learn what became of mail sent through Resend, or stop writing to addresses that bounce, as a key that can only send can't make the webhook that tells it. Add a key with full access, then choose Resend again.",
+};
+
 /**
  * Makes sure the workspace has its webhook in the Resend account of its key, made once and shared
- * by its domains, that it is on and that it points at the workspace's channel on this server. One
- * that Resend no longer has, as after the key was replaced with one from another account, is made
- * again; one Resend turned off after deliveries kept failing, or that points elsewhere, as after
- * the server's address changed, is mended. The key needs full access, which reading received mail
- * takes.
+ * by its domains, that it is on, asks for every event Mail needs and points at the workspace's
+ * channel on this server. One that Resend no longer has, as after the key was replaced with one
+ * from another account, is made again; one Resend turned off after deliveries kept failing, one
+ * made before Mail recorded deliveries, or one that points elsewhere, as after the server's address
+ * changed, is mended. Making one needs a key with full access.
  */
-export async function ensureReceivingWebhook(
+export async function ensureWebhook(
 	db: Database,
 	workspaceId: string,
 	origin: string,
+	purpose: Purpose,
 ): Promise<SetUp> {
 	const opened = await openProviderKey(db, env.SECRETS_KEY, workspaceId, "resend");
 	if (!opened.ok) {
@@ -95,11 +112,7 @@ export async function ensureReceivingWebhook(
 	if (!isSealer(sealer)) return refuse(sealer.unavailable);
 	const check = await checkResendKey(api(), opened.key);
 	if (!check.ok) return refuse(check.error, 502);
-	if (check.access !== "full") {
-		return refuse(
-			"Receiving through Resend needs a key with full access, as a key that can only send can't read received mail. Add one, then choose Resend again.",
-		);
-	}
+	if (check.access !== "full") return refuse(NEEDS_FULL_ACCESS[purpose]);
 
 	const { resendInbound } = schema;
 	// One row per workspace, made before the webhook, so two admins at once share one channel.
@@ -124,7 +137,9 @@ export async function ensureReceivingWebhook(
 				502,
 			);
 		if (state.value !== "gone") {
-			if (state.value.on && state.value.endpoint === endpoint) return { ok: true };
+			if (state.value.on && state.value.endpoint === endpoint && state.value.allEvents) {
+				return { ok: true };
+			}
 			const mended = await repairWebhook(api(), opened.key, row.webhookId, endpoint);
 			if (mended.ok) return { ok: true };
 			return refuse(`Resend didn't mend the webhook (${mended.failure.code}). Try again.`, 502);
@@ -141,7 +156,7 @@ export async function ensureReceivingWebhook(
 			.run();
 	}
 
-	const made = await createReceivingWebhook(api(), opened.key, endpoint);
+	const made = await createWebhook(api(), opened.key, endpoint);
 	if (!made.ok) {
 		return refuse(`Resend didn't make the webhook (${made.failure.code}). Try again.`, 502);
 	}
@@ -175,30 +190,38 @@ export async function ensureReceivingWebhook(
 	return { ok: true };
 }
 
+/** The workspace's domains that use Resend, to receive or to send. */
+const usingResend = (workspaceId: string) =>
+	and(
+		eq(schema.mailDomain.organizationId, workspaceId),
+		or(eq(schema.mailDomain.receivesWith, "resend"), eq(schema.mailDomain.sendsWith, "resend")),
+	);
+
 /**
  * Checks the workspace's webhook again from its Domains page, and mends it: made again when Resend
- * lost it, or on again when Resend turned it off.
+ * lost it, or on again when Resend turned it off, with every event Mail needs.
  */
-export async function mendReceiving(
+export async function mendWebhook(
 	db: Database,
 	workspaceId: string,
 	origin: string,
 ): Promise<SetUp> {
 	const { mailDomain } = schema;
 	const used = await db
-		.select({ id: mailDomain.id })
+		.select({ receivesWith: mailDomain.receivesWith })
 		.from(mailDomain)
-		.where(and(eq(mailDomain.organizationId, workspaceId), eq(mailDomain.receivesWith, "resend")))
-		.get();
-	if (!used) return refuse("No domain receives with Resend.");
-	return ensureReceivingWebhook(db, workspaceId, origin);
+		.where(usingResend(workspaceId))
+		.all();
+	if (used.length === 0) return refuse("No domain sends or receives with Resend.");
+	const receiving = used.some((domain) => domain.receivesWith === "resend");
+	return ensureWebhook(db, workspaceId, origin, receiving ? "receiving" : "sending");
 }
 
 /**
- * Removes the workspace's webhook once none of its domains receives with Resend. Removing it from
- * Resend is a courtesy: one left there finds no channel here, and Resend turns it off.
+ * Removes the workspace's webhook once none of its domains sends or receives with Resend. Removing
+ * it from Resend is a courtesy: one left there finds no channel here, and Resend turns it off.
  */
-export async function dropUnusedReceivingWebhook(db: Database, workspaceId: string): Promise<void> {
+export async function dropUnusedWebhook(db: Database, workspaceId: string): Promise<void> {
 	const { mailDomain, resendInbound } = schema;
 	// One statement, so a domain switched to Resend at the same moment keeps the webhook.
 	const [row] = await db
@@ -207,15 +230,7 @@ export async function dropUnusedReceivingWebhook(db: Database, workspaceId: stri
 			and(
 				eq(resendInbound.organizationId, workspaceId),
 				notExists(
-					db
-						.select({ id: mailDomain.id })
-						.from(mailDomain)
-						.where(
-							and(
-								eq(mailDomain.organizationId, workspaceId),
-								eq(mailDomain.receivesWith, "resend"),
-							),
-						),
+					db.select({ id: mailDomain.id }).from(mailDomain).where(usingResend(workspaceId)),
 				),
 			),
 		)
@@ -249,15 +264,37 @@ export async function setDomainReceiving(
 	if (!domain) return { ok: false, error: "Not found", status: 404 };
 	await db.update(mailDomain).set({ receivesWith }).where(where).run();
 	if (receivesWith === "cloudflare") {
-		await dropUnusedReceivingWebhook(db, workspaceId);
+		await dropUnusedWebhook(db, workspaceId);
 		return { ok: true };
 	}
-	const set = await ensureReceivingWebhook(db, workspaceId, origin);
+	const set = await ensureWebhook(db, workspaceId, origin, "receiving");
 	if (!set.ok && domain.was !== "resend") {
 		await db.update(mailDomain).set({ receivesWith: "cloudflare" }).where(where).run();
-		await dropUnusedReceivingWebhook(db, workspaceId);
+		await dropUnusedWebhook(db, workspaceId);
 	}
 	return set;
+}
+
+/**
+ * How a domain's mail is sent from now on. With Resend, the webhook is made too, which tells what
+ * became of the mail. Sending doesn't wait for it: a key that can only send sends, and the answer
+ * says what Mail won't learn, in `note`.
+ */
+export async function setDomainSendingWith(
+	db: Database,
+	workspaceId: string,
+	id: string,
+	sendsWith: SendsWith,
+	origin: string,
+) {
+	const set = await setDomainSending(db, workspaceId, id, sendsWith);
+	if (!set.ok) return set;
+	if (sendsWith === "cloudflare") {
+		await dropUnusedWebhook(db, workspaceId);
+		return { ok: true as const };
+	}
+	const made = await ensureWebhook(db, workspaceId, origin, "sending");
+	return made.ok ? { ok: true as const } : { ok: true as const, note: made.error };
 }
 
 const Event = z.object({
@@ -297,13 +334,16 @@ export async function receiveFromResend(
 	}
 	if (!(await verifySvix(secret, svixHeaders(request.headers), body, now))) return answer(401);
 
+	let json: unknown;
 	let event: z.infer<typeof Event>;
 	try {
-		event = Event.parse(JSON.parse(body));
+		json = JSON.parse(body);
+		event = Event.parse(json);
 	} catch {
 		return answer(400);
 	}
-	// Only received mail is asked for. Anything else is acknowledged, so it isn't sent again.
+	if (isDeliveryEvent(event.type)) return recordDelivery(db, row.organizationId, json, now);
+	// Anything else Mail didn't ask for is acknowledged, so it isn't sent again.
 	if (event.type !== RECEIVED_EVENT) return answer(204);
 	if (!event.data) return answer(400);
 
@@ -326,6 +366,31 @@ export async function receiveFromResend(
 	}
 	if (outcome.trouble) console.error("resend-inbound: not stored", { trouble: outcome.trouble });
 	return answer(outcome.status);
+}
+
+/**
+ * Records what became of mail the workspace sent through Resend. An event Mail can't read is
+ * acknowledged, as it would only come again the same. The log has the outcome and what failed,
+ * never addresses.
+ */
+async function recordDelivery(
+	db: Database,
+	workspaceId: string,
+	json: unknown,
+	now: number,
+): Promise<Response> {
+	const read = readResendEvent(json, now);
+	if (!read) {
+		console.warn("resend-events: unreadable");
+		return answer(204);
+	}
+	const recorded = await recordResendEvent(read, workspaceId, directoryIn(db), mailboxStub, now);
+	if (recorded.outcome === "failed") {
+		console.error("resend-events: not recorded", { failure: recorded.failure });
+	} else {
+		console.log("resend-events", { outcome: recorded.outcome, suppressed: recorded.suppressed });
+	}
+	return answer(recorded.status === 200 ? 204 : 503);
 }
 
 /** What became of one received email: the answer for Resend, and what went wrong, if anything. */
@@ -361,13 +426,6 @@ function notGiven(failure: ResendCallFailure): Outcome {
 	}
 	// A request Resend calls wrong, or an answer Mail can't read: no later try changes that.
 	return givenUp(failure.code);
-}
-
-/** `Name <a@b>` or `a@b` as a bare address in lower case, or null. */
-function bareAddress(text: string): string | null {
-	const inside = /<([^<>]*)>\s*$/.exec(text)?.[1] ?? text;
-	const address = inside.trim().toLowerCase();
-	return /^[^\s@<>]+@[^\s@<>]+$/.test(address) ? address : null;
 }
 
 /** Stores one email Resend received in each mailbox here that one of its addresses belongs to. */
