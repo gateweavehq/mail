@@ -151,6 +151,11 @@ export interface OpenedMessage {
 	hasHtml: boolean;
 	/** Its HTML seems to load images from elsewhere, which show only when asked for. */
 	remoteImages: boolean;
+	/**
+	 * Its remote images show without asking, as the reader allowed the domain it was proved to come
+	 * from (`lib/images.ts`). False when it has none to show, and always for an agent's key.
+	 */
+	imagesAllowed: boolean;
 	/** Its HTML is too long to show in full, so the frame shows the start of it. */
 	htmlCut: boolean;
 	attachments: { name: string | null; type: string; size: number }[];

@@ -46,7 +46,8 @@ tools that run on Cloudflare, next to [Gateweave Track](https://github.com/gatew
   twice, up to 1 GiB per mailbox, and encrypted in R2 when the server has a `SECRETS_KEY`.
 - **Reading mail.** Whoever may read a mailbox sees its threads, newest news first, and reads
   their messages, with the attachments listed and the original to download. HTML mail shows in a
-  sandbox that runs nothing and loads remote images only when asked. Replies join
+  sandbox that runs nothing and loads remote images only when asked, or by themselves for a
+  sender the reader allowed by its proved domain. Replies join
   the thread of the message they answer, or of other replies to it, when their subject matches.
   A sender's domain shows as proved only when the message passed DMARC for it. Owners and admins
   can delete a message.

@@ -56,6 +56,7 @@ interface Opened {
 	text: string;
 	hasHtml: boolean;
 	remoteImages: boolean;
+	imagesAllowed: boolean;
 	htmlCut: boolean;
 	attachments: { name: string | null; type: string; size: number }[];
 }
@@ -2050,5 +2051,193 @@ describe("a message's HTML", () => {
 		const theirs = await mailboxWithAddress(outsider);
 		const through = `${origin}/api/mail/${theirs.slug}/${box.mailboxId}/${id}/html`;
 		expect((await mail.fetch(through, { headers: outsider.headers })).status).toBe(404);
+	});
+});
+
+describe("remote images a person allows", () => {
+	const withImage = '<p>Hi</p><img src="https://images.example/logo.png" alt="Logo">';
+
+	/** A message with a remote image, which Cloudflare proved, or didn't, to come from example.org. */
+	function shop(to: string, proved: boolean) {
+		return message(to, {
+			above: proved ? fromCloudflare("pass") : [],
+			extra: ["MIME-Version: 1.0", "Content-Type: text/html; charset=utf-8"],
+			body: withImage,
+		});
+	}
+
+	/** Delivers a message and gives its id, as the mailbox lists the newest first. */
+	async function arrive(box: { slug: string; mailboxId: string; address: string }, proved = true) {
+		await kept(box.address, shop(box.address, proved));
+		return (await messages(box.slug, box.mailboxId)).messages[0]?.id ?? "";
+	}
+
+	function images(slug: string, person: Asker, action?: unknown) {
+		return mail.fetch(`${origin}/api/images/${slug}`, {
+			method: action ? "POST" : "GET",
+			headers: { ...person.headers, origin },
+			...(action ? { body: JSON.stringify(action) } : {}),
+		});
+	}
+
+	async function allowed(slug: string, person: Asker = owner) {
+		const response = await images(slug, person);
+		expect(response.status).toBe(200);
+		return ((await response.json()) as { senders: { domain: string }[] }).senders.map(
+			(sender) => sender.domain,
+		);
+	}
+
+	it("shows them by themselves for a domain allowed from a message it proved it sent", async () => {
+		const box = await mailboxWithAddress();
+		const first = await arrive(box);
+		expect(await open(box.slug, box.mailboxId, first)).toMatchObject({
+			verifiedDomain: "example.org",
+			remoteImages: true,
+			imagesAllowed: false,
+		});
+
+		const allow = await images(box.slug, owner, {
+			action: "allow",
+			mailbox: box.mailboxId,
+			message: first,
+		});
+		expect(allow.status).toBe(200);
+		expect(await allow.json()).toEqual({ ok: true, domain: "example.org" });
+		expect((await open(box.slug, box.mailboxId, first)).imagesAllowed).toBe(true);
+		expect(await allowed(box.slug)).toEqual(["example.org"]);
+
+		// The next message from the domain shows them too.
+		const next = await arrive(box);
+		expect((await open(box.slug, box.mailboxId, next)).imagesAllowed).toBe(true);
+
+		// Taking it back stops them, for every message.
+		const stop = await images(box.slug, owner, { action: "stop", domain: "Example.org" });
+		expect(await stop.json()).toEqual({ ok: true, domain: "example.org" });
+		expect((await open(box.slug, box.mailboxId, next)).imagesAllowed).toBe(false);
+		expect((await open(box.slug, box.mailboxId, first)).imagesAllowed).toBe(false);
+		expect(await allowed(box.slug)).toEqual([]);
+	});
+
+	// Anyone can write `From: sender@example.org`; only Cloudflare's check proves it.
+	it("never for a From that nothing proves, even of a domain allowed", async () => {
+		const box = await mailboxWithAddress();
+		const proved = await arrive(box);
+		const allow = await images(box.slug, owner, {
+			action: "allow",
+			mailbox: box.mailboxId,
+			message: proved,
+		});
+		expect(allow.status).toBe(200);
+
+		const forged = await arrive(box, false);
+		expect(await open(box.slug, box.mailboxId, forged)).toMatchObject({
+			from: { name: "Sender Person", address: "sender@example.org" },
+			verifiedDomain: null,
+			remoteImages: true,
+			imagesAllowed: false,
+		});
+		// Nor can its sender be allowed from it.
+		const refused = await images(box.slug, owner, {
+			action: "allow",
+			mailbox: box.mailboxId,
+			message: forged,
+		});
+		expect(refused.status).toBe(400);
+		expect(await allowed(box.slug)).toEqual(["example.org"]);
+	});
+
+	it("is the person's own: other readers and agents of the mailbox don't get it", async () => {
+		const box = await mailboxWithAddress();
+		const id = await arrive(box);
+		const reader = await join(box.workspaceId);
+		const agent = await makeAgent(box.workspaceId);
+		await giveAccess(box, { everyone: true, memberIds: [agent.memberId] });
+		const allowing = { action: "allow", mailbox: box.mailboxId, message: id };
+		expect((await images(box.slug, owner, allowing)).status).toBe(200);
+
+		expect((await open(box.slug, box.mailboxId, id, reader)).imagesAllowed).toBe(false);
+		expect(await allowed(box.slug, reader)).toEqual([]);
+		const byKey = await mail.fetch(`${origin}/api/mail/${box.slug}/${box.mailboxId}/${id}`, {
+			headers: agent.headers,
+		});
+		expect(byKey.status).toBe(200);
+		expect(((await byKey.json()) as Opened).imagesAllowed).toBe(false);
+
+		// An agent's key has no list, and changes none.
+		expect((await images(box.slug, agent)).status).toBe(404);
+		expect((await images(box.slug, agent, allowing)).status).toBe(404);
+		const stopping = { action: "stop", domain: "example.org" };
+		expect((await images(box.slug, agent, stopping)).status).toBe(404);
+		// Nor does anyone outside the workspace, or for a mailbox the person can't read.
+		expect((await images(box.slug, outsider, allowing)).status).toBe(404);
+		const theirs = await mailboxWithAddress(outsider);
+		const elsewhere = { action: "allow", mailbox: theirs.mailboxId, message: id };
+		expect((await images(box.slug, owner, elsewhere)).status).toBe(404);
+		expect(await allowed(box.slug)).toEqual(["example.org"]);
+	});
+
+	it("only from a message of a mailbox the person reads, named with that mailbox", async () => {
+		const box = await mailboxWithAddress();
+		const id = await arrive(box);
+		const allowing = { action: "allow", mailbox: box.mailboxId, message: id };
+		// A member of the workspace who wasn't given the mailbox.
+		const reader = await join(box.workspaceId);
+		expect((await images(box.slug, reader, allowing)).status).toBe(404);
+		expect(await allowed(box.slug, reader)).toEqual([]);
+		// Another mailbox of the workspace, which the owner reads too, doesn't hold that message.
+		const other = await addMailbox(box.slug, owner, box.domainId, `sales@${box.domain}`);
+		const mixed = { action: "allow", mailbox: other, message: id };
+		expect((await images(box.slug, owner, mixed)).status).toBe(404);
+		expect(await allowed(box.slug)).toEqual([]);
+	});
+
+	it("takes a change only from the app's own pages", async () => {
+		const box = await mailboxWithAddress();
+		const id = await arrive(box);
+		const response = await mail.fetch(`${origin}/api/images/${box.slug}`, {
+			method: "POST",
+			headers: { ...owner.headers, origin: "https://elsewhere.example" },
+			body: JSON.stringify({ action: "allow", mailbox: box.mailboxId, message: id }),
+		});
+		expect(response.status).toBe(403);
+		expect(await allowed(box.slug)).toEqual([]);
+	});
+
+	it("keeps at most 500 senders for a person", async () => {
+		const box = await mailboxWithAddress();
+		const id = await arrive(box);
+		const row = await mail.db
+			.prepare("SELECT id FROM member WHERE organization_id = ? AND user_id = ?")
+			.bind(box.workspaceId, owner.userId)
+			.first<{ id: string }>();
+		const insert = mail.db.prepare("INSERT INTO image_sender (member_id, domain) VALUES (?, ?)");
+		await mail.db.batch(
+			Array.from({ length: 500 }, (_, n) => insert.bind(row?.id, `sender${n}.example`)),
+		);
+		const allowing = { action: "allow", mailbox: box.mailboxId, message: id };
+		expect((await images(box.slug, owner, allowing)).status).toBe(409);
+		expect((await open(box.slug, box.mailboxId, id)).imagesAllowed).toBe(false);
+		// One goes, and there is room again.
+		await images(box.slug, owner, { action: "stop", domain: "sender0.example" });
+		expect((await images(box.slug, owner, allowing)).status).toBe(200);
+		// Full again, allowing one already there still says yes.
+		expect((await images(box.slug, owner, allowing)).status).toBe(200);
+		expect((await allowed(box.slug)).length).toBe(500);
+	});
+
+	it("goes with the person's membership", async () => {
+		const box = await mailboxWithAddress();
+		const id = await arrive(box);
+		const reader = await join(box.workspaceId);
+		await giveAccess(box, { everyone: true });
+		const allowing = { action: "allow", mailbox: box.mailboxId, message: id };
+		expect((await images(box.slug, reader, allowing)).status).toBe(200);
+		await mail.db.prepare("DELETE FROM member WHERE id = ?").bind(reader.memberId).run();
+		const left = await mail.db
+			.prepare("SELECT count(*) AS n FROM image_sender WHERE member_id = ?")
+			.bind(reader.memberId)
+			.first<{ n: number }>();
+		expect(left?.n).toBe(0);
 	});
 });

@@ -428,8 +428,9 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     that can't read the app's cookies or reach its pages, even when opened on its own;
     `default-src 'none'`, so it loads nothing from elsewhere; and links that may only open a
     tab of their own. An opaque origin gives what a second hostname would, without every
-    deployment having to set one up. Remote images load only when the reader asks, for that
-    view, since loading them tells the sender the message was opened. HTMLRewriter cleans the
+    deployment having to set one up. Remote images load only when the reader asks, since
+    loading them tells the sender the message was opened: for that view, or by themselves for
+    a sender the reader allowed (below). HTMLRewriter cleans the
     HTML as well: it keeps known tags and attributes, drops scripts, frames, forms' controls,
     `meta`, `base` and `link` with what they hold, opens links in a new tab without a referrer,
     and puts the message's own `cid:` images in as `data:` addresses (PNG, JPEG, GIF and WebP,
@@ -440,6 +441,18 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     make the page huge. A frame that runs nothing can't say how tall it is, so the frame has a
     height of its own, which the reader can drag. The app's own policy allows frames from itself
     only.
+  - **Images a reader allows** (`mailbox/image-senders.ts`, `server/images.ts`). A reader can let a
+    sender's remote images show by themselves, by the domain a message was proved to come from
+    (`verifiedDomain`) and by nothing else: anyone can write a `From`. The choice is the member's
+    own (D1 `image_sender`), as each reader of a shared mailbox decides for themselves whether
+    senders learn they opened something, and it goes with their membership. A message's JSON says
+    `imagesAllowed` when it has remote images and its proved domain is on the reader's list; an
+    agent's key never has one. To allow, the page names a message, not a domain, and the server
+    reads the domain from the message as it was judged on arrival, so a domain that proved nothing
+    can't be added. The page says when images showed because of the choice, with a button to take it
+    back, and a choice reaches every message from that domain already open, a thread's older ones
+    too. Settings › Images lists them. At most 500 per person in each workspace, counted as the row
+    is written.
   - **Search.** A mailbox's page, and `…/threads?q=`, list the threads with a message that has
     every word typed, newest news first. The last word also finds the words it starts, when it
     ends in two letters or digits or more (FTS5 takes the prefix from its last token, so `a.` is
@@ -842,8 +855,6 @@ Not built. This is where it is going, and it may change.
 - **One Worker.** The UI, the API, auth and `email()` stay together.
 - **D1 for accounts and the address directory**, a Durable Object per mailbox and R2 for raw mail,
   as above.
-- **Remote images per sender**, remembered for those the reader trusts, where now they are asked
-  for each time.
 - **Aliases that point at a mailbox.**
 - **Images in the composer's HTML**, as agents send them already, forwarding, and replying to
   all.

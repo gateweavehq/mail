@@ -23,6 +23,7 @@ import { appOrigin } from "../origin";
 import { replySubject } from "./compose";
 import type { StoredSummary } from "./durable-object";
 import { cleanHtml, framePolicy, MAX_SHOWN_HTML, mayLoadImages } from "./html";
+import { allowsImages } from "./image-senders";
 import { mailboxStub } from "./index";
 import { decoded, people, sender } from "./people";
 import { rawMail, SealError } from "./sealed";
@@ -366,6 +367,12 @@ async function readMessage(
 		: people(email.replyTo).length > 0
 			? people(email.replyTo)
 			: people(email.from ? [email.from] : []);
+	const remoteImages = email.html ? mayLoadImages(email.html) : false;
+	// By the domain the message was proved to come from, and for a person: a key reads no HTML.
+	const imagesAllowed =
+		remoteImages && row.verifiedDomain !== null && !box.member.keyed
+			? await allowsImages(db, memberId, row.verifiedDomain)
+			: false;
 	return {
 		id: row.id,
 		threadId: row.threadId,
@@ -382,7 +389,8 @@ async function readMessage(
 		text: text.slice(0, MAX_SHOWN_TEXT),
 		textCut: text.length > MAX_SHOWN_TEXT || Boolean(fromHtml?.cut),
 		hasHtml: Boolean(email.html),
-		remoteImages: email.html ? mayLoadImages(email.html) : false,
+		remoteImages,
+		imagesAllowed,
 		htmlCut: (email.html?.length ?? 0) > MAX_SHOWN_HTML,
 		attachments: email.attachments.map((attachment) => ({
 			name: attachment.filename,
