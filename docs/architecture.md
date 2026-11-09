@@ -548,12 +548,14 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
       copy's own: a reply to the message names it, and joins the thread, whatever id the message
       went out with. The signature (`own-id.ts`) is an HMAC of the mailbox, the uuid and the
       domain, cut to 128 bits, under a key HKDF derives from `BETTER_AUTH_SECRET`, so `isOwnId`
-      tells an id Mail gave from one a sender wrote into `References` to pass for a reply to the
-      mailbox's mail. Threading never asks: it matches ids as they are, so ids from before they
-      were signed, or from before the secret changed, keep their threads. A reply takes
-      `In-Reply-To` and `References` from the answered message's own headers: its `References`,
-      or failing those its `In-Reply-To`, then its id. A long chain keeps the first id and the
-      newest that fit in Email Service's 2,048 bytes for a header.
+      tells an id Mail gave the mailbox from one a sender made up, without looking anything up.
+      It proves where the id came from, not who answers with it: anyone the message reached can
+      name it, so whatever acts on a reply to the mailbox's mail also asks who sent the reply.
+      Threading never asks: it matches ids as they are, so ids from before they were signed, or from
+      before the secret changed, keep their threads. A reply takes `In-Reply-To` and `References`
+      from the answered message's own headers: its `References`, or failing those its `In-Reply-To`,
+      then its id. A long chain keeps the first id and the newest that fit in Email Service's 2,048
+      bytes for a header.
     - **An agent's mail waits for a person** (`agent-policy.ts`). A key may only send, never
       approve, reject, send again or discard, and only from a mailbox whose grant to the agent says
       so (`mailbox_access.send`, which only an agent's grant can have, as a person who reads a

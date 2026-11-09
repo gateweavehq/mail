@@ -1,9 +1,13 @@
 /**
  * Mail's own id for a message a mailbox sends, which goes last in its `References` and which a
  * reply names (see `compose.ts`). It is signed: an HMAC over the mailbox, the id and its domain,
- * under a key HKDF derives from `BETTER_AUTH_SECRET`. So anything that acts on "this message
- * answers what that mailbox sent" can tell an id Mail gave from one a sender made up, which a
- * forged `References` would otherwise pass for.
+ * under a key HKDF derives from `BETTER_AUTH_SECRET`. So `isOwnId` tells, without looking anything
+ * up, an id this deployment gave the mailbox from one a sender made up.
+ *
+ * That proves where the id came from, not who writes back with it: the id is in the message, so
+ * anyone it reached, a forward or a list archive included, can name it. Whatever acts on "this
+ * answers what the mailbox sent" also asks who is answering, such as by the domain the reply was
+ * proved to come from.
  *
  * Threading never needs the signature: it matches ids as they are, so ids sent before they were
  * signed, or under a `BETTER_AUTH_SECRET` since changed, still keep their threads. Only `isOwnId`
@@ -21,9 +25,11 @@ const SIGNED =
 let cached: { secret: string; key: Promise<CryptoKey> } | null = null;
 
 function signingKey(secret: string): Promise<CryptoKey> {
-	if (cached?.secret !== secret) {
+	// The Worker answers nothing without one (`server.ts`), so this is only ever a mistake.
+	if (!secret) throw new Error("own-id: BETTER_AUTH_SECRET isn't set");
+	if (!cached || cached.secret !== secret) {
 		const encoder = new TextEncoder();
-		cached = {
+		const made: { secret: string; key: Promise<CryptoKey> } = {
 			secret,
 			key: crypto.subtle
 				.importKey("raw", encoder.encode(secret), "HKDF", false, ["deriveKey"])
@@ -35,8 +41,14 @@ function signingKey(secret: string): Promise<CryptoKey> {
 						false,
 						["sign"],
 					),
-				),
+				)
+				.catch((error: unknown) => {
+					// Not kept, so the next message tries again.
+					if (cached === made) cached = null;
+					throw error;
+				}),
 		};
+		cached = made;
 	}
 	return cached.key;
 }

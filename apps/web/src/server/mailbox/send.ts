@@ -268,6 +268,8 @@ export async function outboxAnswer(
 	// A draft sent before, as when its answer was lost, is what became of it, and counts once.
 	const earlier = await box.stub.drafted(action.draft);
 	if (earlier) return sentAnswer(earlier);
+	// Made before anything is counted, so that should it fail, nothing is used up.
+	const ownMessageId = await newOwnId(env.BETTER_AUTH_SECRET, box.id, sender);
 	// Before anything is stored, so the draft stays as it is to be put right. A person's is asked
 	// before anything is counted; an agent's once its own day has counted it, below, so that a key
 	// can't learn who is on the list for free.
@@ -328,7 +330,7 @@ export async function outboxAnswer(
 		files: files.files,
 		inReplyTo: headerSafe(answering.inReplyTo),
 		references: answering.references.filter(isHeaderSafe),
-		ownId: await newOwnId(env.BETTER_AUTH_SECRET, box.id, sender),
+		ownId: ownMessageId,
 	};
 	const date = new Date();
 	// Headers as the copy has them, unfolded, which is how arriving mail's are kept.

@@ -23,6 +23,12 @@ describe("Mail's own message ids", () => {
 		const id = await newOwnId(SECRET, MAILBOX, "support@acme.test");
 		expect(await isOwnId(SECRET, "another-mailbox", id)).toBe(false);
 		expect(await isOwnId("another deployment's secret", MAILBOX, id)).toBe(false);
+		// And back to the first, as one isolate's key follows the secret it is given.
+		expect(await isOwnId(SECRET, MAILBOX, id)).toBe(true);
+	});
+
+	it("aren't made without a secret", async () => {
+		await expect(newOwnId("", MAILBOX, "support@acme.test")).rejects.toThrow(/BETTER_AUTH_SECRET/);
 	});
 
 	it("don't check once changed: another id, signature or domain, or one cut short", async () => {
@@ -30,7 +36,8 @@ describe("Mail's own message ids", () => {
 		const [uuid = "", rest = ""] = id.split(".", 2);
 		const [signature = ""] = rest.split("@");
 		const otherUuid = `${uuid.slice(0, -1)}${uuid.endsWith("0") ? "1" : "0"}`;
-		const flipped = `${signature.slice(0, -1)}${signature.endsWith("A") ? "B" : "A"}`;
+		// The first character, as the last one's low bits are padding that decodes to nothing.
+		const flipped = `${signature.startsWith("A") ? "B" : "A"}${signature.slice(1)}`;
 		for (const changed of [
 			`${otherUuid}.${signature}@acme.test`,
 			`${uuid}.${flipped}@acme.test`,
@@ -43,7 +50,7 @@ describe("Mail's own message ids", () => {
 		}
 	});
 
-	it("aren't ids Mail gave before they were signed, which still thread as before", async () => {
+	it("aren't ids Mail gave before they were signed", async () => {
 		expect(await isOwnId(SECRET, MAILBOX, `${crypto.randomUUID()}@acme.test`)).toBe(false);
 	});
 });
