@@ -70,7 +70,9 @@ tools that run on Cloudflare, next to [Gateweave Track](https://github.com/gatew
   agent has a daily limit of its own. An agent can also make addresses for itself, such as one
   for each sign-up, on the domains an admin gives it, as many and for as long as the admin
   allows. Each one ends. One button pauses an agent: its keys do nothing until it is resumed,
-  and what it wrote that waits to be tried again waits for a person instead.
+  and what it wrote that waits to be tried again waits for a person instead. Each agent has a
+  page of its own that shows what it wrote, what of that waits for approval, and what came to
+  the addresses it made.
 - **Webhooks.** Mail posts each message a mailbox receives to a URL of yours, such as an agent's
   trigger, signed per [Standard Webhooks](https://www.standardwebhooks.com), with who sent it and
   what it is about but not what it says. It tells of mail you send too: held for approval,

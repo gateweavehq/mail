@@ -263,6 +263,81 @@ function KeyReveal({
 	);
 }
 
+/**
+ * Pause an agent, or resume one that is paused. Paused, its keys stop working and its mail
+ * waiting to be tried again goes to a person.
+ */
+export function PauseButton({ agent }: { agent: Pick<AgentInfo, "id" | "name" | "paused"> }) {
+	const router = useRouter();
+	const [pausing, setPausing] = useState(false);
+
+	async function change(pause: boolean) {
+		setPausing(true);
+		const result = pause
+			? await authClient.agents.pause({ agentId: agent.id })
+			: await authClient.agents.resume({ agentId: agent.id });
+		setPausing(false);
+		if (result.error) {
+			toast.error(`Could not ${pause ? "pause" : "resume"} ${agent.name}`, {
+				description: failure(result.error, "Something went wrong"),
+			});
+			return;
+		}
+		toast.success(pause ? `${agent.name} is paused` : `${agent.name} runs again`);
+		await router.invalidate();
+	}
+
+	if (agent.paused) {
+		return (
+			<Button variant="outline" size="sm" disabled={pausing} onClick={() => change(false)}>
+				<Play />
+				Resume
+			</Button>
+		);
+	}
+	return (
+		<>
+			<Button
+				variant="outline"
+				size="sm"
+				disabled={pausing}
+				onClick={() => change(true)}
+				aria-describedby={`pause-${agent.id}`}
+			>
+				<Pause />
+				Pause
+			</Button>
+			<span id={`pause-${agent.id}`} hidden>
+				Its keys stop working until someone resumes it, and its mail waiting to be tried again goes
+				to a person.
+			</span>
+		</>
+	);
+}
+
+/** Who paused an agent and when, and what that means while it lasts. */
+export function PausedNote({
+	paused,
+	className = "",
+}: {
+	paused: NonNullable<AgentInfo["paused"]>;
+	className?: string;
+}) {
+	return (
+		<p className={`text-xs font-medium ${className}`}>
+			<span title={formatDateTime(paused.at)}>
+				Paused {paused.by ? `by ${paused.by} ` : ""}
+				{formatRelative(paused.at)}.
+			</span>{" "}
+			<span className="font-normal text-muted-foreground">
+				Its keys do nothing until it is resumed. What it wrote that waited to be tried again waits
+				for a person to approve it, and its own webhooks hear nothing. Mail to its addresses still
+				arrives.
+			</span>
+		</p>
+	);
+}
+
 function AgentRow({
 	agent,
 	domains,
@@ -273,9 +348,9 @@ function AgentRow({
 	onNewKey: (key: NewKey) => void;
 }) {
 	const router = useRouter();
+	const { slug } = useWorkspace();
 	const [action, setAction] = useState<"rename" | "sending" | "addresses" | "delete" | null>(null);
 	const [revoking, setRevoking] = useState<AgentKeyInfo | null>(null);
-	const [pausing, setPausing] = useState(false);
 
 	async function newKey() {
 		const result = await authClient.agents.createKey({ agentId: agent.id });
@@ -299,34 +374,6 @@ function AgentRow({
 		await router.invalidate();
 	}
 
-	async function pause() {
-		setPausing(true);
-		const result = await authClient.agents.pause({ agentId: agent.id });
-		setPausing(false);
-		if (result.error) {
-			toast.error(`Could not pause ${agent.name}`, {
-				description: failure(result.error, "Something went wrong"),
-			});
-			return;
-		}
-		toast.success(`${agent.name} is paused`);
-		await router.invalidate();
-	}
-
-	async function resume() {
-		setPausing(true);
-		const result = await authClient.agents.resume({ agentId: agent.id });
-		setPausing(false);
-		if (result.error) {
-			toast.error(`Could not resume ${agent.name}`, {
-				description: failure(result.error, "Something went wrong"),
-			});
-			return;
-		}
-		toast.success(`${agent.name} runs again`);
-		await router.invalidate();
-	}
-
 	async function remove() {
 		const result = await authClient.agents.delete({ agentId: agent.id });
 		if (result.error) {
@@ -345,7 +392,15 @@ function AgentRow({
 					className="size-8 shrink-0 rounded-full border p-1.5 text-muted-foreground"
 				/>
 				<div className="min-w-0 flex-1 basis-48">
-					<p className="truncate text-sm font-medium">{agent.name}</p>
+					<p className="truncate text-sm font-medium">
+						<Link
+							to="/$workspace/settings/agents/$agent"
+							params={{ workspace: slug, agent: agent.id }}
+							className="hover:underline hover:underline-offset-4"
+						>
+							{agent.name}
+						</Link>
+					</p>
 					<p className="text-xs text-muted-foreground">
 						Created {formatShortDate(agent.createdAt)}
 					</p>
@@ -355,27 +410,7 @@ function AgentRow({
 						{agent.liveAddresses > 0 && ` Holds ${agent.liveAddresses} now.`}
 					</p>
 				</div>
-				{agent.paused ? (
-					<Button variant="outline" size="sm" disabled={pausing} onClick={resume}>
-						<Play />
-						Resume
-					</Button>
-				) : (
-					<Button
-						variant="outline"
-						size="sm"
-						disabled={pausing}
-						onClick={pause}
-						aria-describedby={`pause-${agent.id}`}
-					>
-						<Pause />
-						Pause
-					</Button>
-				)}
-				<span id={`pause-${agent.id}`} hidden>
-					Its keys stop working until someone resumes it, and its mail waiting to be tried again
-					goes to a person.
-				</span>
+				<PauseButton agent={agent} />
 				<Button variant="outline" size="sm" onClick={newKey}>
 					<KeyRound />
 					New key
@@ -410,19 +445,7 @@ function AgentRow({
 					</DropdownMenuContent>
 				</DropdownMenu>
 			</div>
-			{agent.paused && (
-				<p className="pl-11 text-xs font-medium">
-					<span title={formatDateTime(agent.paused.at)}>
-						Paused {agent.paused.by ? `by ${agent.paused.by} ` : ""}
-						{formatRelative(agent.paused.at)}.
-					</span>{" "}
-					<span className="font-normal text-muted-foreground">
-						Its keys do nothing until it is resumed. What it wrote that waited to be tried again
-						waits for a person to approve it, and its own webhooks hear nothing. Mail to its
-						addresses still arrives.
-					</span>
-				</p>
-			)}
+			{agent.paused && <PausedNote paused={agent.paused} className="pl-11" />}
 			{agent.keys.length === 0 ? (
 				<p className="pl-11 text-xs text-muted-foreground">
 					No keys. It can't read anything until you make one.

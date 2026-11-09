@@ -607,11 +607,18 @@ async function deliverReceived(
 		...new Set(email.recipients.map(bareAddress).filter((address) => address !== null)),
 	].filter((address) => domains.has(address.slice(address.lastIndexOf("@") + 1)));
 
-	const mailboxes = new Map<string, string>();
+	// Each mailbox's addresses the mail came to, and the first agent that made one of them.
+	const mailboxes = new Map<string, { to: string[]; agentMemberId: string | null }>();
 	for (const address of addresses.slice(0, MAX_RECIPIENTS)) {
 		const found = await findAddress(db, address, new Date(now));
 		if (found?.workspaceId !== workspaceId || found.receivesWith !== "resend") continue;
-		if (!mailboxes.has(found.mailboxId)) mailboxes.set(found.mailboxId, address);
+		const known = mailboxes.get(found.mailboxId);
+		if (known) {
+			known.to.push(address);
+			known.agentMemberId ??= found.agentMemberId;
+		} else {
+			mailboxes.set(found.mailboxId, { to: [address], agentMemberId: found.agentMemberId });
+		}
 	}
 	if (mailboxes.size === 0) return nobody;
 	if (!email.rawUrl) return later("raw_unavailable");
@@ -619,8 +626,12 @@ async function deliverReceived(
 	// Each mailbox is tried, so one that is full doesn't keep the mail from the others.
 	let worst = stored;
 	let some = false;
-	for (const [mailboxId, address] of mailboxes) {
-		const outcome = await storeReceived(email, { workspaceId, mailboxId }, address);
+	for (const [mailboxId, { to, agentMemberId }] of mailboxes) {
+		const outcome = await storeReceived(
+			email,
+			{ workspaceId, mailboxId, agentMemberId },
+			to.join(", "),
+		);
 		some ||= outcome.stored;
 		if (badness(outcome) > badness(worst)) worst = outcome;
 	}
@@ -629,7 +640,7 @@ async function deliverReceived(
 
 async function storeReceived(
 	email: ReceivedEmail,
-	found: { workspaceId: string; mailboxId: string },
+	found: { workspaceId: string; mailboxId: string; agentMemberId: string | null },
 	to: string,
 ): Promise<Outcome> {
 	let response: Response;

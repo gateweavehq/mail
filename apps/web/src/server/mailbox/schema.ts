@@ -234,6 +234,17 @@ const VERSION_10 = `
 ALTER TABLE outgoing ADD COLUMN files TEXT NOT NULL DEFAULT '[]';
 `;
 
+// Which agent a message that arrived came for: the one that made the address it was delivered to,
+// as the directory said then, so that the agent's page finds it after the address has ended. Its
+// page lists what the agent wrote the same way, newest first.
+const VERSION_11 = `
+ALTER TABLE message ADD COLUMN came_for TEXT;
+CREATE INDEX message_came_for ON message (came_for, arrived_at DESC, id DESC)
+	WHERE came_for IS NOT NULL;
+CREATE INDEX message_sent_by ON message (sent_by, arrived_at DESC, id DESC)
+	WHERE sent_by IS NOT NULL;
+`;
+
 /** Each brings the schema from the version before it. Append only: objects keep what they ran. */
 export const MIGRATIONS: ((sql: SqlStorage) => void)[] = [
 	(sql) => sql.exec(VERSION_1),
@@ -263,6 +274,7 @@ export const MIGRATIONS: ((sql: SqlStorage) => void)[] = [
 	(sql) => sql.exec(VERSION_8),
 	(sql) => sql.exec(VERSION_9),
 	(sql) => sql.exec(VERSION_10),
+	(sql) => sql.exec(VERSION_11),
 ];
 
 /** What migrating needs of a Durable Object's storage. */

@@ -79,6 +79,7 @@ export async function findAddress(db: Database, recipient: string, now: Date) {
 			mailboxId: mailAddress.mailboxId,
 			workspaceId: mailDomain.organizationId,
 			receivesWith: mailDomain.receivesWith,
+			agentMemberId: mailAddress.agentMemberId,
 		})
 		.from(mailAddress)
 		.innerJoin(mailDomain, eq(mailAddress.domainId, mailDomain.id))

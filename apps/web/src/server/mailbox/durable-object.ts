@@ -48,6 +48,33 @@ export const MAX_LISTED = 100;
 /** The most senders a thread's listing names. */
 const MAX_SENDERS = 5;
 
+/**
+ * The longest list of a mailbox's addresses one received message keeps, as copies for more of them
+ * arrive: past it, the first ones stay.
+ */
+const MAX_ENVELOPE_TO = 2_000;
+
+/** How soon after the copy kept another copy of the same mail must come to count (`#cameAlso`). */
+const COPIES_WITHIN_MS = 60 * 60 * 1000;
+
+/** What `#cameAlso` reads of a received message: a type, as a row's must be. */
+type Copy = {
+	envelopeTo: string;
+	cameFor: string | null;
+	verifiedDomain: string | null;
+	arrivedAt: number;
+};
+
+const COPY = `envelope_to AS envelopeTo, came_for AS cameFor, verified_domain AS verifiedDomain,
+	arrived_at AS arrivedAt`;
+
+/** The addresses an envelope's list names, lower case. */
+const recipientsOf = (envelopeTo: string) =>
+	envelopeTo
+		.split(",")
+		.map((address) => address.trim().toLowerCase())
+		.filter(Boolean);
+
 /** How many of a thread's first messages its listing looks through for senders. */
 const SENDERS_READ = 200;
 
@@ -97,6 +124,11 @@ export interface Arrival {
 	dmarc: string | null;
 	/** The domain the message is proved to come from, from `verifiedDomain` or `resendVerifiedDomain`. */
 	verifiedDomain: string | null;
+	/**
+	 * The membership of the agent that made the address it came to, when one did. Missing from a
+	 * Worker older than agents' pages, during a deploy.
+	 */
+	cameFor?: string | null;
 }
 
 export type Begun = { ok: true; id: string; object: string } | { ok: false; reason: "full" };
@@ -339,8 +371,8 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 		sql.exec(
 			`INSERT INTO message (id, state, delivery_key, object, size, arrived_at, envelope_from,
 				envelope_to, from_header, subject, date_header, message_id, dmarc, verified_domain,
-				own_id, subject_key)
-			VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				own_id, subject_key, came_for)
+			VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			id,
 			arrival.key,
 			object,
@@ -356,6 +388,7 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			arrival.verifiedDomain,
 			arrival.ownId ?? messageIds(arrival.messageId)[0] ?? null,
 			subjectKey(arrival.subject),
+			arrival.cameFor ?? null,
 		);
 		for (const ref of (arrival.references ?? []).slice(-MAX_REFERENCES)) {
 			sql.exec("INSERT OR IGNORE INTO message_reference (message, ref) VALUES (?, ?)", id, ref);
@@ -396,7 +429,10 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 	async #finishOne(id: string, key: string): Promise<"stored" | "duplicate" | "gone"> {
 		const sql = this.ctx.storage.sql;
 		const mine = sql
-			.exec<{ object: string }>("SELECT object FROM message WHERE id = ? AND state = 'pending'", id)
+			.exec<Copy & { object: string }>(
+				`SELECT object, ${COPY} FROM message WHERE id = ? AND state = 'pending'`,
+				id,
+			)
 			.toArray()[0];
 		if (!mine) return "gone";
 		const earlier = sql
@@ -418,14 +454,16 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			const hash = await bodyHash(this.env.RAW_MAIL, other.object);
 			if (hash !== null) sql.exec("UPDATE message SET body_hash = ? WHERE id = ?", hash, other.id);
 		}
-		const same = sql
-			.exec(
-				"SELECT 1 FROM message WHERE delivery_key = ? AND body_hash = ? AND state = 'stored' LIMIT 1",
+		const kept = sql
+			.exec<Copy & { id: string }>(
+				`SELECT id, ${COPY} FROM message
+				WHERE delivery_key = ? AND body_hash = ? AND state = 'stored' LIMIT 1`,
 				key,
 				myHash,
 			)
-			.toArray();
-		if (same.length > 0) {
+			.toArray()[0];
+		if (kept) {
+			this.#cameAlso(kept, mine);
 			// The mail goes before its row. Should deleting it fail, the row is still pending, and the
 			// alarm removes both.
 			await this.env.RAW_MAIL.delete(mine.object);
@@ -434,6 +472,31 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 		}
 		sql.exec("UPDATE message SET body_hash = ? WHERE id = ?", myHash, id);
 		return this.#store(id);
+	}
+
+	/**
+	 * Email Routing hands each recipient its own copy, so a copy of mail already kept may be the
+	 * same mail for another of the mailbox's addresses: the kept one says it came to that one too,
+	 * and for the agent that made it, when it came for none. Only a copy that came soon after, proved
+	 * as the kept one was, counts, so mail sent again later, word for word, can't make an old message
+	 * an agent's. A retry of the same copy changes nothing.
+	 */
+	#cameAlso(kept: Copy & { id: string }, copy: Copy) {
+		if (copy.verifiedDomain !== kept.verifiedDomain) return;
+		if (Date.now() - kept.arrivedAt > COPIES_WITHIN_MS) return;
+		const had = recipientsOf(kept.envelopeTo);
+		const to = [...new Set([...had, ...recipientsOf(copy.envelopeTo)])];
+		const cameFor = kept.cameFor ?? copy.cameFor;
+		if (to.length === had.length && cameFor === kept.cameFor) return;
+		const envelopeTo = to.join(", ");
+		// Past the longest list, the copy changes nothing, so the agent named is always among it.
+		if (envelopeTo.length > MAX_ENVELOPE_TO) return;
+		this.ctx.storage.sql.exec(
+			"UPDATE message SET envelope_to = ?, came_for = ? WHERE id = ?",
+			envelopeTo,
+			cameFor,
+			kept.id,
+		);
 	}
 
 	/**
@@ -1050,6 +1113,40 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 					take,
 				);
 		return rows.toArray();
+	}
+
+	/**
+	 * What an agent did in this mailbox, newest first: the mail it wrote, what of that waits for a
+	 * person, and the mail that came to the addresses it made. Up to `limit` of each.
+	 */
+	ofAgent(
+		memberId: string,
+		limit: number,
+	): { wrote: StoredSummary[]; held: StoredSummary[]; received: StoredSummary[] } {
+		const take = Math.min(Math.max(1, limit), MAX_LISTED);
+		const sql = this.ctx.storage.sql;
+		const newest = (column: "sent_by" | "came_for") =>
+			sql
+				.exec<StoredSummary>(
+					`SELECT ${SUMMARY} FROM message WHERE ${column} = ? AND state = 'stored'
+					ORDER BY arrived_at DESC, id DESC LIMIT ?`,
+					memberId,
+					take,
+				)
+				.toArray();
+		// From the held ones, by `outgoing_due`: an agent can have written far more than waits. The
+		// `+` keeps SQLite from going through all it wrote by `message_sent_by` instead.
+		const held = sql
+			.exec<StoredSummary>(
+				`SELECT ${SUMMARY} FROM message
+				WHERE id IN (SELECT message FROM outgoing WHERE state = 'held')
+					AND +sent_by = ? AND +state = 'stored'
+				ORDER BY arrived_at DESC, id DESC LIMIT ?`,
+				memberId,
+				take,
+			)
+			.toArray();
+		return { wrote: newest("sent_by"), held, received: newest("came_for") };
 	}
 
 	/** Threads, the one with the newest message first, after `before` when given. */

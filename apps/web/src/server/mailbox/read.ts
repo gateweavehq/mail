@@ -89,7 +89,7 @@ type OpenMailbox = NonNullable<Awaited<ReturnType<typeof openMailbox>>>;
  * The names of those who sent these messages from the mailbox, or approved them, by membership,
  * while they are in the workspace. Someone who has left is no longer named.
  */
-async function senderNames(
+export async function senderNames(
 	workspaceId: string,
 	rows: { sentBy: string | null; approvedBy?: string | null }[],
 ): Promise<Map<string, string>> {
@@ -145,7 +145,7 @@ export async function listMessages(
 	};
 }
 
-function listed(row: StoredSummary, names: Map<string, string>, me: string): ListedMessage {
+export function listed(row: StoredSummary, names: Map<string, string>, me: string): ListedMessage {
 	return {
 		id: row.id,
 		threadId: row.threadId,
@@ -163,7 +163,7 @@ function listed(row: StoredSummary, names: Map<string, string>, me: string): Lis
  * The addresses an envelope went to, lower case. An object still on the code before listings had
  * them, during a deploy, gives none.
  */
-const envelopeRecipients = (envelopeTo: string | undefined) =>
+export const envelopeRecipients = (envelopeTo: string | undefined) =>
 	(envelopeTo ?? "")
 		.split(",")
 		.map((address) => address.trim().toLowerCase())

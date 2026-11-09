@@ -761,6 +761,22 @@ test("an agent's mail to someone its settings don't name waits until a person ap
 	expect(written.status()).toBe(200);
 	expect(await written.json()).toMatchObject({ state: "held" });
 
+	// The agent's page, from its name, says where it reads and sends, what it wrote, and what waits.
+	await page.goto(`/${slug}/settings/agents`);
+	await waitForHydration(page);
+	await page.getByRole("link", { name: "Sorter", exact: true }).click();
+	await expect(page.getByRole("heading", { level: 2, name: "Sorter" })).toBeVisible();
+	await expect(page.getByRole("region", { name: "Mailboxes" }).getByRole("listitem")).toHaveText([
+		"SupportReads and sends",
+	]);
+	const held = page.getByRole("region", { name: "Waiting for approval" });
+	await expect(held.getByRole("link", { name: /^Your parcel/ })).toContainText(
+		"To customer@example.org",
+	);
+	await expect(
+		page.getByRole("region", { name: "What it wrote" }).getByRole("link", { name: /^Your parcel/ }),
+	).toContainText("Waiting for approval");
+
 	// The mailbox's page says what waits, and a person approves it from its thread.
 	await page.goto(`/${slug}/mailboxes/${mailboxId}`);
 	await waitForHydration(page);
@@ -784,6 +800,15 @@ test("an agent's mail to someone its settings don't name waits until a person ap
 	await expect(
 		page.getByRole("region", { name: /wait for approval|waits for approval/ }),
 	).toHaveCount(0);
+
+	// On the agent's page, it no longer waits, and it was sent.
+	await page.goto(`/${slug}/settings/agents`);
+	await waitForHydration(page);
+	await page.getByRole("link", { name: "Sorter", exact: true }).click();
+	await expect(
+		page.getByRole("region", { name: "What it wrote" }).getByRole("link", { name: /^Your parcel/ }),
+	).toContainText("Sent");
+	await expect(page.getByRole("region", { name: "Waiting for approval" })).toHaveCount(0);
 });
 
 /** Long enough that, on a phone, it has to give way to the rest of an address's row. */

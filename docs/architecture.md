@@ -192,6 +192,26 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     object trusts what D1 last said. Mail to its addresses still arrives in the mailbox for people to read. Pausing
     needs no recent sign-in, so it is quick; resuming, which gives its keys back, does, as making
     a key does.
+  - **An agent's page** (`server/mailbox/agent-activity.ts`; its name on the Agents page opens
+    it, and `/api/agents/<workspace>/<agent>` gives the same as JSON) shows an owner or admin what
+    it may do and holds, and what it did, newest first: what it wrote (`message.sent_by`), what of
+    that waits for approval, and what came to the addresses it made. The last is
+    `message.came_for` (schema version 11), the agent's membership when the address the mail
+    arrived at is one it made, noted on arrival by Email Routing or Resend from
+    `mail_address.agent_member_id`. It stays when the address ends or is removed; mail that
+    arrived before it was noted has none, and mail to a mailbox's own addresses isn't the agent's.
+    Email Routing hands each recipient its own copy, and the mailbox keeps one: a later copy that
+    comes within the hour, proved as the kept one was, adds its address to the kept one's
+    `envelope_to`, and its agent when the kept one has none, so mail to a mailbox's address and an
+    agent's is the agent's, and an agent waiting for mail to its address finds it. Mail sent again
+    later, word for word, can't make an old message an agent's. One message counts for one agent. The page asks only the mailboxes the agent
+    was ever given (`agent_mailbox`, which a trigger fills as grants are made and which keeps them
+    after a grant goes, as what it wrote stays there), each through `ofAgent`: what it wrote and
+    received by partial indexes on `sent_by` and `came_for`, what waits from `outgoing`'s held
+    rows. It keeps the newest 50 of each list, and says which mailbox didn't answer rather than
+    failing. A request with a key, the agent's own included, and anyone but an owner or admin get
+    the same 404 as for an agent that doesn't exist. While it is open and in sight, it looks again
+    every 15 seconds.
   - **Addresses an agent makes** (`server/directory/agent-addresses.ts`), such as one for each
     sign-up or task. An owner or admin sets how many it may hold at once, how long each may last
     and on which proved domains (`agent_address_policy`, keyed by membership, set on the Agents

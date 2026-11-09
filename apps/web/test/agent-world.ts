@@ -165,7 +165,8 @@ export function agentWorld(origin: string, prefix: string) {
 			subject = "Hello",
 			body = "Hello there.",
 			dmarc = "pass",
-		}: { from?: string; subject?: string; body?: string; dmarc?: string } = {},
+			messageId = `${crypto.randomUUID()}@${from.slice(from.indexOf("@") + 1)}`,
+		}: { from?: string; subject?: string; body?: string; dmarc?: string; messageId?: string } = {},
 	) {
 		const { mail } = started();
 		const domain = from.slice(from.indexOf("@") + 1);
@@ -175,7 +176,7 @@ export function agentWorld(origin: string, prefix: string) {
 			`To: ${to}`,
 			`Subject: ${subject}`,
 			"Date: Mon, 09 Nov 2026 09:00:00 +0000",
-			`Message-ID: <${crypto.randomUUID()}@${domain}>`,
+			`Message-ID: <${messageId}>`,
 			"",
 			body,
 			"",
