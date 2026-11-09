@@ -71,6 +71,7 @@ const webhookOutput = z.looseObject({
 		.nullable()
 		.describe("The mailboxes it hears of; null for every mailbox you may read."),
 	active: z.boolean(),
+	pausedByAdmin: z.boolean().describe("An admin paused it, and only an admin resumes it."),
 	secretStart: z.string().describe("The secret's first characters, to tell secrets apart."),
 	createdAt: z.string(),
 	updatedAt: z.string(),

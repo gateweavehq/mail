@@ -47,6 +47,8 @@ async function mailboxesOf(workspaceId: string) {
  */
 export async function readWebhooks(workspaceId: string): Promise<WorkspaceWebhooks> {
 	const stub = webhooksStub(workspaceId);
+	// Not those of a key revoked, or an agent deleted, while the object was out of reach.
+	await stub.prune();
 	const [listed, mailboxes] = await Promise.all([stub.list(ADMIN), mailboxesOf(workspaceId)]);
 	const made = [...new Set(listed.webhooks.flatMap((hook) => hook.agentMemberId ?? []))];
 	const { member, user } = schema;
@@ -63,19 +65,7 @@ export async function readWebhooks(workspaceId: string): Promise<WorkspaceWebhoo
 			.all();
 		agents.push(...rows);
 	}
-	// An agent deleted while its object was out of reach: its webhooks go now.
-	const gone = made.filter((id) => !agents.some((agent) => agent.memberId === id));
-	await Promise.all(gone.map((id) => stub.removeAgent(id)));
-	const webhooks = listed.webhooks.filter(
-		(hook) => hook.agentMemberId === null || !gone.includes(hook.agentMemberId),
-	);
-	const kept = new Set(webhooks.map((hook) => hook.id));
-	return {
-		webhooks,
-		deliveries: listed.deliveries.filter((delivery) => kept.has(delivery.webhookId)),
-		mailboxes,
-		agents,
-	};
+	return { ...listed, mailboxes, agents };
 }
 
 /**

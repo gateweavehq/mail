@@ -55,6 +55,8 @@ export interface Webhook {
 	mailboxIds: string[] | null;
 	/** The agent that made it for itself, by membership; null for the workspace's own. */
 	agentMemberId: string | null;
+	/** For an agent's own, that an admin paused it, which only an admin undoes. */
+	pausedByAdmin: boolean;
 	/** A paused webhook queues nothing and drops what it had not delivered. */
 	active: boolean;
 	/** The secret's first characters, to tell secrets apart. */
@@ -143,7 +145,10 @@ export interface WebhookMessage {
 export interface WebhookActor {
 	/** Their membership's id. */
 	id: string;
-	/** Null once they have left the workspace, as `agent` is. */
+	/**
+	 * Null once they have left the workspace, as `agent` is, and always for an agent's own webhook,
+	 * as the agent API names no member.
+	 */
 	name: string | null;
 	agent: boolean | null;
 }

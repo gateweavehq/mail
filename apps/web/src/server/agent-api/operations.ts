@@ -515,7 +515,7 @@ const createWebhook = operation({
 	name: "create_webhook",
 	title: "Create webhook",
 	description:
-		"Makes a webhook of your own, so you hear of mail without waiting for it: Mail posts each event you choose, of mailboxes you may read, to your URL, and tries again for about a day while it fails. Each POST is signed per Standard Webhooks (webhook-id, webhook-timestamp and webhook-signature headers) with the secret this answer gives, once: keep it. A body is { type, timestamp, data }, and data names the workspace, the mailbox and the message, never its text, which read_email gives; what senders wrote comes marked as such. A mailbox you may no longer read goes quiet, and your webhooks go when you are deleted. Test it with test_webhook.",
+		"Makes a webhook of your own, so you hear of mail without waiting for it: Mail posts each event you choose, of mailboxes you may read, to your https URL, and tries again for about a day while it fails. Each POST is signed per Standard Webhooks (webhook-id, webhook-timestamp and webhook-signature headers) with the secret this answer gives, once: keep it. A body is { type, timestamp, data }, and data names the workspace, the mailbox and the message, never its text, which read_email gives; what senders wrote comes marked as such, and members are given by id, not by name. A mailbox you may no longer read goes quiet, and the webhook goes when the key you make it with is revoked. Test it with test_webhook.",
 	input: z.object({
 		url: webhookUrlInput,
 		events: webhookEventsInput,
@@ -536,7 +536,7 @@ const updateWebhook = operation({
 	name: "update_webhook",
 	title: "Update webhook",
 	description:
-		"Changes a webhook of yours: where it goes, what it hears of, or whether it is active. Pausing it drops what it had yet to deliver; taking a mailbox or an event off it drops what waited for those. With newSecret: true it gets a new secret, which this answer gives once, and signs what it sends from then on with it, retries too.",
+		"Changes a webhook of yours: where it goes, what it hears of, or whether it is active. Pausing it drops what it had yet to deliver; taking a mailbox or an event off it drops what waited for those. One an admin paused (pausedByAdmin) only an admin resumes. With newSecret: true it gets a new secret, which this answer gives once, and signs what it sends from then on with it, retries too.",
 	input: z.object({
 		webhookId: webhookIdInput,
 		url: webhookUrlInput.optional(),
@@ -548,21 +548,21 @@ const updateWebhook = operation({
 	output: OUTPUTS.update_webhook,
 	hints: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
 	routes: [{ method: "PATCH", path: "/webhooks/{webhookId}" }],
-	refusals: [],
+	refusals: [409],
 	async run(access, { webhookId, url, events, mailboxes, active, newSecret }) {
 		const changes = url !== undefined || events !== undefined || mailboxes !== undefined;
 		if (!changes && active === undefined && !newSecret) {
 			throw new ApiError("Give what to change: url, events, mailboxes, active or newSecret.", 400);
 		}
 		const mailboxIds = mailboxes === undefined ? undefined : await mailboxIdsOf(access, mailboxes);
-		// The changes first: should one be refused, the secret it has still works.
-		const webhook =
-			changes || active !== undefined
-				? await access.updateWebhook(webhookId, { url, events, mailboxIds, active })
-				: null;
-		if (!newSecret && webhook) return { webhook: webhookOf(webhook) };
-		const renewed = await access.newWebhookSecret(webhookId);
-		return { webhook: webhookOf(renewed.webhook), secret: renewed.secret };
+		const { webhook, secret } = await access.updateWebhook(
+			webhookId,
+			{ url, events, mailboxIds, active },
+			newSecret ?? false,
+		);
+		return secret === null
+			? { webhook: webhookOf(webhook) }
+			: { webhook: webhookOf(webhook), secret };
 	},
 });
 
@@ -658,6 +658,7 @@ function webhookOf(hook: Webhook) {
 		events: hook.events,
 		mailboxIds: hook.mailboxIds,
 		active: hook.active,
+		pausedByAdmin: hook.pausedByAdmin,
 		secretStart: hook.secretStart,
 		createdAt: iso(hook.createdAt),
 		updatedAt: iso(hook.updatedAt),

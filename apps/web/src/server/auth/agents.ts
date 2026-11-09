@@ -556,6 +556,9 @@ export function agentMembers({ db }: { db: Database }) {
 					if (!key) throw new APIError("NOT_FOUND", { message: "That key was revoked" });
 					await requireAdmin(key.organizationId, ctx.context.session.user.id);
 					await db.delete(agentKey).where(eq(agentKey.id, key.id)).run();
+					// The webhooks made with it go with it, as whoever held it may have made them.
+					const { removeKeyWebhooks } = await import("../webhooks");
+					await removeKeyWebhooks(key.organizationId, key.id);
 					return ctx.json({ id: key.id });
 				},
 			),

@@ -316,18 +316,23 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
       deleted workspace's object is cleared with it, and clears itself should it find the workspace
       gone. When D1 doesn't answer its alarm, the alarm sets itself a minute on rather than throw,
       since Cloudflare stops retrying one that keeps throwing.
-    - **An agent's own** (`webhook.agent_member_id`, the object's schema version 2). An agent makes
-      up to three with its key, through the agent API, so that it hears of mail without an admin
-      setting a webhook up for it. They hear of every mailbox it may read, or those it names among
-      them, and only while it may: as each event is queued, the object asks D1 whether the agent
-      is still in the workspace and may read the mailbox (`canReadMailbox`, as its routes do), and
-      asks again before each attempt, so a retry about a mailbox taken from it is dropped. Of mail
-      it writes, they aren't told what it did itself (`by` is the agent: holding mail, or sending
-      what needed no approval), only what people and servers did. Deleting the agent removes them,
-      as does the object or the webhooks page on finding the agent gone. Owners and admins see them
-      on Settings › Webhooks, named by their agent, and may pause, resume, test or delete them, but
-      not change where they go or what they hear, nor make them a new secret, which the agent
-      couldn't learn. An agent sees only its own, and their deliveries.
+    - **An agent's own** (`webhook.agent_member_id` and `agent_key_id`, the object's schema
+      version 2). An agent makes up to three with its key, through the agent API, so that it hears
+      of mail without an admin setting a webhook up for it. They point over https only, and an
+      agent's request never changes the app origin the object keeps, which only an admin's sets
+      once it is known. They hear of every mailbox it may read, or those it names among them, and
+      only while it may: as each event is queued, the object asks D1 whether the key that made the
+      webhook still works and the agent may read the mailbox (`canReadMailbox`, as its routes do),
+      and asks again before attempts, at most ten seconds apart, so a retry about a mailbox taken
+      from it, or after the key went, is dropped. Of mail it writes, they aren't told what it did
+      itself (`by` is the agent: holding mail, or sending what needed no approval), only what
+      people and servers did, and members come by id and whether they are an agent, never by name,
+      as the agent API gives no member's name. Revoking the key, or deleting the agent, removes
+      them, as does the object, or the webhooks page before it lists them, on finding the key
+      gone. Owners and admins see them on Settings › Webhooks, named by their agent, and may pause,
+      resume, test or delete them, but not change where they go or what they hear, nor make them a
+      new secret, which the agent couldn't learn. An admin's pause holds: the agent sees
+      `pausedByAdmin` and can't resume it. An agent sees only its own, and their deliveries.
     - **Its own zone.** The Worker runs with `global_fetch_strictly_public`, so a webhook to a host
       on Mail's own zone goes in through Cloudflare, past that host's security settings and to
       whatever Worker serves it, as anyone's request would, never straight to the origin.

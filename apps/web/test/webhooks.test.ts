@@ -695,6 +695,7 @@ describe("an agent's own webhooks", () => {
 			events: ["message.received", "message.sent"],
 			mailboxIds: [space.signUps.id],
 			active: true,
+			pausedByAdmin: false,
 		});
 		expect(await ownHooks(agent.key)).toEqual({
 			webhooks: [{ ...made.webhook, deliveries: [] }],
@@ -710,6 +711,12 @@ describe("an agent's own webhooks", () => {
 		expect(
 			await asAgent(agent.key, "POST", "/webhooks", { ...fields, url: `${origin}/api/v1/x` }),
 		).toMatchObject({ status: 400, body: { error: expect.stringMatching(/Mail itself/) } });
+		// Plain http only for the workspace's own, where the app itself runs on it.
+		const plain = { ...fields, url: `http://${RECEIVER}/plain` };
+		expect(await asAgent(agent.key, "POST", "/webhooks", plain)).toMatchObject({
+			status: 400,
+			body: { error: "Use an https URL." },
+		});
 		for (const id of [made.webhook.id, theirs.id]) {
 			const asker = id === theirs.id ? agent.key : other.key;
 			expect((await asAgent(asker, "PATCH", `/webhooks/${id}`, { active: false })).status).toBe(
@@ -824,9 +831,17 @@ describe("an agent's own webhooks", () => {
 			"message.sent",
 			"message.delivered",
 		]);
+		// It is told who by id, as the agent API names no member; the workspace's own, by name too.
 		expect(told[1]?.data).toMatchObject({
-			message: { id: held.id, writtenBy: { id: agent.memberId } },
-			by: { name: "Owner", agent: false },
+			message: { id: held.id, writtenBy: { id: agent.memberId, name: null, agent: true } },
+			by: { id: expect.any(String), name: null, agent: false },
+		});
+		const theirs = (await toldAt(all, 6)).find(
+			(body) => body.type === "message.sent" && body.data.message.id === held.id,
+		);
+		expect(theirs?.data).toMatchObject({
+			message: { writtenBy: { id: agent.memberId, name: expect.any(String) } },
+			by: { id: told[1]?.data.by?.id, name: "Owner", agent: false },
 		});
 
 		// Once it may no longer read the mailbox it hears nothing of it, and given it again, it does.
@@ -866,6 +881,22 @@ describe("an agent's own webhooks", () => {
 		expect((await refusal(space.slug, pausing)).status).toBe(404);
 	});
 
+	it("go with the key that made them, retries too", async () => {
+		const space = await workspace();
+		const agent = await world.agentOf(space);
+		const path = newPath();
+		answers.set(path, [500]);
+		const made = await agentHook(agent.key, path);
+		await arrive(space.signUps.address, { subject: "Before the key went" });
+		await deliveredTo(path);
+		// Whoever held the key may have made it, and they no longer may hear of the mail.
+		await world.revokeKey(space, agent.id);
+		await pause(7000);
+		expect(await deliveredTo(path, 2, 0)).toHaveLength(1);
+		const pausing = { action: "update", id: made.webhook.id, patch: { active: false } };
+		expect((await refusal(space.slug, pausing)).status).toBe(404);
+	});
+
 	it("are an admin's to pause, resume, test or delete, but not to redirect", async () => {
 		const space = await workspace();
 		const agent = await world.agentOf(space);
@@ -874,7 +905,15 @@ describe("an agent's own webhooks", () => {
 		const id = made.webhook.id;
 
 		await changed(space.slug, { action: "update", id, patch: { active: false } });
-		expect((await ownHooks(agent.key)).webhooks[0]?.active).toBe(false);
+		expect((await ownHooks(agent.key)).webhooks[0]).toMatchObject({
+			active: false,
+			pausedByAdmin: true,
+		});
+		// An admin's pause holds: the agent can't undo it.
+		expect(await asAgent(agent.key, "PATCH", `/webhooks/${id}`, { active: true })).toMatchObject({
+			status: 409,
+			body: { error: "An admin paused this webhook, so only an admin can resume it." },
+		});
 		const own =
 			"Only the agent that made this webhook can change where it goes and what it hears. You can pause, test or delete it.";
 		for (const patch of [
@@ -892,6 +931,16 @@ describe("an agent's own webhooks", () => {
 			error: "Only the agent that made this webhook can give it a new secret.",
 		});
 		await changed(space.slug, { action: "update", id, patch: { active: true } });
+		// Resumed by an admin, it is the agent's again to pause and resume.
+		for (const active of [false, true]) {
+			const own = await asAgent<{ webhook: AgentHook }>(agent.key, "PATCH", `/webhooks/${id}`, {
+				active,
+			});
+			expect(own).toMatchObject({
+				status: 200,
+				body: { webhook: { active, pausedByAdmin: false } },
+			});
+		}
 		await changed(space.slug, { action: "test", id });
 		const [test] = await deliveredTo(path);
 		if (!test) throw new Error("expected a test");

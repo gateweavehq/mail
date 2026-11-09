@@ -63,10 +63,16 @@ export function accessFor(slug: string, key: string): MailAccess {
 	};
 	const mailboxPath = (mailboxId: string, rest: string) =>
 		`/api/mail/${encodeURIComponent(slug)}/${encodeURIComponent(mailboxId)}/${rest}`;
-	/** The workspace's webhooks object, asked as this agent, for its own webhooks only. */
+	/** The workspace's webhooks object, asked as this agent with this key, for its own only. */
 	const hooks = async () => {
-		const { workspaceId, memberId } = await caller();
-		const asker: Asker = { agent: memberId };
+		const [{ workspaceId, memberId }, agent] = await Promise.all([
+			caller(),
+			findAgentByKey(db, key),
+		]);
+		if (!agent) {
+			throw new ApiError("That agent key doesn't work: it was revoked, or its agent deleted.", 401);
+		}
+		const asker: Asker = { agent: memberId, key: agent.keyId };
 		return {
 			stub: webhooksStub(workspaceId),
 			asker,
@@ -138,17 +144,11 @@ export function accessFor(slug: string, key: string): MailAccess {
 			if (!made.ok) throw refusal(made);
 			return { webhook: made.webhook, secret: made.secret };
 		},
-		async updateWebhook(id, patch) {
+		async updateWebhook(id, patch, renew) {
 			const { stub, asker, link } = await hooks();
-			const changed = await stub.update(link, id, patch, asker);
+			const changed = await stub.update(link, id, patch, asker, renew);
 			if (!changed.ok) throw refusal(changed);
-			return changed.webhook;
-		},
-		async newWebhookSecret(id) {
-			const { stub, asker } = await hooks();
-			const rotated = await stub.rotate(id, asker);
-			if (!rotated.ok) throw refusal(rotated);
-			return { webhook: rotated.webhook, secret: rotated.secret };
+			return { webhook: changed.webhook, secret: changed.secret };
 		},
 		async deleteWebhook(id) {
 			const { stub, asker } = await hooks();

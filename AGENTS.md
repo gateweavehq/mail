@@ -192,8 +192,9 @@ These are load-bearing. Breaking one breaks users' data or security, usually sil
     or admin asks, the agent API, with an agent's key and for that agent's own webhooks, and the
     workspace's own mailboxes reach it. An agent's own webhook hears only of mailboxes the agent
     may read, as `canReadMailbox` decides when each event is queued and again when it is sent,
-    never of what the agent did itself, and goes when the agent does; admins may pause, test or
-    delete it, never point it elsewhere. A body says who sent a message and what it is about,
+    never of what the agent did itself, names members by id only, as the agent API does, and goes
+    when the key that made it does; admins may pause (which holds), test or delete it, never point
+    it elsewhere. A body says who sent a message and what it is about,
     marked as words anyone may have written, never its text: that stays behind an agent's key and
     its access. Secrets are shown once and never logged.
 

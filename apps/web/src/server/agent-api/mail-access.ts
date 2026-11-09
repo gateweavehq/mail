@@ -77,9 +77,12 @@ export interface MailAccess {
 	webhooks(): Promise<{ webhooks: Webhook[]; deliveries: WebhookDelivery[] }>;
 	/** Makes a webhook of its own, with a secret only this answer gives. */
 	createWebhook(fields: AgentWebhookFields): Promise<{ webhook: Webhook; secret: string }>;
-	updateWebhook(id: string, patch: AgentWebhookPatch): Promise<Webhook>;
-	/** Gives one of its webhooks a new secret, which only this answer gives. */
-	newWebhookSecret(id: string): Promise<{ webhook: Webhook; secret: string }>;
+	/** Changes one of its webhooks, and with `renew` gives it a new secret, which only this answer gives. */
+	updateWebhook(
+		id: string,
+		patch: AgentWebhookPatch,
+		renew: boolean,
+	): Promise<{ webhook: Webhook; secret: string | null }>;
 	deleteWebhook(id: string): Promise<void>;
 	/** Queues a `webhook.test` delivery to one of its webhooks. */
 	testWebhook(id: string): Promise<void>;
