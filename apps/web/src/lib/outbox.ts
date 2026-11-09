@@ -101,6 +101,33 @@ export function fileNameRefusal(name: string): string | null {
 		: null;
 }
 
+/** Why these files can't be added to those a message has, or null when they may. */
+export function addedFilesRefusal(
+	has: { name: string; size: number }[],
+	added: { name: string; size: number }[],
+): string | null {
+	for (const file of added) {
+		const refusal = fileNameRefusal(file.name);
+		if (refusal) return refusal;
+		if (file.size === 0) return `${file.name} is empty.`;
+	}
+	const all = [...has, ...added];
+	if (all.length > MAX_ATTACHMENTS) {
+		return `One message can carry at most ${MAX_ATTACHMENTS} files.`;
+	}
+	if (all.reduce((sum, file) => sum + file.size, 0) > MAX_ATTACHMENT_BYTES) {
+		return `A message's files can hold ${MAX_ATTACHMENT_BYTES / (1024 * 1024)} MB together at most.`;
+	}
+	return null;
+}
+
+/**
+ * The type a file goes with, from the one its browser gave: none, for the server to tell from its
+ * name, or bytes for a message or a multipart, which mail can't carry in Base64 as their own.
+ */
+export const sendableType = (type: string) =>
+	/^(multipart|message)\//i.test(type) ? "application/octet-stream" : type || null;
+
 /**
  * An address someone types: a local part of RFC 5322's dot-atoms, so no dot at its ends or two in a
  * row, and a domain with a dot. Each label of the domain may hold letters, digits and hyphens, as

@@ -5,8 +5,8 @@ import {
 	insertLink,
 	LINK_PLACEHOLDER,
 	type TextEdit,
+	toggleEmphasis,
 	toggleLines,
-	toggleMark,
 } from "./formatting";
 
 /** The text after an edit, with the selection shown as [ and ]. */
@@ -36,8 +36,8 @@ describe("the HTML that goes beside a message's text", () => {
 	});
 
 	it("has bold, italic, links, lists and quotes", () => {
-		expect(htmlOfText("**bold** and _italic_, not snake_case_words")).toBe(
-			"<p><strong>bold</strong> and <em>italic</em>, not snake_case_words</p>\n",
+		expect(htmlOfText("**bold** and *italic*, or _italic_, not snake_case_words")).toBe(
+			"<p><strong>bold</strong> and <em>italic</em>, or <em>italic</em>, not snake_case_words</p>\n",
 		);
 		expect(htmlOfText("[the page](https://example.org/a?b=1&c=2)")).toBe(
 			'<p><a href="https://example.org/a?b=1&#38;c=2">the page</a></p>\n',
@@ -50,15 +50,15 @@ describe("the HTML that goes beside a message's text", () => {
 		);
 	});
 
-	it("leaves out what a message mustn't carry, and keeps its words", () => {
+	it("leaves out what a message mustn't carry, and keeps it as it was typed", () => {
 		const { html } = formatted(
 			'<script>alert(1)</script> <b onclick="x">b</b> [run](javascript:alert(1)) [mail](mailto:a@example.org) ![a picture](https://example.org/p.png)',
 		);
-		expect(html).not.toMatch(/<script|<b |javascript:|<img/);
+		expect(html).not.toMatch(/<script|<b |href="javascript|<img/);
 		expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
-		expect(html).toContain(" run ");
+		expect(html).toContain("[run](javascript:alert(1))");
 		expect(html).toContain('<a href="mailto:a@example.org">mail</a>');
-		expect(html).toContain("a picture");
+		expect(html).toContain("![a picture](https://example.org/p.png)");
 	});
 
 	it("takes a bare host as a web address", () => {
@@ -66,6 +66,31 @@ describe("the HTML that goes beside a message's text", () => {
 			'<p><a href="https://example.org/about">us</a></p>\n',
 		);
 		expect(formatted("[us](not a link)").html).not.toContain("<a");
+	});
+
+	it("keeps a link whose words are another address as it was typed", () => {
+		expect(formatted("[https://bank.example](https://evil.example/login)").html).toBe(
+			"<p>[https://bank.example](https://evil.example/login)</p>\n",
+		);
+		expect(formatted("[bank.example](https://BANK.example/login)").html).toBe(
+			'<p><a href="https://BANK.example/login">bank.example</a></p>\n',
+		);
+	});
+
+	it("keeps a task list's boxes as they were typed", () => {
+		expect(htmlOfText("- [ ] milk\n- [x] bread")).toBe(
+			"<ul>\n<li>[ ] milk</li>\n<li>[x] bread</li>\n</ul>\n",
+		);
+	});
+
+	it("reads nothing in a quote as a mark, so a reply's quote goes as it came", () => {
+		expect(
+			htmlOfText(
+				"Thanks!\n> **Pay** at [https://bank.example](https://evil.example)\n> > Earlier\n> Bye",
+			),
+		).toBe(
+			"<p>Thanks!</p>\n<blockquote>\n<p>**Pay** at [https://bank.example](https://evil.example)</p>\n<blockquote>\n<p>Earlier</p>\n</blockquote>\n<p>Bye</p>\n</blockquote>\n",
+		);
 	});
 
 	it("keeps lines that look like headings, rules or code as they were typed", () => {
@@ -76,6 +101,44 @@ describe("the HTML that goes beside a message's text", () => {
 			"<blockquote>\n<p># not a heading<br>---</p>\n</blockquote>\n",
 		);
 		expect(formatted("`code` and ~~struck~~").html).toBe("<p>`code` and ~~struck~~</p>\n");
+		expect(formatted("**Plan**\n<div>a</div>\n| a | b |\n|---|---|").html).toBe(
+			"<p><strong>Plan</strong><br>&lt;div&gt;a&lt;/div&gt;<br>| a | b |<br>|---|---|</p>\n",
+		);
+	});
+
+	it("ends a list at a line that doesn't start with a space", () => {
+		expect(htmlOfText("- one\n- two\nThanks,\nAda")).toBe(
+			"<ul>\n<li>one</li>\n<li>two</li>\n</ul>\n<p>Thanks,<br>Ada</p>\n",
+		);
+		expect(htmlOfText("1. one\n   more\n2. two")).toBe(
+			"<ol>\n<li>one<br>more</li>\n<li>two</li>\n</ol>\n",
+		);
+	});
+
+	it("starts a numbered list only from 1, so that a date stays a date", () => {
+		expect(htmlOfText("9. November suits us")).toBeNull();
+		expect(formatted("Dates:\n9. November\n10. December").html).toBe(
+			"<p>Dates:<br>9. November<br>10. December</p>\n",
+		);
+		expect(htmlOfText("1. first\n2. second")).toBe(
+			"<ol>\n<li>first</li>\n<li>second</li>\n</ol>\n",
+		);
+	});
+
+	it("finishes soon and whole on text no one would write", () => {
+		for (const text of [
+			"* ".repeat(9000),
+			">".repeat(19_000),
+			"> ".repeat(5000),
+			"*a **a ".repeat(2800),
+			"a_".repeat(9900),
+			"*".repeat(30_000),
+		]) {
+			const began = performance.now();
+			const { html } = formatted(text);
+			expect(performance.now() - began).toBeLessThan(2000);
+			expect(html.length).toBeGreaterThan(0);
+		}
 	});
 
 	it("reads Windows line ends as line ends", () => {
@@ -85,28 +148,42 @@ describe("the HTML that goes beside a message's text", () => {
 
 describe("bold and italic from the toolbar", () => {
 	it("wraps the selection and keeps it selected", () => {
-		expect(applied(...selectionAnd("Say [hello] now", "**"))).toBe("Say **[hello]** now");
-		expect(applied(...selectionAnd("Say [hello] now", "_"))).toBe("Say _[hello]_ now");
+		expect(applied(...selectionAnd("Say [hello] now", 2))).toBe("Say **[hello]** now");
+		expect(applied(...selectionAnd("Say [hello] now", 1))).toBe("Say *[hello]* now");
+	});
+
+	it("makes part of a word italic", () => {
+		expect(applied(...selectionAnd("un[believ]able", 1))).toBe("un*[believ]*able");
+		expect(htmlOfText("un*believ*able")).toBe("<p>un<em>believ</em>able</p>\n");
 	});
 
 	it("leaves the spaces at a selection's ends outside the marks", () => {
-		expect(applied(...selectionAnd("Say[ hello ]now", "**"))).toBe("Say **[hello]** now");
+		expect(applied(...selectionAnd("Say[ hello ]now", 2))).toBe("Say **[hello]** now");
 	});
 
-	it("puts the caret between the marks when nothing is selected", () => {
-		expect(applied(...selectionAnd("Say [] now", "**"))).toBe("Say **[]** now");
+	it("puts the caret between the marks when nothing is selected, and takes them off again", () => {
+		expect(applied(...selectionAnd("Say [] now", 2))).toBe("Say **[]** now");
+		expect(applied(...selectionAnd("Say **[]** now", 2))).toBe("Say [] now");
 	});
 
 	it("takes the marks off again, inside or around the selection", () => {
-		expect(applied(...selectionAnd("Say **[hello]** now", "**"))).toBe("Say [hello] now");
-		expect(applied(...selectionAnd("Say [**hello**] now", "**"))).toBe("Say [hello] now");
+		expect(applied(...selectionAnd("Say **[hello]** now", 2))).toBe("Say [hello] now");
+		expect(applied(...selectionAnd("Say [**hello**] now", 2))).toBe("Say [hello] now");
+		expect(applied(...selectionAnd("Say *[hello]* now", 1))).toBe("Say [hello] now");
+	});
+
+	it("tells bold from italic, and both from either", () => {
+		expect(applied(...selectionAnd("Say **[hello]** now", 1))).toBe("Say ***[hello]*** now");
+		expect(applied(...selectionAnd("Say ***[hello]*** now", 2))).toBe("Say *[hello]* now");
+		expect(applied(...selectionAnd("Say ***[hello]*** now", 1))).toBe("Say **[hello]** now");
+		expect(applied(...selectionAnd("Say *[hello]* now", 2))).toBe("Say ***[hello]*** now");
 	});
 });
 
-/** The arguments for toggleMark from text with the selection marked, and the value for applied. */
-function selectionAnd(marked: string, mark: string): [string, TextEdit] {
+/** The arguments for toggleEmphasis from text with the selection marked, and the value for applied. */
+function selectionAnd(marked: string, stars: 1 | 2): [string, TextEdit] {
 	const [value, start, end] = selection(marked);
-	return [value, toggleMark(value, start, end, mark)];
+	return [value, toggleEmphasis(value, start, end, stars)];
 }
 
 describe("a link from the toolbar", () => {
@@ -121,6 +198,13 @@ describe("a link from the toolbar", () => {
 		const [value, start, end] = selection("See [https://example.org] today");
 		expect(applied(value, insertLink(value, start, end))).toBe(
 			"See [[https://example.org]](https://example.org) today",
+		);
+	});
+
+	it("leaves the spaces at a selection's ends outside the link", () => {
+		const [value, start, end] = selection("See[ our page ]today");
+		expect(applied(value, insertLink(value, start, end))).toBe(
+			`See [our page]([${LINK_PLACEHOLDER}]) today`,
 		);
 	});
 
@@ -160,7 +244,20 @@ describe("lists and quotes from the toolbar", () => {
 		expect([edit.from, edit.to]).toEqual([0, 1]);
 	});
 
-	it("takes the caret's line when nothing is selected", () => {
+	it("takes the caret's line when nothing is selected, and keeps the caret in its place", () => {
 		expect(toggleLines("a\nb\nc", 2, 2, "quote")).toMatchObject({ from: 2, to: 3, insert: "> b" });
+		expect(applied("hello", toggleLines("hello", 3, 3, "bullet"))).toBe("- hel[]lo");
+		expect(applied("- hello", toggleLines("- hello", 5, 5, "bullet"))).toBe("hel[]lo");
+		expect(applied("- hello", toggleLines("- hello", 1, 1, "bullet"))).toBe("[]hello");
+	});
+
+	it("takes the first line for a caret at the start, though the text starts with a blank line", () => {
+		expect(applied("\nb", toggleLines("\nb", 0, 0, "bullet"))).toBe("- []\nb");
+	});
+
+	it("gives a blank line its mark, to write after", () => {
+		expect(applied("a\n\nb", toggleLines("a\n\nb", 2, 2, "bullet"))).toBe("a\n- []\nb");
+		expect(applied("a\n\nb", toggleLines("a\n\nb", 2, 2, "number"))).toBe("a\n1. []\nb");
+		expect(applied("", toggleLines("", 0, 0, "quote"))).toBe("> []");
 	});
 });

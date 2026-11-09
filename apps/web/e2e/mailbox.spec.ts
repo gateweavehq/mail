@@ -276,15 +276,30 @@ test("a message's formatting and files go with it, and its copy shows them", asy
 	await text.press("Enter");
 	await text.pressSequentially("one");
 	await dialog.getByRole("button", { name: "Bulleted list" }).click();
-	await expect(text).toHaveValue("Read **this** first and _soon_\n- one");
+	await expect(text).toHaveValue("Read **this** first and *soon*\n- one");
+	// The caret stays where it was in its line, and a new line takes the mark before its words.
+	await text.pressSequentially("!");
+	await text.press("Enter");
+	await dialog.getByRole("button", { name: "Bulleted list" }).click();
+	await text.pressSequentially("two");
+	await text.press("Enter");
+	await text.pressSequentially(`[home](${baseURL}/)`);
+	await expect(text).toHaveValue(
+		`Read **this** first and *soon*\n- one!\n- two\n[home](${baseURL}/)`,
+	);
 
 	// The preview shows it formatted, and nothing changes it there.
 	await dialog.getByRole("button", { name: "Preview" }).click();
 	const preview = dialog.getByRole("region", { name: "Preview" });
 	await expect(preview.locator("strong")).toHaveText("this");
 	await expect(preview.locator("em")).toHaveText("soon");
-	await expect(preview.getByRole("listitem")).toHaveText(["one"]);
+	await expect(preview.getByRole("listitem")).toHaveText(["one!", "two"]);
 	await expect(dialog.getByRole("button", { name: "Bold" })).toBeDisabled();
+	// A link there opens in a tab of its own, and what is being written stays.
+	const opened = page.context().waitForEvent("page");
+	await preview.getByRole("link", { name: "home" }).click();
+	await (await opened).close();
+	await expect(preview).toBeVisible();
 	await dialog.getByRole("button", { name: "Preview" }).click();
 	await expect(text).toBeVisible();
 
@@ -307,6 +322,7 @@ test("a message's formatting and files go with it, and its copy shows them", asy
 	await expect(list.getByRole("listitem")).toHaveCount(2);
 	await list.getByRole("button", { name: "Remove notes.txt" }).click();
 	await expect(list.getByRole("listitem")).toHaveText([/plan\.pdf/]);
+	await expect(dialog.getByRole("button", { name: "Attach files" })).toBeFocused();
 
 	// Its copy shows the HTML that went, the file, and the text as it was written.
 	await dialog.getByRole("button", { name: "Send" }).click();
@@ -317,11 +333,11 @@ test("a message's formatting and files go with it, and its copy shows them", asy
 	await expect(copy.getByText("Sent", { exact: true })).toBeVisible();
 	const message = copy.frameLocator('iframe[title="The message, as its sender formatted it"]');
 	await expect(message.locator("strong")).toHaveText("this");
-	await expect(message.locator("li")).toHaveText(["one"]);
+	await expect(message.locator("li")).toHaveText(["one!", "two"]);
 	const attachments = copy.getByRole("region", { name: "Attachments" });
 	await expect(attachments.getByRole("listitem")).toHaveText([/plan\.pdf/]);
 	await copy.getByRole("button", { name: "Show as text" }).click();
-	await expect(copy.getByText("Read **this** first and _soon_")).toBeVisible();
+	await expect(copy.getByText("Read **this** first and *soon*")).toBeVisible();
 });
 
 test("a long thread pages from its newest messages", async ({ page, request, baseURL }) => {

@@ -414,10 +414,16 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
         bold, italic, links, lists and quotes are its marks (`formatting.ts`), the ones mail used
         before Markdown took them up. When the text uses any, HTML made from it goes beside it, by
         `marked` with only those rules on: no HTML, headings, code, tables or images in the text are
-        read, and links go to the web and mail only. Lines are kept as typed. The toolbar types the
-        marks into the text, so each change can be undone, and the preview shows the HTML that
-        will go. A reply's quote is a quote in the HTML. Files are attached, dropped or pasted,
-        and checked against the limits below as they are added.
+        read, and links go to the web and mail only. Lines are kept as typed: one that only looks
+        like a heading or a rule, "9. November", a line after a list, and a link it can't make or
+        whose words name another address all stay as they were written. A quote is someone
+        else's words, as a reply's is, so nothing in it is read as a mark, or its links could go
+        under the workspace's name to places their words don't say. Text that couldn't be read
+        quickly (past 20,000 characters, or nested past what the parser follows) goes as its
+        lines. The toolbar types the marks into the text, so each change can be undone, and the
+        preview shows the HTML that will go, its links opening in a tab of their own. Files are
+        attached, dropped or pasted (a file only, as a copied document holds a picture of itself
+        beside its text), and checked against the limits below as they are added.
       - **What a person approves is what goes.** The HTML is kept to what the message's page shows
         of mail (`sendableHtml` in `html.ts`, the rules `cleanHtml` uses): no scripts, forms, SVG,
         media or frames, and nothing of what they hold. Text is made from the HTML when none is

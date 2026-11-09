@@ -14,6 +14,7 @@ import {
 	type DragEvent,
 	type FormEvent,
 	type KeyboardEvent,
+	type MouseEvent,
 	useEffect,
 	useId,
 	useRef,
@@ -30,12 +31,12 @@ import {
 	insertLink,
 	type LineKind,
 	type TextEdit,
+	toggleEmphasis,
 	toggleLines,
-	toggleMark,
 } from "#/lib/formatting";
 import {
+	addedFilesRefusal,
 	changeOutbox,
-	fileNameRefusal,
 	isAddress,
 	MAX_ATTACHMENT_BYTES,
 	MAX_ATTACHMENTS,
@@ -43,6 +44,7 @@ import {
 	MAX_SUBJECT,
 	MAX_TEXT,
 	type Sent,
+	sendableType,
 	typedAddresses,
 } from "#/lib/outbox";
 import { formatSize } from "./message-view";
@@ -90,6 +92,7 @@ export function Composer({
 	const toField = useRef<HTMLInputElement>(null);
 	const textField = useRef<HTMLTextAreaElement>(null);
 	const fileField = useRef<HTMLInputElement>(null);
+	const attachButton = useRef<HTMLButtonElement>(null);
 	const closeButton = useRef<HTMLButtonElement>(null);
 	const [from, setFrom] = useState(draft.from);
 	const [to, setTo] = useState(draft.to.join(", "));
@@ -134,23 +137,27 @@ export function Composer({
 		}
 		busy(true);
 		setError(null);
-		const attachments = await readFiles(files);
-		if (typeof attachments === "string") {
+		let result: Awaited<ReturnType<typeof changeOutbox<Sent>>>;
+		try {
+			const attachments = await readFiles(files);
+			if (typeof attachments === "string") {
+				setError(attachments);
+				return;
+			}
+			result = await changeOutbox<Sent>(workspace, mailbox, {
+				action: "send",
+				...message,
+				subject: subject.trim(),
+				html: htmlOfText(text),
+				attachments,
+				replyTo,
+				from,
+				draft: draftId,
+			});
+		} finally {
+			// Whatever happens, it can be written on or closed again.
 			busy(false);
-			setError(attachments);
-			return;
 		}
-		const result = await changeOutbox<Sent>(workspace, mailbox, {
-			action: "send",
-			...message,
-			subject: subject.trim(),
-			html: htmlOfText(text),
-			attachments,
-			replyTo,
-			from,
-			draft: draftId,
-		});
-		busy(false);
 		if (result.ok) await onSent(result);
 		else if (result.lost) {
 			setLocked(true);
@@ -186,8 +193,8 @@ export function Composer({
 		field.setSelectionRange(made.selectFrom, made.selectTo);
 	}
 
-	const bold = () => edit((v, s, e) => toggleMark(v, s, e, "**"));
-	const italic = () => edit((v, s, e) => toggleMark(v, s, e, "_"));
+	const bold = () => edit((v, s, e) => toggleEmphasis(v, s, e, 2));
+	const italic = () => edit((v, s, e) => toggleEmphasis(v, s, e, 1));
 	const link = () => edit(insertLink);
 	const tools: { label: string; keys?: string; icon: LucideIcon; run: () => void }[] = [
 		{ label: "Bold", keys: "Ctrl+B", icon: Bold, run: bold },
@@ -220,25 +227,9 @@ export function Composer({
 	/** Adds files, unless one can't go; then none of them are added, and it says why. */
 	function addFiles(added: File[]) {
 		if (locked || pending || added.length === 0) return;
-		for (const file of added) {
-			const refusal =
-				fileNameRefusal(file.name) ?? (file.size === 0 ? `${file.name} is empty.` : null);
-			if (refusal) {
-				setError(refusal);
-				return;
-			}
-		}
-		const all = [...files, ...added];
-		if (all.length > MAX_ATTACHMENTS) {
-			setError(`One message can carry at most ${MAX_ATTACHMENTS} files.`);
-			return;
-		}
-		if (all.reduce((sum, file) => sum + file.size, 0) > MAX_ATTACHMENT_BYTES) {
-			setError(`A message's files can hold ${formatSize(MAX_ATTACHMENT_BYTES)} together at most.`);
-			return;
-		}
-		setError(null);
-		setFiles(all);
+		const refusal = addedFilesRefusal(files, added);
+		setError(refusal);
+		if (!refusal) setFiles([...files, ...added]);
 	}
 
 	function onDragOver(event: DragEvent) {
@@ -251,11 +242,19 @@ export function Composer({
 		addFiles([...event.dataTransfer.files]);
 	}
 
-	// A file pasted into the text, such as a picture, comes as a file of the message.
+	// A file pasted into the text, such as a picture, comes as a file of the message. What a
+	// document or a sheet copies holds a picture of itself beside its text, and the text is meant.
 	function onPaste(event: ClipboardEvent) {
-		if (event.clipboardData.files.length === 0) return;
+		const { files: pasted, types } = event.clipboardData;
+		if (pasted.length === 0 || types.includes("text/plain")) return;
 		event.preventDefault();
-		addFiles([...event.clipboardData.files]);
+		addFiles([...pasted]);
+	}
+
+	function removeFile(at: number) {
+		setFiles(files.filter((_, index) => index !== at));
+		// Its button goes with it, so the focus goes to where files are added.
+		attachButton.current?.focus();
 	}
 
 	if (senders.length === 0) {
@@ -402,7 +401,7 @@ export function Composer({
 				{preview && <Preview text={text} />}
 			</div>
 			<p id={`${id}-formatting`} className="text-xs text-muted-foreground">
-				Marks such as **bold**, _italic_ or &gt; for a quote format the text. With any, it goes as
+				Marks such as **bold**, *italic* or &gt; for a quote format the text. With any, it goes as
 				HTML too, beside the text as written.
 			</p>
 			<div className="space-y-2">
@@ -441,7 +440,7 @@ export function Composer({
 									className="size-6"
 									aria-label={`Remove ${file.name}`}
 									disabled={fixed}
-									onClick={() => setFiles(files.filter((_, at) => at !== index))}
+									onClick={() => removeFile(index)}
 								>
 									<X aria-hidden />
 								</Button>
@@ -451,6 +450,7 @@ export function Composer({
 				)}
 				<div className="flex flex-wrap items-center gap-2">
 					<Button
+						ref={attachButton}
 						type="button"
 						size="sm"
 						variant="outline"
@@ -489,11 +489,21 @@ export function Composer({
  * How the text will look formatted, on white as a message shows. The HTML is the formatting's own,
  * which reads no HTML from the text and links only to the web and mail, so it can be shown here.
  */
+// A link in the preview opens in a tab of its own, so a click doesn't leave what is being written.
+function openLink(event: MouseEvent<HTMLElement>) {
+	const link = event.target instanceof Element ? event.target.closest("a[href]") : null;
+	if (!link) return;
+	event.preventDefault();
+	window.open(link.getAttribute("href") ?? "", "_blank", "noopener,noreferrer");
+}
+
 function Preview({ text }: { text: string }) {
 	const { html } = formatted(text);
 	return (
+		// biome-ignore lint/a11y/useKeyWithClickEvents: a link's own Enter comes as a click.
 		<section
 			aria-label="Preview"
+			onClick={openLink}
 			className="max-h-[60vh] min-h-64 overflow-y-auto rounded-b-md bg-white p-4 text-sm leading-normal break-words text-black [color-scheme:light] [&_a]:text-blue-700 [&_a]:underline [&_blockquote]:my-2 [&_blockquote]:border-l-2 [&_blockquote]:border-neutral-300 [&_blockquote]:pl-3 [&_blockquote]:text-neutral-600 [&_li]:my-0.5 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-6 [&_p]:my-2 [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-6"
 			// biome-ignore lint/security/noDangerouslySetInnerHtml: the formatting escapes all text and makes no tag but its own.
 			dangerouslySetInnerHTML={{ __html: html || "<p>(nothing written)</p>" }}
@@ -510,7 +520,7 @@ async function readFiles(
 		try {
 			read.push({
 				filename: file.name,
-				contentType: file.type || null,
+				contentType: sendableType(file.type),
 				content: await base64Of(file),
 			});
 		} catch {
