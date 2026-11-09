@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "886a10f7-13e5-4dd0-9db3-57d1d9e1a06a",
+  "id": "7a8dfb3d-82a6-4715-9113-fdebefabafdc",
   "prevId": "bb1c44e8-3c83-417d-8f63-b92ffc7bbb41",
   "tables": {
     "account": {
@@ -1557,6 +1557,53 @@
             "provider"
           ],
           "name": "provider_key_organization_id_provider_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "removed_address": {
+      "name": "removed_address",
+      "columns": {
+        "domain_id": {
+          "name": "domain_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "local_part": {
+          "name": "local_part",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "removed_at": {
+          "name": "removed_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "removed_address_removed_at_idx": {
+          "name": "removed_address_removed_at_idx",
+          "columns": [
+            "removed_at"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "removed_address_domain_id_local_part_pk": {
+          "columns": [
+            "domain_id",
+            "local_part"
+          ],
+          "name": "removed_address_domain_id_local_part_pk"
         }
       },
       "uniqueConstraints": {},

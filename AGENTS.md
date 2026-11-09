@@ -18,8 +18,8 @@ doesn't exist and stores mail for one that does, in a Durable Object per mailbox
 read the mailboxes they are given, with formatted mail in a sandboxed frame, and reply to their
 mail and write new mail from them in plain text, through Cloudflare Email Service. Agents read theirs
 with a key, through the API, and send from the mailboxes that let them: what goes to anyone their
-policy doesn't name waits for a person to approve it. Addresses an agent can make for itself,
-aliases and transactional sending are planned, not built.
+policy doesn't name waits for a person to approve it, and they can make addresses for themselves
+within limits an owner or admin sets. Aliases and transactional sending are planned, not built.
 
 Read [docs/architecture.md](docs/architecture.md) before changing auth or the `email()` handler.
 
@@ -118,8 +118,9 @@ These are load-bearing. Breaking one breaks users' data or security, usually sil
     policy (`agent_policy`): mail to anyone the policy doesn't name is `held` until a person
     approves it. Only people approve, reject, send again or discard. A key may also make
     addresses for its agent, in a mailbox it may send from, within `agent_address_policy`. The
-    limits are counted in the statement that adds the row, every such address ends, and it may
-    not take a name in `RESERVED_LOCAL_PARTS`. It ends only addresses it made. Whatever else
+    policy, the grant and the limits are checked in the statement that adds the row, every such
+    address ends, and it may not take a name in `RESERVED_LOCAL_PARTS` or one in
+    `removed_address`. It ends only addresses it made. Whatever else
     changes something takes `currentMember`, a person signed in. Keep only a key's hash, and never
     log a key.
 14. **A message that may have gone is never sent again by itself.** Email Service has no

@@ -66,7 +66,7 @@ test("an owner proves a domain, makes a mailbox and gives it an address that can
 
 	await box.getByRole("button", { name: `Remove help@${domain}` }).click();
 	const confirm = page.getByRole("dialog", { name: `Remove help@${domain}?` });
-	await expect(confirm).toContainText("can be used again straight away");
+	await expect(confirm).toContainText("People can use the name again straight away");
 	await confirm.getByRole("button", { name: "Remove address" }).click();
 	await expect(box.getByText(`help@${domain}`)).toBeHidden();
 

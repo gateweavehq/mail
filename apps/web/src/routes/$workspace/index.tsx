@@ -278,7 +278,8 @@ function MailboxCard({
 					}}
 					onClose={() => setRemovingAddress(null)}
 				>
-					Mail to it is refused from then on, and the name can be used again straight away.
+					Mail to it is refused from then on. People can use the name again straight away, agents
+					only after 30 days, as whatever wrote to it may still.
 				</ConfirmDialog>
 			)}
 		</li>

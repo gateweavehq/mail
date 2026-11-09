@@ -80,6 +80,39 @@ describe("the daily cron", () => {
 		expect(await has("organization", "prunable")).toBe(true);
 	});
 
+	it("lets go of an ended address's name, and of a removed one's, after 30 days", async () => {
+		const day = 24 * HOUR;
+		await mail.db.batch([
+			mail.db
+				.prepare(
+					"INSERT INTO mail_domain (id, organization_id, name, verification_token, verified_at, created_at) VALUES ('prune-domain', 'prunable', 'prune.example', 'token', ?1, ?1)",
+				)
+				.bind(Date.now()),
+			mail.db
+				.prepare(
+					"INSERT INTO mailbox (id, organization_id, name, created_at) VALUES ('prune-box', 'prunable', 'Box', ?)",
+				)
+				.bind(Date.now()),
+			mail.db
+				.prepare(
+					"INSERT INTO mail_address (id, domain_id, local_part, mailbox_id, expires_at, created_at) VALUES ('long-ended', 'prune-domain', 'old', 'prune-box', ?1, ?1)",
+				)
+				.bind(Date.now() - 31 * day),
+			mail.db
+				.prepare(
+					"INSERT INTO removed_address (domain_id, local_part, removed_at) VALUES ('prune-domain', 'long-ago', ?1), ('prune-domain', 'lately', ?2)",
+				)
+				.bind(Date.now() - 31 * day, Date.now() - 29 * day),
+		]);
+		await mail.runScheduled();
+		expect(await has("mail_address", "long-ended")).toBe(false);
+		const names = await mail.db
+			.prepare("SELECT local_part FROM removed_address WHERE domain_id = 'prune-domain'")
+			.all<{ local_part: string }>();
+		// The ended address's own delete keeps nothing back: its name was kept long enough already.
+		expect(names.results.map((row: { local_part: string }) => row.local_part)).toEqual(["lately"]);
+	});
+
 	it("gets through more than one batch", async () => {
 		// One statement, not one for each row: preparing 2,500 through the test's connection takes long
 		// enough when other suites are busy that the connection is lost before they can be sent.

@@ -275,7 +275,11 @@ describe("an agent's own addresses", () => {
 		expect(short.status).toBe(200);
 		expect(short.body.address?.expiresAt).toBeLessThanOrEqual(Date.now() + DAY_MS);
 		// An agent's address always ends: none lasts for good, whatever it asks.
-		expect((await make(space, agent, { days: null })).body.address?.expiresAt).toBeTypeOf("number");
+		const longest = (await make(space, agent, { days: null })).body.address;
+		if (!longest) throw new Error("expected an address");
+		const stored = (await listed(space, longest.address))?.expiresAt;
+		expect(stored).toBeGreaterThan(Date.now() + DAY_MS);
+		expect(stored).toBeLessThanOrEqual(Date.now() + 2 * DAY_MS);
 		expect((await make(space, agent, { days: 0 })).status).toBe(400);
 	});
 
@@ -462,6 +466,116 @@ describe("an agent's own addresses", () => {
 		expect(refused.body.error).toContain("5000 addresses");
 	});
 
+	it("leave half of the workspace's cap to people, counting those that ended", async () => {
+		const space = await workspace();
+		const agent = await readyAgent(space);
+		// Addresses the agent made and ended over the last weeks, whose names are still kept.
+		await mail.db
+			.prepare(
+				`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 2500)
+				INSERT INTO mail_address (id, domain_id, local_part, mailbox_id, expires_at, created_at, agent_member_id)
+				SELECT ?1 || i, ?2, 'ended' || i, ?3, ?4, ?5, ?6 FROM n`,
+			)
+			.bind(
+				`share-${counter}-`,
+				space.domainId,
+				space.mailboxId,
+				Date.now() - DAY_MS,
+				Date.now() - 10 * DAY_MS,
+				agent.memberId,
+			)
+			.run();
+		const refused = await make(space, agent);
+		expect(refused.status).toBe(409);
+		expect(refused.body.error).toContain("agents can have made 2500");
+		// People still have room for theirs.
+		const added = await directory(space.slug, owner, {
+			action: "add-address",
+			domainId: space.domainId,
+			mailboxId: space.mailboxId,
+			localPart: "help",
+			expiresInDays: null,
+		});
+		expect(added.status).toBe(200);
+	});
+
+	it("can't take a name a person removed lately, though people can take it again", async () => {
+		const space = await workspace();
+		const agent = await readyAgent(space);
+		const add = (localPart: string, mailboxId = space.mailboxId) =>
+			directory(space.slug, owner, {
+				action: "add-address",
+				domainId: space.domainId,
+				mailboxId,
+				localPart,
+				expiresInDays: null,
+			});
+		const remove = async (address: string) => {
+			const id = (await listed(space, address))?.id;
+			expect((await directory(space.slug, owner, { action: "remove-address", id })).status).toBe(
+				200,
+			);
+		};
+		// Whatever wrote to jane@ may still: password resets, say.
+		const jane = `jane@${space.domain}`;
+		expect((await add("jane")).status).toBe(200);
+		await remove(jane);
+		const taken = await make(space, agent, { localPart: "jane" });
+		expect(taken.status).toBe(409);
+		expect(taken.body.error).toContain("taken");
+		// A person chose to let it go, so people may take it again at once.
+		expect((await add("jane")).status).toBe(200);
+		await remove(jane);
+		// Once it has been kept as long as an ended address is, an agent may have it.
+		await mail.db
+			.prepare(
+				"UPDATE removed_address SET removed_at = ? WHERE domain_id = ? AND local_part = 'jane'",
+			)
+			.bind(Date.now() - 31 * DAY_MS, space.domainId)
+			.run();
+		expect((await make(space, agent, { localPart: "jane" })).status).toBe(200);
+		// The names a removed mailbox had are kept the same way.
+		const name = `Team ${++counter}`;
+		await directory(space.slug, owner, { action: "add-mailbox", name });
+		const team = (await directory(space.slug, owner)).body.mailboxes.find(
+			(one) => one.name === name,
+		);
+		if (!team) throw new Error("expected a mailbox");
+		expect((await add("bob", team.id)).status).toBe(200);
+		expect(
+			(await directory(space.slug, owner, { action: "remove-mailbox", id: team.id })).status,
+		).toBe(200);
+		expect((await make(space, agent, { localPart: "bob" })).status).toBe(409);
+	});
+
+	it("end once the agent may no longer send from their mailbox", async () => {
+		const space = await workspace();
+		const agent = await readyAgent(space);
+		await directory(space.slug, owner, {
+			action: "add-address",
+			domainId: space.domainId,
+			mailboxId: space.mailboxId,
+			localPart: "help",
+			expiresInDays: null,
+		});
+		const first = (await make(space, agent)).body.address;
+		if (!first) throw new Error("expected an address");
+		// Let it read the mailbox, but no longer send from it.
+		await give(space, [agent.memberId], []);
+		expect(await takes(first.address)).toBe(false);
+		expect((await listed(space, first.address))?.madeBy).toBe(agent.name);
+		// Let it send again: the ended one no longer counts. Then take the mailbox away.
+		await give(space, [agent.memberId], [agent.memberId]);
+		expect((await addresses(space, agent)).body.live).toBe(0);
+		const second = (await make(space, agent)).body.address;
+		if (!second) throw new Error("expected an address");
+		expect(await takes(second.address)).toBe(true);
+		await give(space, [], []);
+		expect(await takes(second.address)).toBe(false);
+		// What people added stays as it was.
+		expect(await takes(`help@${space.domain}`)).toBe(true);
+	});
+
 	it("end, and no longer name it, once the agent is deleted", async () => {
 		const space = await workspace();
 		const agent = await readyAgent(space);
@@ -566,13 +680,13 @@ describe("the database", () => {
 		const space = await workspace();
 		const agent = await makeAgent(space);
 		const theirs = await workspace();
-		const insert = (mailboxId: string, domainId: string, memberId: string) =>
+		const insert = (mailboxId: string, domainId: string, memberId: string, id = "") =>
 			mail.db
 				.prepare(
 					"INSERT INTO mail_address (id, domain_id, local_part, mailbox_id, expires_at, created_at, agent_member_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
 				)
 				.bind(
-					crypto.randomUUID(),
+					id || crypto.randomUUID(),
 					domainId,
 					`x${++counter}`,
 					mailboxId,
@@ -594,6 +708,15 @@ describe("the database", () => {
 		await expect(insert(space.mailboxId, space.domainId, "no-such-member")).rejects.toThrow(
 			"agent's workspace",
 		);
-		await insert(space.mailboxId, space.domainId, agent.memberId);
+		const id = crypto.randomUUID();
+		await insert(space.mailboxId, space.domainId, agent.memberId, id);
+		// Nor may a change move it there, or make it name a person.
+		const update = (column: string, value: string) =>
+			mail.db.prepare(`UPDATE mail_address SET ${column} = ? WHERE id = ?`).bind(value, id).run();
+		await expect(update("agent_member_id", ownerMember?.id ?? "")).rejects.toThrow(
+			"agent's workspace",
+		);
+		await expect(update("mailbox_id", theirs.mailboxId)).rejects.toThrow();
+		await update("agent_member_id", agent.memberId);
 	});
 });

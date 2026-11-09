@@ -1,12 +1,7 @@
-import { and, asc, count, eq, isNotNull, sql } from "drizzle-orm";
+import { and, asc, count, eq, gt, isNotNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import { parseDomainName } from "../../lib/addresses";
-import {
-	type AgentAddressPolicy,
-	agentLocalPart,
-	MAX_AGENT_ADDRESS_DAYS,
-	randomLocalPart,
-} from "../../lib/agent-addresses";
+import { agentLocalPart, MAX_AGENT_ADDRESS_DAYS, randomLocalPart } from "../../lib/agent-addresses";
 import { bearsKey } from "../access";
 import { db } from "../auth";
 import type { Database } from "../db";
@@ -15,7 +10,7 @@ import { openMailbox } from "../mailbox/read";
 import { addressPolicyOf, liveAddressCounts, liveAt } from "./agent-address-store";
 import { ENDED_ADDRESS_KEPT_DAYS, MAX_ADDRESSES_PER_WORKSPACE } from "./index";
 
-const { mailAddress, mailDomain } = schema;
+const { agentAddressPolicy, mailAddress, mailboxAccess, mailDomain, removedAddress } = schema;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -92,10 +87,23 @@ export interface AddressRequest {
 }
 
 /**
+ * How many addresses a workspace's agents may have made, counting ended ones while their names are
+ * kept: half the workspace's cap, so that agents ending and making addresses never keep people from
+ * adding theirs.
+ */
+export const MAX_AGENT_ADDRESSES_PER_WORKSPACE = MAX_ADDRESSES_PER_WORKSPACE / 2;
+
+const KEPT_MS = ENDED_ADDRESS_KEPT_DAYS * DAY_MS;
+
+const TAKEN = `That address is taken, or it ended less than ${ENDED_ADDRESS_KEPT_DAYS} days ago.`;
+
+/**
  * Makes an address for an agent, in a mailbox it may send from, as its policy allows: on a domain
  * it names, which the workspace has proved, lasting no longer than it says, while the agent holds
- * fewer than it may at once and has made fewer than that in the last day. The counts are taken in
- * the statement that adds the row, so calls at once can't pass them.
+ * fewer than it may at once and has made fewer than that in the last day, and while the workspace's
+ * agents have made fewer than their share. A name a person removed is kept from it a while. All of
+ * it is checked in the statement that adds the row, so neither calls at once nor an admin's change
+ * in the meantime can pass it; only when it refuses is the reason looked for.
  */
 export async function makeAgentAddress(
 	db: Database,
@@ -103,6 +111,101 @@ export async function makeAgentAddress(
 	request: AddressRequest,
 	now: Date,
 ): Promise<{ ok: true; address: AgentAddress } | Refusal> {
+	let chosen: string | null = null;
+	if (request.localPart !== null) {
+		const parsed = agentLocalPart(request.localPart);
+		if (!parsed.ok) return refuse(parsed.error, 400);
+		chosen = parsed.localPart;
+	}
+	// The length when the agent gives none. The statement checks it against the policy again.
+	const days = request.days ?? (await addressPolicyOf(db, maker.memberId)).maxDays;
+	const domainName = parseDomainName(request.domain);
+	const domain = domainName ? await provedDomain(db, maker.workspaceId, domainName) : undefined;
+	if (!domainName || !domain) return whyNot(db, maker, domainName, days, now);
+
+	const at = now.getTime();
+	const expiresAt = at + days * DAY_MS;
+	// A random name that is taken is tried once more; one chosen is the agent's to change.
+	for (let tries = chosen === null ? 2 : 1; tries > 0; tries--) {
+		const id = crypto.randomUUID();
+		const localPart = chosen ?? randomLocalPart();
+		const held = sql`(SELECT count(*) FROM ${mailAddress} WHERE ${mailAddress.agentMemberId} = ${maker.memberId}
+			AND (${mailAddress.expiresAt} IS NULL OR ${mailAddress.expiresAt} > ${at}))`;
+		const madeToday = sql`(SELECT count(*) FROM ${mailAddress} WHERE ${mailAddress.agentMemberId} = ${maker.memberId}
+			AND ${mailAddress.createdAt} > ${at - DAY_MS})`;
+		const inWorkspace = sql`(SELECT count(*) FROM ${mailAddress} INNER JOIN ${mailDomain}
+			ON ${mailDomain.id} = ${mailAddress.domainId} WHERE ${mailDomain.organizationId} = ${maker.workspaceId})`;
+		const agentsMade = sql`(SELECT count(*) FROM ${mailAddress} INNER JOIN ${mailDomain}
+			ON ${mailDomain.id} = ${mailAddress.domainId} WHERE ${mailDomain.organizationId} = ${maker.workspaceId}
+				AND ${mailAddress.agentMemberId} IS NOT NULL)`;
+		try {
+			// Every column in the table's order, as Drizzle's insert-select needs. The row comes from
+			// the agent's policy, and only when all of it holds.
+			const { meta } = await db
+				.insert(mailAddress)
+				.select(
+					sql`SELECT ${id}, ${domain.id}, ${localPart}, ${maker.mailboxId}, ${expiresAt},
+						${maker.userId}, ${at}, ${maker.memberId}
+						FROM ${agentAddressPolicy}
+						WHERE ${agentAddressPolicy.memberId} = ${maker.memberId}
+							AND ${agentAddressPolicy.maxDays} >= ${days}
+							AND EXISTS (SELECT 1 FROM json_each(${agentAddressPolicy.domains}) WHERE value = ${domainName})
+							AND EXISTS (SELECT 1 FROM ${mailboxAccess} WHERE ${mailboxAccess.mailboxId} = ${maker.mailboxId}
+								AND ${mailboxAccess.memberId} = ${maker.memberId} AND ${mailboxAccess.send} = 1)
+							AND EXISTS (SELECT 1 FROM ${mailDomain} WHERE ${mailDomain.id} = ${domain.id}
+								AND ${mailDomain.organizationId} = ${maker.workspaceId} AND ${mailDomain.verifiedAt} IS NOT NULL)
+							AND ${held} < ${agentAddressPolicy.maxLive}
+							AND ${madeToday} < ${agentAddressPolicy.maxLive}
+							AND ${agentsMade} < ${MAX_AGENT_ADDRESSES_PER_WORKSPACE}
+							AND ${inWorkspace} < ${MAX_ADDRESSES_PER_WORKSPACE}
+							AND NOT EXISTS (SELECT 1 FROM ${removedAddress} WHERE ${removedAddress.domainId} = ${domain.id}
+								AND ${removedAddress.localPart} = ${localPart} AND ${removedAddress.removedAt} > ${at - KEPT_MS})`,
+				)
+				.run();
+			if (meta.changes === 0) return whyNot(db, maker, domainName, days, now);
+			return { ok: true, address: { id, address: `${localPart}@${domainName}`, expiresAt } };
+		} catch (error) {
+			if (!isUniqueViolation(error)) throw error;
+		}
+	}
+	return refuse(TAKEN, 409);
+}
+
+async function provedDomain(db: Database, workspaceId: string, name: string) {
+	return db
+		.select({ id: mailDomain.id })
+		.from(mailDomain)
+		.where(
+			and(
+				eq(mailDomain.organizationId, workspaceId),
+				eq(mailDomain.name, name),
+				isNotNull(mailDomain.verifiedAt),
+			),
+		)
+		.get();
+}
+
+/** Why the statement made no address, in words, in the order an agent should hear it. */
+async function whyNot(
+	db: Database,
+	maker: Maker,
+	domainName: string | null,
+	days: number,
+	now: Date,
+): Promise<Refusal> {
+	const grant = await db
+		.select({ send: mailboxAccess.send })
+		.from(mailboxAccess)
+		.where(
+			and(eq(mailboxAccess.mailboxId, maker.mailboxId), eq(mailboxAccess.memberId, maker.memberId)),
+		)
+		.get();
+	if (!grant?.send) {
+		return refuse(
+			"This agent may read this mailbox but not send from it, so it can't add an address to it.",
+			403,
+		);
+	}
 	const policy = await addressPolicyOf(db, maker.memberId);
 	if (policy.maxLive === 0 || policy.domains.length === 0) {
 		return refuse(
@@ -110,96 +213,62 @@ export async function makeAgentAddress(
 			403,
 		);
 	}
-	const domainName = parseDomainName(request.domain);
 	if (!domainName || !policy.domains.includes(domainName)) {
 		return refuse("This agent may not make addresses on that domain.", 403);
 	}
-	const days = request.days ?? policy.maxDays;
 	if (days > policy.maxDays) {
 		return refuse(
 			`This agent's addresses last at most ${policy.maxDays} ${policy.maxDays === 1 ? "day" : "days"}.`,
 			400,
 		);
 	}
-	let chosen: string | null = null;
-	if (request.localPart !== null) {
-		const parsed = agentLocalPart(request.localPart);
-		if (!parsed.ok) return refuse(parsed.error, 400);
-		chosen = parsed.localPart;
+	if (!(await provedDomain(db, maker.workspaceId, domainName))) {
+		return refuse("The workspace hasn't proved that domain.", 409);
 	}
-	const domain = await db
-		.select({ id: mailDomain.id })
-		.from(mailDomain)
-		.where(
-			and(
-				eq(mailDomain.organizationId, maker.workspaceId),
-				eq(mailDomain.name, domainName),
-				isNotNull(mailDomain.verifiedAt),
+	const inWorkspace = eq(mailDomain.organizationId, maker.workspaceId);
+	const [held, made, agents, workspace] = await db.batch([
+		db
+			.select({ total: count() })
+			.from(mailAddress)
+			.where(and(eq(mailAddress.agentMemberId, maker.memberId), liveAt(now))),
+		db
+			.select({ total: count() })
+			.from(mailAddress)
+			.where(
+				and(
+					eq(mailAddress.agentMemberId, maker.memberId),
+					gt(mailAddress.createdAt, new Date(now.getTime() - DAY_MS)),
+				),
 			),
-		)
-		.get();
-	if (!domain) return refuse("The workspace hasn't proved that domain.", 409);
-
-	const expiresAt = now.getTime() + days * DAY_MS;
-	// A random name that is taken is tried once more; one chosen is the agent's to change.
-	for (let tries = chosen === null ? 2 : 1; tries > 0; tries--) {
-		const id = crypto.randomUUID();
-		const localPart = chosen ?? randomLocalPart();
-		const held = sql`(SELECT count(*) FROM ${mailAddress} WHERE ${mailAddress.agentMemberId} = ${maker.memberId}
-			AND (${mailAddress.expiresAt} IS NULL OR ${mailAddress.expiresAt} > ${now.getTime()}))`;
-		const madeToday = sql`(SELECT count(*) FROM ${mailAddress} WHERE ${mailAddress.agentMemberId} = ${maker.memberId}
-			AND ${mailAddress.createdAt} > ${now.getTime() - DAY_MS})`;
-		const inWorkspace = sql`(SELECT count(*) FROM ${mailAddress} INNER JOIN ${mailDomain}
-			ON ${mailDomain.id} = ${mailAddress.domainId} WHERE ${mailDomain.organizationId} = ${maker.workspaceId})`;
-		try {
-			// Every column in the table's order, as Drizzle's insert-select needs.
-			const { meta } = await db
-				.insert(mailAddress)
-				.select(
-					sql`SELECT ${id}, ${domain.id}, ${localPart}, ${maker.mailboxId}, ${expiresAt},
-						${maker.userId}, ${now.getTime()}, ${maker.memberId}
-						WHERE ${held} < ${policy.maxLive} AND ${madeToday} < ${policy.maxLive}
-							AND ${inWorkspace} < ${MAX_ADDRESSES_PER_WORKSPACE}`,
-				)
-				.run();
-			if (meta.changes === 0) return limitReached(db, maker, policy, now);
-			return { ok: true, address: { id, address: `${localPart}@${domainName}`, expiresAt } };
-		} catch (error) {
-			if (!isUniqueViolation(error)) throw error;
-		}
-	}
-	return refuse(
-		`That address is taken, or it ended less than ${ENDED_ADDRESS_KEPT_DAYS} days ago.`,
-		409,
-	);
-}
-
-/** Which limit kept an address from being made, in words. */
-async function limitReached(
-	db: Database,
-	maker: Maker,
-	policy: AgentAddressPolicy,
-	now: Date,
-): Promise<Refusal> {
-	const held = await db
-		.select({ total: count() })
-		.from(mailAddress)
-		.where(and(eq(mailAddress.agentMemberId, maker.memberId), liveAt(now)))
-		.get();
+		db
+			.select({ total: count() })
+			.from(mailAddress)
+			.innerJoin(mailDomain, eq(mailAddress.domainId, mailDomain.id))
+			.where(and(inWorkspace, isNotNull(mailAddress.agentMemberId))),
+		db
+			.select({ total: count() })
+			.from(mailAddress)
+			.innerJoin(mailDomain, eq(mailAddress.domainId, mailDomain.id))
+			.where(inWorkspace),
+	]);
 	const many = `${policy.maxLive} ${policy.maxLive === 1 ? "address" : "addresses"}`;
-	if ((held?.total ?? 0) >= policy.maxLive) {
+	if ((held[0]?.total ?? 0) >= policy.maxLive) {
 		return refuse(`This agent holds ${many}, as many as it may. End one first.`, 409);
 	}
-	const workspace = await db
-		.select({ total: count() })
-		.from(mailAddress)
-		.innerJoin(mailDomain, eq(mailAddress.domainId, mailDomain.id))
-		.where(eq(mailDomain.organizationId, maker.workspaceId))
-		.get();
-	if ((workspace?.total ?? 0) >= MAX_ADDRESSES_PER_WORKSPACE) {
+	if ((agents[0]?.total ?? 0) >= MAX_AGENT_ADDRESSES_PER_WORKSPACE) {
+		return refuse(
+			`A workspace's agents can have made ${MAX_AGENT_ADDRESSES_PER_WORKSPACE} of its addresses, counting those that ended in the last ${ENDED_ADDRESS_KEPT_DAYS} days.`,
+			409,
+		);
+	}
+	if ((workspace[0]?.total ?? 0) >= MAX_ADDRESSES_PER_WORKSPACE) {
 		return refuse(`A workspace can have ${MAX_ADDRESSES_PER_WORKSPACE} addresses.`, 409);
 	}
-	return refuse(`This agent made ${many} in the last day, as many as it may.`, 409);
+	if ((made[0]?.total ?? 0) >= policy.maxLive) {
+		return refuse(`This agent made ${many} in the last day, as many as it may.`, 409);
+	}
+	// What is left is the name: a person removed it lately, or someone took it in the meantime.
+	return refuse(TAKEN, 409);
 }
 
 /**
@@ -289,17 +358,8 @@ export async function agentAddressesAnswer(
 			? answer({ ok: true })
 			: answer({ ok: false, error: "Not found" }, 404);
 	}
-	// An address takes mail for the mailbox, and an agent that may only read it shouldn't add one.
-	if (!box.agentMaySend) {
-		return answer(
-			{
-				ok: false,
-				error:
-					"This agent may read this mailbox but not send from it, so it can't add an address to it.",
-			},
-			403,
-		);
-	}
+	// An address takes mail for the mailbox, so the agent must be let send from it, which the
+	// statement that adds it checks with the rest.
 	const made = await makeAgentAddress(
 		db,
 		{ workspaceId, memberId, userId: box.member.userId, mailboxId: box.id },

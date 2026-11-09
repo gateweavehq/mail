@@ -161,6 +161,27 @@ export const mailAddress = sqliteTable(
 );
 
 /**
+ * A name that was taken from a live address, by hand or with its mailbox, domain or workspace: a
+ * trigger writes it as the row goes (migration 0016). People may take the name again at once, as a
+ * person chose to let it go, but an agent may not until it has been kept as long as an ended
+ * address is. Whatever wrote to the old address may still, and an agent mustn't be the one to
+ * catch it. No reference, as the domain may be gone too; the daily run deletes it.
+ */
+export const removedAddress = sqliteTable(
+	"removed_address",
+	{
+		domainId: text("domain_id").notNull(),
+		/** Lower case. */
+		localPart: text("local_part").notNull(),
+		removedAt: integer("removed_at", { mode: "timestamp_ms" }).notNull(),
+	},
+	(table) => [
+		primaryKey({ columns: [table.domainId, table.localPart] }),
+		index("removed_address_removed_at_idx").on(table.removedAt),
+	],
+);
+
+/**
  * What an agent may send, set by owners and admins. An agent without a row has the defaults in
  * `lib/agent-policy.ts`. It belongs to the membership, so it goes with the agent.
  */
