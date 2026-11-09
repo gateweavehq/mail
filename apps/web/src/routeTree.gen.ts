@@ -28,6 +28,7 @@ import { Route as WorkspaceSettingsWorkspaceRouteImport } from './routes/$worksp
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 import { Route as ApiDirectoryWorkspaceRouteImport } from './routes/api/directory/$workspace'
 import { Route as ApiSuppressionsWorkspaceRouteImport } from './routes/api/suppressions/$workspace'
+import { Route as ApiV1SplatRouteImport } from './routes/api/v1/$'
 import { Route as WorkspaceMailboxesMailboxIndexRouteImport } from './routes/$workspace/mailboxes.$mailbox.index'
 import { Route as WorkspaceMailboxesMailboxMessageRouteImport } from './routes/$workspace/mailboxes.$mailbox.$message'
 import { Route as ApiInboundResendChannelRouteImport } from './routes/api/inbound/resend.$channel'
@@ -141,6 +142,11 @@ const ApiSuppressionsWorkspaceRoute =
     path: '/api/suppressions/$workspace',
     getParentRoute: () => rootRouteImport,
   } as any)
+const ApiV1SplatRoute = ApiV1SplatRouteImport.update({
+  id: '/api/v1/$',
+  path: '/api/v1/$',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const WorkspaceMailboxesMailboxIndexRoute =
   WorkspaceMailboxesMailboxIndexRouteImport.update({
     id: '/mailboxes/$mailbox/',
@@ -232,6 +238,7 @@ export interface FileRoutesByFullPath {
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/directory/$workspace': typeof ApiDirectoryWorkspaceRoute
   '/api/suppressions/$workspace': typeof ApiSuppressionsWorkspaceRoute
+  '/api/v1/$': typeof ApiV1SplatRoute
   '/$workspace/settings/': typeof WorkspaceSettingsIndexRoute
   '/$workspace/mailboxes/$mailbox/$message': typeof WorkspaceMailboxesMailboxMessageRoute
   '/api/inbound/resend/$channel': typeof ApiInboundResendChannelRoute
@@ -263,6 +270,7 @@ export interface FileRoutesByTo {
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/directory/$workspace': typeof ApiDirectoryWorkspaceRoute
   '/api/suppressions/$workspace': typeof ApiSuppressionsWorkspaceRoute
+  '/api/v1/$': typeof ApiV1SplatRoute
   '/$workspace/settings': typeof WorkspaceSettingsIndexRoute
   '/$workspace/mailboxes/$mailbox/$message': typeof WorkspaceMailboxesMailboxMessageRoute
   '/api/inbound/resend/$channel': typeof ApiInboundResendChannelRoute
@@ -297,6 +305,7 @@ export interface FileRoutesById {
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/directory/$workspace': typeof ApiDirectoryWorkspaceRoute
   '/api/suppressions/$workspace': typeof ApiSuppressionsWorkspaceRoute
+  '/api/v1/$': typeof ApiV1SplatRoute
   '/$workspace/settings/': typeof WorkspaceSettingsIndexRoute
   '/$workspace/mailboxes/$mailbox/$message': typeof WorkspaceMailboxesMailboxMessageRoute
   '/api/inbound/resend/$channel': typeof ApiInboundResendChannelRoute
@@ -332,6 +341,7 @@ export interface FileRouteTypes {
     | '/api/auth/$'
     | '/api/directory/$workspace'
     | '/api/suppressions/$workspace'
+    | '/api/v1/$'
     | '/$workspace/settings/'
     | '/$workspace/mailboxes/$mailbox/$message'
     | '/api/inbound/resend/$channel'
@@ -363,6 +373,7 @@ export interface FileRouteTypes {
     | '/api/auth/$'
     | '/api/directory/$workspace'
     | '/api/suppressions/$workspace'
+    | '/api/v1/$'
     | '/$workspace/settings'
     | '/$workspace/mailboxes/$mailbox/$message'
     | '/api/inbound/resend/$channel'
@@ -396,6 +407,7 @@ export interface FileRouteTypes {
     | '/api/auth/$'
     | '/api/directory/$workspace'
     | '/api/suppressions/$workspace'
+    | '/api/v1/$'
     | '/$workspace/settings/'
     | '/$workspace/mailboxes/$mailbox/$message'
     | '/api/inbound/resend/$channel'
@@ -423,6 +435,7 @@ export interface RootRouteChildren {
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiDirectoryWorkspaceRoute: typeof ApiDirectoryWorkspaceRoute
   ApiSuppressionsWorkspaceRoute: typeof ApiSuppressionsWorkspaceRoute
+  ApiV1SplatRoute: typeof ApiV1SplatRoute
   ApiInboundResendChannelRoute: typeof ApiInboundResendChannelRoute
   ApiMailWorkspaceMailboxAddressesRoute: typeof ApiMailWorkspaceMailboxAddressesRoute
   ApiMailWorkspaceMailboxOutboxRoute: typeof ApiMailWorkspaceMailboxOutboxRoute
@@ -569,6 +582,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiSuppressionsWorkspaceRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/v1/$': {
+      id: '/api/v1/$'
+      path: '/api/v1/$'
+      fullPath: '/api/v1/$'
+      preLoaderRoute: typeof ApiV1SplatRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/$workspace/mailboxes/$mailbox/': {
       id: '/$workspace/mailboxes/$mailbox/'
       path: '/mailboxes/$mailbox'
@@ -710,6 +730,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiDirectoryWorkspaceRoute: ApiDirectoryWorkspaceRoute,
   ApiSuppressionsWorkspaceRoute: ApiSuppressionsWorkspaceRoute,
+  ApiV1SplatRoute: ApiV1SplatRoute,
   ApiInboundResendChannelRoute: ApiInboundResendChannelRoute,
   ApiMailWorkspaceMailboxAddressesRoute: ApiMailWorkspaceMailboxAddressesRoute,
   ApiMailWorkspaceMailboxOutboxRoute: ApiMailWorkspaceMailboxOutboxRoute,

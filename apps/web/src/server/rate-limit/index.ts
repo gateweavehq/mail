@@ -88,16 +88,15 @@ export async function allowAgentSend(memberId: string, perDay: number): Promise<
 }
 
 /**
- * Waits for mail one agent may start over MCP: 30 at once, refilling over 10 minutes. A wait looks
- * at the mailbox for up to 50 seconds, so one call does the work of many reads; this keeps a key
- * from running a crowd of them.
+ * Waits for mail one agent may start, over MCP and REST together: 30 at once, refilling over 10
+ * minutes. A wait looks at the mailbox for up to 50 seconds, so one call does the work of many
+ * reads; this keeps a key from running a crowd of them.
  */
-export const MCP_WAITS_PER_AGENT: Rule[] = [{ window: 10 * 60, max: 30 }];
+export const WAITS_PER_AGENT: Rule[] = [{ window: 10 * 60, max: 30 }];
 
 /** Whether this agent may start another wait for mail, counting it if so. */
-export async function allowMcpWait(memberId: string): Promise<boolean> {
-	const { allowed } = await consumeDurably(`mcp-wait:${memberId}`, MCP_WAITS_PER_AGENT);
-	return allowed;
+export function allowAgentWait(memberId: string) {
+	return consumeDurably(`agent-wait:${memberId}`, WAITS_PER_AGENT);
 }
 
 const local = new LocalLimiter();

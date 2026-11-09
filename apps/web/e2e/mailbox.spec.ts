@@ -523,6 +523,17 @@ test("an admin makes an agent, gives it a mailbox, and its key reads the mail un
 		},
 	});
 	expect(started.status()).toBe(200);
+	// So does the API the page names, whose document it links.
+	const restUrl = new URL("/api/v1", page.url()).href;
+	await expect(
+		page.getByText(`curl -H "Authorization: Bearer ${key}" ${restUrl}/mailboxes`),
+	).toBeVisible();
+	const mailboxes = await request.get(`${restUrl}/mailboxes`, {
+		headers: { authorization: `Bearer ${key}` },
+	});
+	expect(mailboxes.status()).toBe(200);
+	const document = page.getByRole("link", { name: "OpenAPI document" });
+	expect((await request.get((await document.getAttribute("href")) ?? "")).status()).toBe(200);
 	await page.getByRole("button", { name: "Done" }).click();
 	// The API, as the agent calls it: its key and nothing else, no cookie.
 	const api = () =>

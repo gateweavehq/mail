@@ -17,7 +17,7 @@ proved domains, mailboxes and addresses, and an `email()` handler that refuses a
 doesn't exist and stores mail for one that does, in a Durable Object per mailbox and R2. Members
 read the mailboxes they are given, with formatted mail in a sandboxed frame, and reply to their
 mail and write new mail from them in plain text, through Cloudflare Email Service. Agents read theirs
-with a key, over MCP (`/mcp`) or the API, and send from the mailboxes that let them: what goes to
+with a key, over MCP (`/mcp`) or the API (`/api/v1`, with an OpenAPI document), and send from the mailboxes that let them: what goes to
 anyone their policy doesn't name waits for a person to approve it, and they can make addresses for
 themselves within limits an owner or admin sets. Aliases and transactional sending are planned, not built.
 
@@ -122,11 +122,13 @@ These are load-bearing. Breaking one breaks users' data or security, usually sil
     address ends, and it may not take a name in `RESERVED_LOCAL_PARTS` or one in
     `removed_address`. It ends only addresses it made. Whatever else
     changes something takes `currentMember`, a person signed in. Keep only a key's hash, and never
-    log a key. The MCP server (`apps/web/src/server/mcp/`) admits only a working key, never a
-    session, and its tools call the same functions as the REST routes, with the request's own key,
-    never around them: it adds no access rules of its own, and must not widen theirs. What it
-    hands an agent from a message is marked as the sender's words, beside the proved domain, and
-    `get_verification_code` hands over only the code and the From's domain.
+    log a key. The MCP server (`apps/web/src/server/mcp/`) and the agent API under `/api/v1`
+    (`apps/web/src/server/agent-api/`) admit only a working key, never a session. Both are made
+    from one list of operations (`agent-api/operations.ts`), which call the same functions as the
+    REST routes, with the request's own key, never around them: they add no access rules of their
+    own, and must not widen theirs. Change an operation there, never one transport alone. What
+    they hand an agent from a message is marked as the sender's words, beside the proved domain,
+    and `get_verification_code` hands over only the code and the From's domain.
 14. **A message that may have gone is never sent again by itself.** Email Service has no
     idempotency key, so a send that failed without a code, with its own failure, or that nothing
     finished, is `uncertain`, and only a person's "Send again" sends it again. Through Resend, the
