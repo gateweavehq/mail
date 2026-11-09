@@ -101,6 +101,33 @@ export function fileNameRefusal(name: string): string | null {
 		: null;
 }
 
+/** Why these files can't be added to those a message has, or null when they may. */
+export function addedFilesRefusal(
+	has: { name: string; size: number }[],
+	added: { name: string; size: number }[],
+): string | null {
+	for (const file of added) {
+		const refusal = fileNameRefusal(file.name);
+		if (refusal) return refusal;
+		if (file.size === 0) return `${file.name} is empty.`;
+	}
+	const all = [...has, ...added];
+	if (all.length > MAX_ATTACHMENTS) {
+		return `One message can carry at most ${MAX_ATTACHMENTS} files.`;
+	}
+	if (all.reduce((sum, file) => sum + file.size, 0) > MAX_ATTACHMENT_BYTES) {
+		return `A message's files can hold ${MAX_ATTACHMENT_BYTES / (1024 * 1024)} MB together at most.`;
+	}
+	return null;
+}
+
+/**
+ * The type a file goes with, from the one its browser gave: none, for the server to tell from its
+ * name, or bytes for a message or a multipart, which mail can't carry in Base64 as their own.
+ */
+export const sendableType = (type: string) =>
+	/^(multipart|message)\//i.test(type) ? "application/octet-stream" : type || null;
+
 /**
  * An address someone types: a local part of RFC 5322's dot-atoms, so no dot at its ends or two in a
  * row, and a domain with a dot. Each label of the domain may hold letters, digits and hyphens, as
@@ -193,10 +220,15 @@ export const typedAddresses = (typed: string) =>
 		.map((address) => address.trim())
 		.filter(Boolean);
 
-/** A reply's text: room to write, then the message it answers, quoted. */
+/**
+ * A reply's text: room to write, then the message it answers, quoted. `said` names who wrote it,
+ * as the sender named themselves, and stands above the quote among the person's own lines, where
+ * marks are read: so it has no brackets, and a name can't make a link there.
+ */
 export function quoted(text: string, said: string): string {
 	const lines = text.replace(/\r\n?/g, "\n").trimEnd().split("\n");
 	const quote = lines.map((line) => (line ? `> ${line}` : ">")).join("\n");
+	const plain = said.replace(/[[\]]/g, "");
 	// Leave room for what the reply says above it.
-	return `\n\n${said}\n${quote}`.slice(0, MAX_TEXT - 10_000);
+	return `\n\n${plain}\n${quote}`.slice(0, MAX_TEXT - 10_000);
 }

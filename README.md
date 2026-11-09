@@ -24,8 +24,8 @@ tools that run on Cloudflare, next to [Gateweave Track](https://github.com/gatew
 [Gateweave ID](https://github.com/gateweavehq/id) and
 [Gateweave Agents](https://github.com/gateweavehq/agents).
 
-> **Status: early development.** Mail receives and keeps mail, and sends it: plain text from
-> people for now, and HTML and files from agents. What exists is sign-in, workspaces, a
+> **Status: early development.** Mail receives and keeps mail, and sends it, formatted and with
+> files, from people and agents. What exists is sign-in, workspaces, a
 > directory of domains and addresses, and mailboxes whose messages the people given them read and
 > answer. Expect breaking changes until 1.0; see
 > [CHANGELOG.md](CHANGELOG.md).
@@ -53,8 +53,9 @@ tools that run on Cloudflare, next to [Gateweave Track](https://github.com/gatew
 - **Search.** Find a mailbox's threads by the words in their messages: subject, sender, text and
   attachment names.
 - **Replying and writing.** Whoever reads a mailbox replies to its mail and writes new mail from
-  its addresses, in plain text for now, through Cloudflare Email Service. The copy shows in its
-  thread at once, with who wrote it and whether it went; one that wasn't sent can be sent again or
+  its addresses, through Cloudflare Email Service. Bold, italic, links, lists and quotes are
+  marked in the text, with buttons and a preview, and a message that uses them goes as HTML
+  too; files are attached, dropped or pasted. The copy shows in its thread at once, with who wrote it and whether it went; one that wasn't sent can be sent again or
   discarded, and one that may have gone is never sent twice by itself.
 - **Resend for domains elsewhere.** A domain whose DNS isn't on your Cloudflare account can send
   through Resend instead, with the workspace's own key, which Mail keeps encrypted and never shows
@@ -82,8 +83,7 @@ tools that run on Cloudflare, next to [Gateweave Track](https://github.com/gatew
 None of this exists yet; it is the direction, and it may change.
 
 - Agents that act on mail as well as read and send it, such as filing or labelling it.
-- Formatting and files in the composer, as agents send them already, and forwarding and
-  replying to all.
+- Images in the composer's HTML, forwarding, and replying to all.
 - Aliases that point at a mailbox.
 - Transactional sending and templates, through Cloudflare Email Service.
 

@@ -429,7 +429,27 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
       says who wrote it (`message.sent_by`, a membership), and counts toward the mailbox's size; a
       full mailbox doesn't send.
     - **HTML and files go in the copy, and from it** (`files.ts`). A message carries text, and
-      HTML and files when its writer gives them; the composer writes text alone for now.
+      HTML and files when its writer gives them.
+      - **The composer writes text, and HTML from it.** What a person types is the text, and
+        bold, italic, links, lists and quotes are its marks (`formatting.ts`), the ones mail used
+        before Markdown took them up. When the text uses any, HTML made from it goes beside it.
+        Mail reads those marks itself, in one pass over each line, rather than with a Markdown
+        library: no HTML, headings, code, tables or images in the text are read, links go to the
+        web and mail only, and nothing a person types can make the reading slow. Lines are kept as
+        typed, their spaces, backslashes and entities too: one that only looks like a heading or a
+        rule, "9. November" or a number that doesn't follow on, a line after a list, and a link it
+        can't make or whose words name another place, even a host Mail doesn't know, all stay as
+        they were written. A link's words are read as a browser reads a host, with what stands
+        against them (a fullwidth dot is a dot, an invisible character nothing, and
+        `[bank](…)[.example](…)` shows bank.example), and its address is written as a browser
+        reads it, never with a name before its host or mail to people its words don't name. A
+        quote is someone else's words, as a reply's is, so nothing in it is
+        read as a mark, or its links could go under the workspace's name to places their words
+        don't say; the sender's name above it loses its brackets for the same reason. The toolbar
+        types the marks into the text, so each change can be undone, and the
+        preview shows the HTML that will go, its links opening in a tab of their own. Files are
+        attached, dropped or pasted (a file only, as a copied document holds a picture of itself
+        beside its text), and checked against the limits below as they are added.
       - **What a person approves is what goes.** The HTML is kept to what the message's page shows
         of mail (`sendableHtml` in `html.ts`, the rules `cleanHtml` uses): no scripts, forms, SVG,
         media or frames, and nothing of what they hold. Text is made from the HTML when none is
@@ -754,8 +774,8 @@ Not built. This is where it is going, and it may change.
 - **Remote images per sender**, remembered for those the reader trusts, where now they are asked
   for each time.
 - **Aliases that point at a mailbox.**
-- **Formatting and files in the composer**, as agents send them already, and forwarding and
-  replying to all.
+- **Images in the composer's HTML**, as agents send them already, forwarding, and replying to
+  all.
 
 ## What Cloudflare does with mail
 

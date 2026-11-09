@@ -16,7 +16,7 @@ through an OpenID Connect provider), workspaces with members and invitations, a 
 proved domains, mailboxes and addresses, and an `email()` handler that refuses an address that
 doesn't exist and stores mail for one that does, in a Durable Object per mailbox and R2. Members
 read the mailboxes they are given, with formatted mail in a sandboxed frame, and reply to their
-mail and write new mail from them in plain text, through Cloudflare Email Service. Agents read theirs
+mail and write new mail from them, with formatting and files, through Cloudflare Email Service. Agents read theirs
 with a key, over MCP (`/mcp`) or the API (`/api/v1`, with an OpenAPI document), and send from the mailboxes that let them, in HTML and with files too: what goes to
 anyone their policy doesn't name waits for a person to approve it, and they can make addresses for
 themselves within limits an owner or admin sets. Aliases and transactional sending are planned, not built.

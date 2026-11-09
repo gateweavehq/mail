@@ -212,7 +212,10 @@ test("a reply and a new message go from the mailbox, and their copies show in it
 	const thread = page.getByRole("list", { name: "Messages in this thread" });
 	const copy = thread.getByRole("article", { name: /Support/ });
 	await expect(copy.getByText("Sent", { exact: true })).toBeVisible();
-	await expect(copy.getByText(/^It left on Monday\./)).toBeVisible();
+	// Its quote goes as one, in HTML beside the text as it was written.
+	const replied = copy.frameLocator('iframe[title="The message, as its sender formatted it"]');
+	await expect(replied.getByText(/^It left on Monday\./)).toBeVisible();
+	await expect(replied.locator("blockquote")).toHaveText("It hasn't come.");
 	await expect(copy.getByText(`Written in this mailbox by ${person.name}.`)).toBeVisible();
 	await expect(reply.getByRole("button", { name: "Reply" })).toBeFocused();
 
@@ -231,6 +234,110 @@ test("a reply and a new message go from the mailbox, and their copies show in it
 		thread.getByRole("article", { name: /Support/ }).getByText("Sent", { exact: true }),
 	).toBeVisible();
 	await expect(thread.getByText("Just saying hello.")).toBeVisible();
+	// Without formatting it goes as text alone.
+	await expect(thread.getByRole("button", { name: "Show as text" })).toHaveCount(0);
+});
+
+test("a message's formatting and files go with it, and its copy shows them", async ({
+	page,
+	request,
+	baseURL,
+}) => {
+	const { slug, mailboxId } = await supportMailbox(page, request, baseURL);
+	await page.goto(`/${slug}/mailboxes/${mailboxId}`);
+	await waitForHydration(page);
+	await page.getByRole("button", { name: "Write" }).click();
+	const dialog = page.getByRole("dialog", { name: "New message" });
+	await dialog.getByLabel("To").fill("someone@example.net");
+	await dialog.getByLabel("Subject").fill("The plan");
+
+	// The toolbar marks what is selected, as something typed that can be undone; its keys do too.
+	const text = dialog.getByLabel("Message");
+	const select = (from: number, to: number) =>
+		text.evaluate(
+			(field: HTMLTextAreaElement, range) => field.setSelectionRange(range.from, range.to),
+			{ from, to },
+		);
+	await text.fill("Read this first");
+	await select(5, 9);
+	await dialog.getByRole("button", { name: "Bold" }).click();
+	await expect(text).toHaveValue("Read **this** first");
+	await text.press("Control+z");
+	await expect(text).toHaveValue("Read this first");
+	await select(5, 9);
+	await text.press("Control+b");
+	await expect(text).toHaveValue("Read **this** first");
+	await text.press("End");
+	await text.pressSequentially(" and ");
+	await text.press("Control+i");
+	await text.pressSequentially("soon");
+	// The caret is still inside the marks.
+	await text.press("End");
+	await text.press("Enter");
+	await text.pressSequentially("one");
+	await dialog.getByRole("button", { name: "Bulleted list" }).click();
+	await expect(text).toHaveValue("Read **this** first and *soon*\n- one");
+	// The caret stays where it was in its line, and a new line takes the mark before its words.
+	await text.pressSequentially("!");
+	await text.press("Enter");
+	await dialog.getByRole("button", { name: "Bulleted list" }).click();
+	await text.pressSequentially("two");
+	await text.press("Enter");
+	await text.pressSequentially(`[home](${baseURL}/)`);
+	await expect(text).toHaveValue(
+		`Read **this** first and *soon*\n- one!\n- two\n[home](${baseURL}/)`,
+	);
+
+	// The preview shows it formatted, and nothing changes it there.
+	await dialog.getByRole("button", { name: "Preview" }).click();
+	const preview = dialog.getByRole("region", { name: "Preview" });
+	await expect(preview.locator("strong")).toHaveText("this");
+	await expect(preview.locator("em")).toHaveText("soon");
+	await expect(preview.getByRole("listitem")).toHaveText(["one!", "two"]);
+	await expect(dialog.getByRole("button", { name: "Bold" })).toBeDisabled();
+	// A link there opens in a tab of its own, and what is being written stays.
+	const opened = page.context().waitForEvent("page");
+	await preview.getByRole("link", { name: "home" }).click();
+	await (await opened).close();
+	await expect(preview).toBeVisible();
+	await dialog.getByRole("button", { name: "Preview" }).click();
+	await expect(text).toBeVisible();
+
+	// A kind of file Mail doesn't send is refused as it is added.
+	const files = dialog.locator('input[type="file"]');
+	await files.setInputFiles({
+		name: "setup.exe",
+		mimeType: "application/x-msdownload",
+		buffer: Buffer.from("MZ"),
+	});
+	await expect(dialog.getByRole("alert")).toHaveText(
+		"Mail doesn't send .exe files, which many mail servers refuse.",
+	);
+	await files.setInputFiles([
+		{ name: "plan.pdf", mimeType: "application/pdf", buffer: Buffer.from("%PDF-1.4\n%%EOF\n") },
+		{ name: "notes.txt", mimeType: "text/plain", buffer: Buffer.from("Bring snacks.\n") },
+	]);
+	await expect(dialog.getByRole("alert")).toHaveCount(0);
+	const list = dialog.getByRole("list", { name: "Files" });
+	await expect(list.getByRole("listitem")).toHaveCount(2);
+	await list.getByRole("button", { name: "Remove notes.txt" }).click();
+	await expect(list.getByRole("listitem")).toHaveText([/plan\.pdf/]);
+	await expect(dialog.getByRole("button", { name: "Attach files" })).toBeFocused();
+
+	// Its copy shows the HTML that went, the file, and the text as it was written.
+	await dialog.getByRole("button", { name: "Send" }).click();
+	await expect(page.getByRole("heading", { level: 1, name: "The plan" })).toBeVisible();
+	const copy = page
+		.getByRole("list", { name: "Messages in this thread" })
+		.getByRole("article", { name: /Support/ });
+	await expect(copy.getByText("Sent", { exact: true })).toBeVisible();
+	const message = copy.frameLocator('iframe[title="The message, as its sender formatted it"]');
+	await expect(message.locator("strong")).toHaveText("this");
+	await expect(message.locator("li")).toHaveText(["one!", "two"]);
+	const attachments = copy.getByRole("region", { name: "Attachments" });
+	await expect(attachments.getByRole("listitem")).toHaveText([/plan\.pdf/]);
+	await copy.getByRole("button", { name: "Show as text" }).click();
+	await expect(copy.getByText("Read **this** first and *soon*")).toBeVisible();
 });
 
 test("a long thread pages from its newest messages", async ({ page, request, baseURL }) => {
