@@ -1,6 +1,7 @@
+import { randomBytes } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
-import { RawMail } from "./sealed";
+import { RawMail, SealError } from "./sealed";
 import {
 	ftsQuery,
 	MAX_QUERY_WORDS,
@@ -215,14 +216,37 @@ describe("searchable", () => {
 		expect(found).toBeInstanceOf(TypeError);
 	});
 
-	it("finds sealed mail that doesn't open by its headers, as trying again won't open it", async () => {
-		const found = await searchable(holding("not opened"), {
+	describe("of sealed mail that doesn't open", () => {
+		const sealed = {
 			object: "w/m/x.eml",
 			size: 10,
 			seal: "v1.AAAAAAAAAAAAAAAAAAAAAA",
 			subject: "Lunch",
 			from: "a@example.org",
+		};
+		// As long as the sealed mail would be, and not it.
+		const changed = {
+			get: async () => ({ size: 26, body: new Blob([new Uint8Array(26)]).stream() }),
+		} as unknown as R2Bucket;
+
+		it("finds it by its headers under the server's key, as trying again won't open it", async () => {
+			const found = await searchable(
+				new RawMail(changed, randomBytes(32).toString("base64")),
+				sealed,
+			);
+			expect(found).toEqual({
+				subject: "Lunch",
+				sender: "a@example.org",
+				attachments: "",
+				body: "",
+			});
 		});
-		expect(found).toEqual({ subject: "Lunch", sender: "a@example.org", attachments: "", body: "" });
+
+		it("throws without a key, for the mailbox to try again once one is set", async () => {
+			const found = await searchable(new RawMail(changed, undefined), sealed).catch(
+				(error: unknown) => error,
+			);
+			expect(found).toBeInstanceOf(SealError);
+		});
 	});
 });

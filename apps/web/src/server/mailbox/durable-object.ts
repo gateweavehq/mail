@@ -1033,8 +1033,10 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			if (!read) return { unread: "wrong" };
 			bytes = read;
 		} catch (error) {
-			// A copy that doesn't open won't by trying again.
-			return { unread: error instanceof SealError ? "wrong" : "unavailable" };
+			// A copy that doesn't open under the server's key won't by trying again.
+			return {
+				unread: error instanceof SealError && error.kind === "unopened" ? "wrong" : "unavailable",
+			};
 		}
 		let found: Attachment[];
 		try {

@@ -63,8 +63,9 @@ function plain(text: string, max: number): string {
 /**
  * What a stored message is found by: its subject and From always, and its text and attachments'
  * names when the start of its mail parses. A message that doesn't parse, or whose sealed mail
- * doesn't open, is still found by its headers, so it can't hold up the rest. Reading R2 may throw,
- * for the alarm to try again.
+ * doesn't open under the server's key, is still found by its headers, so it can't hold up the
+ * rest. Reading R2 may throw, as may sealed mail on a server without a key, for the alarm to try
+ * again.
  */
 export async function searchable(
 	raw: RawMail,
@@ -83,7 +84,9 @@ export async function searchable(
 			length: Math.max(1, Math.min(message.size, SEARCH_READ_BYTES)),
 		});
 	} catch (error) {
-		if (error instanceof SealError) return found;
+		// Without a key the alarm tries again, as setting one may mend it. Mail that doesn't open
+		// under the key won't, so it is found by its headers.
+		if (error instanceof SealError && error.kind === "unopened") return found;
 		throw error;
 	}
 	if (!start) return found;

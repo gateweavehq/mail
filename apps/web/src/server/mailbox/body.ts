@@ -45,7 +45,16 @@ export async function bodyHash(raw: RawMail, ref: RawRef): Promise<string | null
 		const object = await raw.get(ref);
 		if (!object) return null;
 		const digest = new Digest("SHA-256");
-		await object.body.pipeThrough(afterHeaders()).pipeTo(digest);
+		// Read here and written on, not piped, so that an error of the mail's reaches the catch as
+		// it was thrown rather than as the digest's.
+		const reader = object.body.pipeThrough(afterHeaders()).getReader();
+		const writer = digest.getWriter();
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			await writer.write(value);
+		}
+		await writer.close();
 		return hex(await digest.digest);
 	} catch (error) {
 		if (error instanceof SealError) return null;

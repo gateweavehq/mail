@@ -34,16 +34,27 @@ export type RawRef = {
 	object: string;
 	/** The mail's own size, in bytes. */
 	size: number;
-	/** Null for mail kept as it came. */
+	/**
+	 * Null for mail kept as it came. A row from an object older than sealing, during a deploy, has
+	 * none at all, which reads the same.
+	 */
 	seal: string | null;
 };
 
 /**
- * Sealed mail that doesn't open: it was changed, cut or moved, or the server's `SECRETS_KEY` isn't
- * the one it was sealed with. Its message says which, and never anything of the mail.
+ * Sealed mail that doesn't open. `no-key`: the server has no `SECRETS_KEY` to open it with, which
+ * setting one may mend, so what reads it may try again. `unopened`: it was changed, cut or moved,
+ * or `SECRETS_KEY` isn't the one it was sealed with, which trying again won't mend. Its message
+ * says which, and never anything of the mail.
  */
 export class SealError extends Error {
 	override name = "SealError";
+	readonly kind: "no-key" | "unopened";
+
+	constructor(message: string, kind: "no-key" | "unopened" = "unopened") {
+		super(message);
+		this.kind = kind;
+	}
 }
 
 const chunkCount = (size: number) => Math.max(1, Math.ceil(size / SEALED_CHUNK));
@@ -87,8 +98,12 @@ async function objectKey(
 	seal: string,
 ): Promise<CryptoKey> {
 	const key = baseKey(secretsKey);
-	if (!key)
-		throw new SealError("This mail is sealed, and the server has no SECRETS_KEY to open it");
+	if (!key) {
+		throw new SealError(
+			"This mail is sealed, and the server has no SECRETS_KEY to open it",
+			"no-key",
+		);
+	}
 	const [version, salt, ...rest] = seal.split(".");
 	const saltBytes = salt ? fromBase64(salt) : null;
 	if (version !== VERSION || rest.length > 0 || !saltBytes || saltBytes.length !== SALT_BYTES) {
@@ -199,6 +214,27 @@ function opening(
 	});
 }
 
+/**
+ * The stream, with its first part already read, so that mail which doesn't open at all fails
+ * before a response has begun, rather than as a download cut short.
+ */
+async function started(body: ReadableStream<Uint8Array>): Promise<ReadableStream<Uint8Array>> {
+	const reader = body.getReader();
+	let first: ReadableStreamReadResult<Uint8Array> | null = await reader.read();
+	return new ReadableStream<Uint8Array>({
+		async pull(controller) {
+			const next = first ?? (await reader.read());
+			first = null;
+			if (next.done) controller.close();
+			else controller.enqueue(next.value);
+		},
+		cancel: (reason) => reader.cancel(reason),
+	});
+}
+
+/** Said once an isolate, as each delivery would say it again. */
+let warned = false;
+
 /** A part of a message's mail: `length` bytes from `offset`. */
 export interface RawRange {
 	offset: number;
@@ -223,13 +259,21 @@ export class RawMail {
 	 * as it comes, having no `SECRETS_KEY` long enough to seal with.
 	 */
 	newSeal(): string | null {
-		if (!usable(this.#secretsKey)) return null;
+		if (!usable(this.#secretsKey)) {
+			if (this.#secretsKey && !warned) {
+				warned = true;
+				console.warn(
+					"raw mail: SECRETS_KEY isn't 32 or more bytes of base64, so mail is kept unencrypted",
+				);
+			}
+			return null;
+		}
 		return `${VERSION}.${toBase64(crypto.getRandomValues(new Uint8Array(SALT_BYTES)))}`;
 	}
 
 	/** Writes a message's mail, which must be exactly `ref.size` bytes, sealed when it has a seal. */
 	async put(ref: RawRef, mail: ReadableStream<Uint8Array> | string): Promise<void> {
-		if (ref.seal === null) {
+		if (typeof ref.seal !== "string") {
 			if (typeof mail === "string") {
 				await this.#bucket.put(ref.object, mail);
 				return;
@@ -242,7 +286,13 @@ export class RawMail {
 			]);
 			return;
 		}
-		const key = await objectKey(this.#secretsKey, ref.object, ref.seal);
+		let key: CryptoKey;
+		try {
+			key = await objectKey(this.#secretsKey, ref.object, ref.seal);
+		} catch (error) {
+			if (typeof mail !== "string") await mail.cancel().catch(() => {});
+			throw error;
+		}
 		const stream = typeof mail === "string" ? new Blob([mail]).stream() : mail;
 		const sized = new FixedLengthStream(sealedSize(ref.size));
 		await Promise.all([
@@ -253,14 +303,15 @@ export class RawMail {
 
 	/**
 	 * A message's mail, or the part of it `range` names, as it was written, and the whole mail's
-	 * size. Null when R2 doesn't have it. Sealed mail that doesn't open throws a `SealError`, or
-	 * errors the stream with one when that shows only as it is read.
+	 * size. Null when R2 doesn't have it. Sealed mail that doesn't open throws a `SealError`: under
+	 * another key, or changed at its start, before anything is returned; changed further on, by
+	 * erroring the stream there.
 	 */
 	async get(
 		ref: RawRef,
 		range?: RawRange,
 	): Promise<{ body: ReadableStream<Uint8Array>; size: number } | null> {
-		if (ref.seal === null) {
+		if (typeof ref.seal !== "string") {
 			const object = await this.#bucket.get(ref.object, range ? { range } : undefined);
 			return object && { body: object.body, size: object.size };
 		}
@@ -286,7 +337,9 @@ export class RawMail {
 			throw new SealError("Stored mail isn't as long as its message");
 		}
 		return {
-			body: object.body.pipeThrough(opening(key, ref.size, { first, last, start, end })),
+			body: await started(
+				object.body.pipeThrough(opening(key, ref.size, { first, last, start, end })),
+			),
 			size: ref.size,
 		};
 	}

@@ -114,15 +114,25 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     tag, so it streams in and out and a part of it is read from only the chunks that hold it, as
     search reads a message's start. A chunk's nonce is its place and the last one is marked last
     in its additional data, and the object must be exactly as long as the row's size makes it, so
-    nothing can be reordered, cut or added. The Worker picks the seal and the object keeps it
-    (`begin`), and the mail is sealed only with the seal the object gave back, so a Worker and an
-    object of different versions during a deploy never write mail its row can't read. Everything
-    reads and writes raw mail through `RawMail`; mail with no seal, kept before sealing or without
-    a `SECRETS_KEY`, is read as it is. Mail that doesn't open, as after `SECRETS_KEY` changed,
-    fails only where it is opened: its thread still shows, search finds it by its headers, and a
-    copy whose files are waiting to be sent is refused as `mail:copy_unread`. Sealed mail stays as
-    it was written, so another scheme or a key for rotation would be a new seal version beside
-    `v1`.
+    nothing can be reordered, cut or added. Everything reads and writes raw mail through
+    `RawMail`, and mail with no seal, kept before sealing or without a `SECRETS_KEY`, is read as it
+    is.
+    - **Versions side by side.** The Worker picks the seal and the object keeps it (`begin`), and
+      the mail is sealed only with the seal the object gave back, so a Worker and an object of
+      different versions during a deploy never write mail its row can't read. A row from an
+      object older than sealing has no `seal` at all, which reads as none. Code older than sealing
+      reads sealed mail as if it were plain, so it shows garbled there: roll back only to a
+      version that reads seals.
+    - **Mail that doesn't open** (`SealError`): `unopened` when it was changed or moved, or
+      `SECRETS_KEY` isn't the one it was sealed with, which trying again won't mend; `no-key` when
+      the server has none, which setting one may. The first chunk is opened before anything is
+      returned, so a download fails before it starts rather than part way. Its thread still shows,
+      without it opened; the message, its HTML and its original answer 500 and say it can't be
+      opened; a reply to it is threaded by the id in its row; search finds it by its headers, or
+      tries again for `no-key`; and a copy whose files are waiting is refused as
+      `mail:copy_unread`, or left uncertain when a try may have gone, or tried again for `no-key`.
+    - Sealed mail stays as it was written, so another scheme or a key for rotation would be a new
+      seal version beside `v1`.
   - **The same message twice is kept once.** A delivery's key is a hash of the mailbox and
     whichever of the message's `Message-ID`, `From`, `Date` and `Subject` it has. When one
     finishes and a stored message has the same key, their bodies are compared, and the copy goes

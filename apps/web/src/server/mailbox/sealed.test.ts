@@ -136,6 +136,11 @@ describe("sealed raw mail", () => {
 		// The chunk before the change still opens on its own.
 		expect(await raw.bytes(ref, { offset: 0, length: 10 })).toHaveLength(10);
 		await expect(raw.bytes(ref, { offset: SEALED_CHUNK, length: 10 })).rejects.toThrow(SealError);
+		// A change past the start shows as the stream reaches it; one at the start, before anything.
+		const whole = await raw.get(ref);
+		await expect(new Response(whole?.body).arrayBuffer()).rejects.toThrow();
+		stored[3] = (stored[3] ?? 0) ^ 1;
+		await expect(raw.get(ref)).rejects.toThrow(SealError);
 	});
 
 	it("doesn't open chunks put in another order, or mail cut short", async () => {
@@ -178,8 +183,14 @@ describe("sealed raw mail", () => {
 	it("opens only under the SECRETS_KEY it was sealed with, and says so without one", async () => {
 		const { bucket, ref } = await sealedMail(100);
 		const other = new RawMail(bucket, randomBytes(32).toString("base64"));
-		await expect(other.bytes(ref)).rejects.toThrow(SealError);
-		await expect(new RawMail(bucket, undefined).get(ref)).rejects.toThrow(/no SECRETS_KEY/);
+		// Before anything is returned, so a download fails rather than starts.
+		const unopened = await other.get(ref).catch((error: unknown) => error);
+		expect(unopened).toBeInstanceOf(SealError);
+		expect((unopened as SealError).kind).toBe("unopened");
+		const keyless = await new RawMail(bucket, undefined).get(ref).catch((error: unknown) => error);
+		expect(keyless).toBeInstanceOf(SealError);
+		expect((keyless as SealError).kind).toBe("no-key");
+		expect((keyless as SealError).message).toMatch(/no SECRETS_KEY/);
 		await expect(new RawMail(bucket, KEY).get({ ...ref, seal: "v2.x" })).rejects.toThrow(
 			/no kind this server knows/,
 		);
@@ -198,6 +209,23 @@ describe("sealed raw mail", () => {
 		const sealing = new RawMail(store.bucket, KEY);
 		expect(text(await sealing.bytes(ref))).toBe(mail);
 		expect(text(await sealing.bytes(ref, { offset: 5, length: 4 }))).toBe(mail.slice(5, 9));
+		// A row from an object older than sealing, during a deploy, has no seal at all.
+		const { seal: _, ...older } = ref;
+		expect(text(await sealing.bytes(older as RawRef))).toBe(mail);
+	});
+
+	it("leaves a stream it can't seal, rather than hold it open", async () => {
+		const store = memoryBucket();
+		let cancelled = false;
+		const mail = new ReadableStream<Uint8Array>({
+			cancel() {
+				cancelled = true;
+			},
+		});
+		const ref: RawRef = { object: "w/m/a.eml", size: 5, seal: "v1.AAAAAAAAAAAAAAAAAAAAAA" };
+		await expect(new RawMail(store.bucket, undefined).put(ref, mail)).rejects.toThrow(SealError);
+		expect(cancelled).toBe(true);
+		expect(store.objects.size).toBe(0);
 	});
 
 	it("refuses mail that isn't as long as it was said to be", async () => {

@@ -319,12 +319,13 @@ describe("raw mail in R2", () => {
 		const path = `${origin}/api/mail/${box.slug}/${box.mailboxId}/${second?.id}`;
 		const opened = await mail.fetch(path, { headers: owner.headers });
 		expect(opened.status).toBe(500);
-		expect(await opened.text()).not.toContain("gate");
-		const original = await mail
-			.fetch(`${path}/original`, { headers: owner.headers })
-			.then((response) => response.text())
-			.catch(() => "");
-		expect(original).not.toContain("gate");
+		expect(await opened.json()).toEqual({ error: "This message can't be opened on this server." });
+		// Before a download begins, so it isn't one cut short.
+		for (const page of ["original", "html"]) {
+			const answer = await mail.fetch(`${path}/${page}`, { headers: owner.headers });
+			expect(answer.status).toBe(500);
+			expect(await answer.text()).toBe("This message can't be opened on this server.");
+		}
 		// Its thread still shows, without it opened.
 		const threadId = (second as { threadId?: string } | undefined)?.threadId;
 		const thread = await mail.fetch(
@@ -337,6 +338,27 @@ describe("raw mail in R2", () => {
 		expect((await open(box.slug, box.mailboxId, first?.id ?? "")).text.trim()).toBe(
 			"Meet at the gate.",
 		);
+	});
+
+	it("is searched by the start of a message bigger than search reads, from only that part", async () => {
+		const box = await mailboxWithAddress();
+		// Over SEARCH_READ_BYTES (2 MiB), so search reads its start as a range of the sealed object.
+		const filler = Array.from({ length: 30_000 }, () => "x".repeat(76)).join("\r\n");
+		await kept(
+			box.address,
+			message(box.address, { subject: "Notes", body: `Lighthouse keeper.\r\n${filler}` }),
+		);
+		const until = Date.now() + 15_000;
+		let threads: { subject: string }[] = [];
+		while (threads.length === 0 && Date.now() < until) {
+			const response = await mail.fetch(
+				`${origin}/api/mail/${box.slug}/${box.mailboxId}/threads?q=lighthouse`,
+				{ headers: owner.headers },
+			);
+			threads = ((await response.json()) as { threads: { subject: string }[] }).threads;
+			if (threads.length === 0) await new Promise((resolve) => setTimeout(resolve, 200));
+		}
+		expect(threads.map((thread) => thread.subject)).toEqual(["Notes"]);
 	});
 
 	it("reads mail kept as it came, before sealing, beside sealed mail", async () => {

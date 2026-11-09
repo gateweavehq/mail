@@ -139,9 +139,9 @@ alone, since it belongs to the workspace.
 
 **Encryption.** With `SECRETS_KEY` set, each message is encrypted (AES-256-GCM) before it reaches
 R2, under a key of its own that comes from `SECRETS_KEY`, so the bucket, or a copy of it, gives
-nobody any mail. Set it before mail arrives: mail kept without it stays as it came, and is read as
-it is. Make 32 random bytes, keep them somewhere safe, such as a password manager, and give them to
-the Worker:
+nobody the mail itself; R2 still shows each object's name and size. Set it before mail arrives:
+mail kept without it stays as it came, and is read as it is. Make 32 random bytes, keep them
+somewhere safe, such as a password manager, and give them to the Worker:
 
 ```sh
 openssl rand -base64 32
@@ -150,7 +150,9 @@ pnpm wrangler secret put SECRETS_KEY
 
 Wrangler never shows a secret again. **Mail encrypted under one `SECRETS_KEY` can't be read under
 another**, so changing or losing it loses that mail, and the workspaces' Resend keys (see
-[Email](#email)) with it.
+[Email](#email)) with it. A key shorter than 32 bytes, or not base64, encrypts nothing, and the
+Worker's log says so. Once mail is encrypted, update Mail forward only: a version from before
+encryption can't read it.
 
 R2 storage and Durable Object storage are billed past what the plan includes: see
 [R2 pricing](https://developers.cloudflare.com/r2/pricing/) and
