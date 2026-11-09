@@ -72,6 +72,12 @@ export async function agentActivity(slug: string, agentId: string): Promise<Agen
 		})),
 	);
 	const found = settled.flatMap((one) => (one.status === "fulfilled" ? [one.value] : []));
+	for (const one of settled) {
+		if (one.status === "fulfilled") continue;
+		console.error("agent page: a mailbox didn't say what the agent did there", {
+			name: one.reason instanceof Error ? one.reason.name : "unknown",
+		});
+	}
 	const unread = mailboxes.filter((_, at) => settled[at]?.status === "rejected");
 	const all = found.flatMap(({ rows }) => [...rows.wrote, ...rows.received]);
 	const people = await senderNames(workspaceId, all);

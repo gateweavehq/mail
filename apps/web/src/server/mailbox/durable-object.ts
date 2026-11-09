@@ -54,6 +54,20 @@ const MAX_SENDERS = 5;
  */
 const MAX_ENVELOPE_TO = 2_000;
 
+/** How soon after the copy kept another copy of the same mail must come to count (`#cameAlso`). */
+const COPIES_WITHIN_MS = 60 * 60 * 1000;
+
+/** What `#cameAlso` reads of a received message: a type, as a row's must be. */
+type Copy = {
+	envelopeTo: string;
+	cameFor: string | null;
+	verifiedDomain: string | null;
+	arrivedAt: number;
+};
+
+const COPY = `envelope_to AS envelopeTo, came_for AS cameFor, verified_domain AS verifiedDomain,
+	arrived_at AS arrivedAt`;
+
 /** The addresses an envelope's list names, lower case. */
 const recipientsOf = (envelopeTo: string) =>
 	envelopeTo
@@ -415,9 +429,8 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 	async #finishOne(id: string, key: string): Promise<"stored" | "duplicate" | "gone"> {
 		const sql = this.ctx.storage.sql;
 		const mine = sql
-			.exec<{ object: string; envelopeTo: string; cameFor: string | null }>(
-				`SELECT object, envelope_to AS envelopeTo, came_for AS cameFor
-				FROM message WHERE id = ? AND state = 'pending'`,
+			.exec<Copy & { object: string }>(
+				`SELECT object, ${COPY} FROM message WHERE id = ? AND state = 'pending'`,
 				id,
 			)
 			.toArray()[0];
@@ -441,27 +454,16 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			const hash = await bodyHash(this.env.RAW_MAIL, other.object);
 			if (hash !== null) sql.exec("UPDATE message SET body_hash = ? WHERE id = ?", hash, other.id);
 		}
-		const same = sql
-			.exec<{ id: string; envelopeTo: string; cameFor: string | null }>(
-				`SELECT id, envelope_to AS envelopeTo, came_for AS cameFor FROM message
+		const kept = sql
+			.exec<Copy & { id: string }>(
+				`SELECT id, ${COPY} FROM message
 				WHERE delivery_key = ? AND body_hash = ? AND state = 'stored' LIMIT 1`,
 				key,
 				myHash,
 			)
-			.toArray();
-		const kept = same[0];
+			.toArray()[0];
 		if (kept) {
-			// Email Routing hands each recipient its own copy, so this may be the same mail for another
-			// of the mailbox's addresses: the copy kept says it came to that one too, and for the agent
-			// that made it, when the first copy came for none.
-			const to = [...new Set([...recipientsOf(kept.envelopeTo), ...recipientsOf(mine.envelopeTo)])];
-			const envelopeTo = to.join(", ");
-			sql.exec(
-				"UPDATE message SET envelope_to = ?, came_for = ? WHERE id = ?",
-				envelopeTo.length <= MAX_ENVELOPE_TO ? envelopeTo : kept.envelopeTo,
-				kept.cameFor ?? mine.cameFor,
-				kept.id,
-			);
+			this.#cameAlso(kept, mine);
 			// The mail goes before its row. Should deleting it fail, the row is still pending, and the
 			// alarm removes both.
 			await this.env.RAW_MAIL.delete(mine.object);
@@ -470,6 +472,31 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 		}
 		sql.exec("UPDATE message SET body_hash = ? WHERE id = ?", myHash, id);
 		return this.#store(id);
+	}
+
+	/**
+	 * Email Routing hands each recipient its own copy, so a copy of mail already kept may be the
+	 * same mail for another of the mailbox's addresses: the kept one says it came to that one too,
+	 * and for the agent that made it, when it came for none. Only a copy that came soon after, proved
+	 * as the kept one was, counts, so mail sent again later, word for word, can't make an old message
+	 * an agent's. A retry of the same copy changes nothing.
+	 */
+	#cameAlso(kept: Copy & { id: string }, copy: Copy) {
+		if (copy.verifiedDomain !== kept.verifiedDomain) return;
+		if (Date.now() - kept.arrivedAt > COPIES_WITHIN_MS) return;
+		const had = recipientsOf(kept.envelopeTo);
+		const to = [...new Set([...had, ...recipientsOf(copy.envelopeTo)])];
+		const cameFor = kept.cameFor ?? copy.cameFor;
+		if (to.length === had.length && cameFor === kept.cameFor) return;
+		const envelopeTo = to.join(", ");
+		// Past the longest list, the copy changes nothing, so the agent named is always among it.
+		if (envelopeTo.length > MAX_ENVELOPE_TO) return;
+		this.ctx.storage.sql.exec(
+			"UPDATE message SET envelope_to = ?, came_for = ? WHERE id = ?",
+			envelopeTo,
+			cameFor,
+			kept.id,
+		);
 	}
 
 	/**

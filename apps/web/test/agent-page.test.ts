@@ -182,6 +182,13 @@ describe("an agent's page", () => {
 		const copies = listed.messages.filter((one) => one.subject === "To both");
 		expect(copies).toHaveLength(1);
 		expect(copies[0]?.cameTo.sort()).toEqual([space.signUps.address, theirs].sort());
+
+		// A copy not proved as the kept one was doesn't make the kept one the agent's.
+		const replayed = `${crypto.randomUUID()}@shop.example`;
+		await arrive(space.signUps.address, { subject: "Proved once", messageId: replayed });
+		await arrive(theirs, { subject: "Proved once", messageId: replayed, dmarc: "fail" });
+		const after = (await (await page(space, agent.id, world.owner.headers)).json()) as Activity;
+		expect(after.received.map((one) => one.subject)).toEqual(["To both"]);
 	});
 
 	it("is shown to nobody but the workspace's owners and admins", async () => {
