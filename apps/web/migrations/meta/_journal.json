@@ -120,6 +120,13 @@
       "when": 1794192104626,
       "tag": "0016_agent_address_triggers",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "6",
+      "when": 1794233175105,
+      "tag": "0017_agent_pause",
+      "breakpoints": true
     }
   ]
 }

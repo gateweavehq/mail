@@ -8,6 +8,7 @@ import {
 	sessionMiddleware,
 } from "better-auth/api";
 import { and, asc, count, eq, inArray, isNotNull, like, notExists, or } from "drizzle-orm";
+import { alias } from "drizzle-orm/sqlite-core";
 import * as z from "zod";
 import {
 	type AgentAddressPolicy,
@@ -97,13 +98,22 @@ export interface AgentByKey {
 	slug: string;
 }
 
+/** What a paused agent's key is told, wherever it is used. */
+export const AGENT_PAUSED =
+	"This agent is paused. An owner or admin of its workspace can resume it, under Agents in the workspace's settings.";
+
 /**
  * The agent a key belongs to, while it is still an agent member of the workspace the key was made
- * for. Notes the key's use, at most every few minutes.
+ * for; or that it is paused, when its key does nothing until someone resumes it. Every way in with
+ * a key comes through here, so none can miss a pause. Notes the key's use, at most every few
+ * minutes, paused or not, so that its page shows an agent still trying.
  */
-export async function findAgentByKey(db: Database, key: string): Promise<AgentByKey | null> {
+export async function findAgentByKey(
+	db: Database,
+	key: string,
+): Promise<AgentByKey | { paused: true } | null> {
 	if (!isAgentKey(key)) return null;
-	const { agentKey, member, organization } = schema;
+	const { agentKey, agentPause, member, organization } = schema;
 	const row = await db
 		.select({
 			keyId: agentKey.id,
@@ -111,6 +121,7 @@ export async function findAgentByKey(db: Database, key: string): Promise<AgentBy
 			workspaceId: agentKey.organizationId,
 			slug: organization.slug,
 			lastUsedAt: agentKey.lastUsedAt,
+			paused: agentPause.memberId,
 		})
 		.from(agentKey)
 		.innerJoin(
@@ -122,6 +133,7 @@ export async function findAgentByKey(db: Database, key: string): Promise<AgentBy
 			),
 		)
 		.innerJoin(organization, eq(organization.id, agentKey.organizationId))
+		.leftJoin(agentPause, eq(agentPause.memberId, member.id))
 		.where(eq(agentKey.hash, await hashKey(key)))
 		.get();
 	if (!row) return null;
@@ -133,7 +145,20 @@ export async function findAgentByKey(db: Database, key: string): Promise<AgentBy
 			.where(eq(agentKey.id, row.keyId))
 			.run();
 	}
+	if (row.paused !== null) return { paused: true };
 	return { keyId: row.keyId, userId: row.userId, workspaceId: row.workspaceId, slug: row.slug };
+}
+
+/** Of these memberships, those of agents paused now. At most 100 at once, as D1 binds. */
+export async function pausedAmong(db: Database, memberIds: string[]): Promise<Set<string>> {
+	if (memberIds.length === 0) return new Set();
+	const { agentPause } = schema;
+	const rows = await db
+		.select({ memberId: agentPause.memberId })
+		.from(agentPause)
+		.where(inArray(agentPause.memberId, memberIds))
+		.all();
+	return new Set(rows.map((row) => row.memberId));
 }
 
 /**
@@ -177,6 +202,13 @@ export interface AgentInfo {
 	addressPolicy: AgentAddressPolicy;
 	/** How many of those it holds now. */
 	liveAddresses: number;
+	/** When it was paused and by whom, by name while their account lasts; null while it runs. */
+	paused: AgentPauseInfo | null;
+}
+
+export interface AgentPauseInfo {
+	at: number;
+	by: string | null;
 }
 
 /**
@@ -199,7 +231,19 @@ const agentName = z.string().trim().min(1).max(80);
 const id = z.string().min(1).max(64);
 
 export function agentMembers({ db }: { db: Database }) {
-	const { agentAddressPolicy, agentKey, agentPolicy, mailDomain, member, user } = schema;
+	const { agentAddressPolicy, agentKey, agentPause, agentPolicy, mailDomain, member, user } =
+		schema;
+	const pauser = alias(user, "pauser");
+
+	async function pauseOf(memberId: string): Promise<AgentPauseInfo | null> {
+		const row = await db
+			.select({ at: agentPause.pausedAt, by: pauser.name })
+			.from(agentPause)
+			.leftJoin(pauser, eq(pauser.id, agentPause.pausedBy))
+			.where(eq(agentPause.memberId, memberId))
+			.get();
+		return row ? { at: row.at.getTime(), by: row.by } : null;
+	}
 
 	async function requireAdmin(organizationId: string, userId: string) {
 		const row = await db
@@ -310,9 +354,13 @@ export function agentMembers({ db }: { db: Database }) {
 								createdAt: agentKey.createdAt,
 								lastUsedAt: agentKey.lastUsedAt,
 							},
+							pausedAt: agentPause.pausedAt,
+							pausedBy: pauser.name,
 						})
 						.from(member)
 						.innerJoin(user, eq(member.userId, user.id))
+						.leftJoin(agentPause, eq(agentPause.memberId, member.id))
+						.leftJoin(pauser, eq(pauser.id, agentPause.pausedBy))
 						.leftJoin(agentKey, eq(agentKey.userId, user.id))
 						.leftJoin(agentPolicy, eq(agentPolicy.memberId, member.id))
 						.leftJoin(agentAddressPolicy, eq(agentAddressPolicy.memberId, member.id))
@@ -350,6 +398,8 @@ export function agentMembers({ db }: { db: Database }) {
 									}
 								: DEFAULT_AGENT_ADDRESS_POLICY,
 							liveAddresses: live.get(row.memberId) ?? 0,
+							paused:
+								row.pausedAt === null ? null : { at: row.pausedAt.getTime(), by: row.pausedBy },
 						};
 						agents.set(row.id, agent);
 						if (row.key) {
@@ -419,6 +469,7 @@ export function agentMembers({ db }: { db: Database }) {
 						policy: DEFAULT_AGENT_POLICY,
 						addressPolicy: DEFAULT_AGENT_ADDRESS_POLICY,
 						liveAddresses: 0,
+						paused: null,
 					};
 					return ctx.json({ agent, key: key.secret });
 				},
@@ -522,6 +573,46 @@ export function agentMembers({ db }: { db: Database }) {
 						domains,
 					};
 					return ctx.json({ id: agent.id, addressPolicy });
+				},
+			),
+
+			pauseAgent: createAuthEndpoint(
+				"/agents/pause",
+				{
+					method: "POST",
+					body: z.object({ agentId: id }),
+					// Stopping an agent takes nothing from anyone, so it needs no recent sign-in: it
+					// should be quick.
+					use: [sessionMiddleware],
+				},
+				async (ctx) => {
+					const agent = await agentForAdmin(ctx.body.agentId, ctx.context.session.user.id);
+					// Paused again, it stays paused as it first was.
+					await db
+						.insert(agentPause)
+						.values({
+							memberId: agent.memberId,
+							pausedBy: ctx.context.session.user.id,
+							pausedAt: new Date(),
+						})
+						.onConflictDoNothing()
+						.run();
+					return ctx.json({ id: agent.id, paused: await pauseOf(agent.memberId) });
+				},
+			),
+
+			resumeAgent: createAuthEndpoint(
+				"/agents/resume",
+				{
+					method: "POST",
+					body: z.object({ agentId: id }),
+					// It gives the agent's keys back, as much a grant as a new key.
+					use: [freshSessionMiddleware],
+				},
+				async (ctx) => {
+					const agent = await agentForAdmin(ctx.body.agentId, ctx.context.session.user.id);
+					await db.delete(agentPause).where(eq(agentPause.memberId, agent.memberId)).run();
+					return ctx.json({ id: agent.id, paused: null });
 				},
 			),
 

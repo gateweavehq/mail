@@ -571,9 +571,22 @@ test("an admin makes an agent, gives it a mailbox, and its key reads the mail un
 	const page1 = (await listed.json()) as { messages: { subject: string }[] };
 	expect(page1.messages.map((message) => message.subject)).toEqual(["Sort me"]);
 
-	// Revoked, its key reads nothing.
+	// Paused, its key reads nothing, and its page says who paused it; resumed, it reads again.
 	await page.goto(`/${slug}/settings/agents`);
 	await waitForHydration(page);
+	await page.getByRole("button", { name: "Pause" }).click();
+	await expect(page.getByText(/^Paused by .+ just now\.$/)).toBeVisible();
+	const paused = await request.get(`${restUrl}/mailboxes`, {
+		headers: { authorization: `Bearer ${key}` },
+	});
+	expect(paused.status()).toBe(403);
+	expect(((await paused.json()) as { error: string }).error).toMatch(/^This agent is paused\./);
+	await page.getByRole("button", { name: "Resume" }).click();
+	await expect(page.getByRole("button", { name: "Pause" })).toBeVisible();
+	await expect(page.getByText(/^Paused by /)).toHaveCount(0);
+	expect((await api()).status()).toBe(200);
+
+	// Revoked, its key reads nothing.
 	await page.getByRole("button", { name: /^Revoke key / }).click();
 	await page.getByRole("dialog").getByRole("button", { name: "Revoke" }).click();
 	await expect(page.getByText("No keys. It can't read anything until you make one.")).toBeVisible();

@@ -37,7 +37,7 @@ export function takenBy(operation: Operation, route: Route): string[] {
 const FAILURE_WORDS: Record<FailureStatus | 413 | 500, string> = {
 	400: "The request isn't one it takes, or names no mailbox, message or address it can tell.",
 	401: "No agent key, or one that doesn't work: revoked, or its agent deleted.",
-	403: "Your key may not do this here, as your grants or policy have it.",
+	403: "Your key may not do this here, as your grants or policy have it, or its agent is paused.",
 	404: "No such mailbox, message, thread, address or webhook that you may reach.",
 	409: "It can't be done as things are, as when what you answer names nobody.",
 	413: "The body is larger than any request takes.",

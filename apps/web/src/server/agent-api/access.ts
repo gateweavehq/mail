@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { currentCaller } from "../access";
 import { db } from "../auth";
-import { agentPolicyOf, findAgentByKey, isAgentKey } from "../auth/agents";
+import { AGENT_PAUSED, agentPolicyOf, findAgentByKey, isAgentKey } from "../auth/agents";
 import { schema } from "../db";
 import { listDirectory } from "../directory";
 import { addressPolicyOf } from "../directory/agent-address-store";
@@ -17,17 +17,39 @@ import { type Answer, ApiError, type MailAccess } from "./mail-access";
 /** The webhooks object's refusal, in its words, with its status. */
 const refusal = (refused: Refused) => new ApiError(refused.error, refused.status);
 
+/** Why a request has no agent to act for: no key at all, one that doesn't work, or a paused one. */
+export type NoAgent = { hadKey: false } | { hadKey: true; paused: boolean };
+
 /**
- * The agent whose key a request bears as its bearer token, with the key, or why there is none:
- * no key at all, or one that doesn't work. Session cookies never count here.
+ * The agent whose key a request bears as its bearer token, with the key, or why there is none.
+ * Session cookies never count here.
  */
 export async function agentOfRequest(
 	request: Request,
-): Promise<{ key: string; userId: string; slug: string } | { hadKey: boolean }> {
+): Promise<{ key: string; userId: string; slug: string } | NoAgent> {
 	const key = /^Bearer\s+(\S+)$/i.exec(request.headers.get("authorization")?.trim() ?? "")?.[1];
-	const agent = key && isAgentKey(key) ? await findAgentByKey(db, key) : null;
-	if (!key || !agent) return { hadKey: key !== undefined };
+	if (key === undefined) return { hadKey: false };
+	const agent = isAgentKey(key) ? await findAgentByKey(db, key) : null;
+	if (!agent) return { hadKey: true, paused: false };
+	if ("paused" in agent) return { hadKey: true, paused: true };
 	return { key, userId: agent.userId, slug: agent.slug };
+}
+
+/** What a request without an agent to act for is told, and with which status. */
+export function noAgentAnswer(
+	why: NoAgent,
+	without: string,
+): { error: string; status: 401 | 403; challenge: string } {
+	if (why.hadKey && why.paused) {
+		return { error: AGENT_PAUSED, status: 403, challenge: 'Bearer realm="Gateweave Mail"' };
+	}
+	return why.hadKey
+		? {
+				error: "That agent key doesn't work: it was revoked, or its agent deleted.",
+				status: 401,
+				challenge: 'Bearer realm="Gateweave Mail", error="invalid_token"',
+			}
+		: { error: without, status: 401, challenge: 'Bearer realm="Gateweave Mail"' };
 }
 
 /**
@@ -72,6 +94,7 @@ export function accessFor(slug: string, key: string): MailAccess {
 		if (!agent) {
 			throw new ApiError("That agent key doesn't work: it was revoked, or its agent deleted.", 401);
 		}
+		if ("paused" in agent) throw new ApiError(AGENT_PAUSED, 403);
 		const asker: Asker = { agent: memberId, key: agent.keyId };
 		return {
 			stub: webhooksStub(workspaceId),

@@ -1,6 +1,6 @@
 // Ported from Gateweave Track's agent settings (apps/web/src/components/settings/agents-settings.tsx).
 import { Link, useRouter } from "@tanstack/react-router";
-import { AtSign, Bot, Copy, Ellipsis, KeyRound, Plus, Send } from "lucide-react";
+import { AtSign, Bot, Copy, Ellipsis, KeyRound, Pause, Play, Plus, Send } from "lucide-react";
 import { type FormEvent, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "#/components/ui/button";
@@ -275,6 +275,7 @@ function AgentRow({
 	const router = useRouter();
 	const [action, setAction] = useState<"rename" | "sending" | "addresses" | "delete" | null>(null);
 	const [revoking, setRevoking] = useState<AgentKeyInfo | null>(null);
+	const [pausing, setPausing] = useState(false);
 
 	async function newKey() {
 		const result = await authClient.agents.createKey({ agentId: agent.id });
@@ -298,6 +299,34 @@ function AgentRow({
 		await router.invalidate();
 	}
 
+	async function pause() {
+		setPausing(true);
+		const result = await authClient.agents.pause({ agentId: agent.id });
+		setPausing(false);
+		if (result.error) {
+			toast.error(`Could not pause ${agent.name}`, {
+				description: failure(result.error, "Something went wrong"),
+			});
+			return;
+		}
+		toast.success(`${agent.name} is paused`);
+		await router.invalidate();
+	}
+
+	async function resume() {
+		setPausing(true);
+		const result = await authClient.agents.resume({ agentId: agent.id });
+		setPausing(false);
+		if (result.error) {
+			toast.error(`Could not resume ${agent.name}`, {
+				description: failure(result.error, "Something went wrong"),
+			});
+			return;
+		}
+		toast.success(`${agent.name} runs again`);
+		await router.invalidate();
+	}
+
 	async function remove() {
 		const result = await authClient.agents.delete({ agentId: agent.id });
 		if (result.error) {
@@ -310,12 +339,12 @@ function AgentRow({
 
 	return (
 		<li className="space-y-2 px-4 py-3">
-			<div className="flex items-center gap-3">
+			<div className="flex flex-wrap items-center gap-x-3 gap-y-2">
 				<Bot
 					aria-hidden
 					className="size-8 shrink-0 rounded-full border p-1.5 text-muted-foreground"
 				/>
-				<div className="min-w-0 flex-1">
+				<div className="min-w-0 flex-1 basis-48">
 					<p className="truncate text-sm font-medium">{agent.name}</p>
 					<p className="text-xs text-muted-foreground">
 						Created {formatShortDate(agent.createdAt)}
@@ -326,6 +355,27 @@ function AgentRow({
 						{agent.liveAddresses > 0 && ` Holds ${agent.liveAddresses} now.`}
 					</p>
 				</div>
+				{agent.paused ? (
+					<Button variant="outline" size="sm" disabled={pausing} onClick={resume}>
+						<Play />
+						Resume
+					</Button>
+				) : (
+					<Button
+						variant="outline"
+						size="sm"
+						disabled={pausing}
+						onClick={pause}
+						aria-describedby={`pause-${agent.id}`}
+					>
+						<Pause />
+						Pause
+					</Button>
+				)}
+				<span id={`pause-${agent.id}`} hidden>
+					Its keys stop working until someone resumes it, and its mail waiting to be tried again
+					goes to a person.
+				</span>
 				<Button variant="outline" size="sm" onClick={newKey}>
 					<KeyRound />
 					New key
@@ -360,6 +410,19 @@ function AgentRow({
 					</DropdownMenuContent>
 				</DropdownMenu>
 			</div>
+			{agent.paused && (
+				<p className="pl-11 text-xs font-medium">
+					<span title={formatDateTime(agent.paused.at)}>
+						Paused {agent.paused.by ? `by ${agent.paused.by} ` : ""}
+						{formatRelative(agent.paused.at)}.
+					</span>{" "}
+					<span className="font-normal text-muted-foreground">
+						Its keys do nothing until it is resumed. What it wrote that waited to be tried again
+						waits for a person to approve it, and its own webhooks hear nothing. Mail to its
+						addresses still arrives.
+					</span>
+				</p>
+			)}
 			{agent.keys.length === 0 ? (
 				<p className="pl-11 text-xs text-muted-foreground">
 					No keys. It can't read anything until you make one.

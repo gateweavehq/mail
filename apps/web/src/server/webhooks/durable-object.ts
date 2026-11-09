@@ -16,7 +16,7 @@ import {
 	type webhookPatch,
 } from "../../lib/webhooks";
 import { SENT_UNTRUSTED, UNTRUSTED } from "../agent-api/untrusted";
-import { isAgentMembership } from "../auth/agents";
+import { isAgentMembership, pausedAmong } from "../auth/agents";
 import { createDb, schema } from "../db";
 import type { SentFacts } from "../mailbox/events";
 import { decoded, sender } from "../mailbox/people";
@@ -95,6 +95,7 @@ const AGENTS_SECRET = "Only the agent that made this webhook can give it a new s
 const ADMINS_PAUSE = "An admin paused this webhook, so only an admin can resume it.";
 /** Why an agent's own delivery goes no further. */
 const KEY_GONE = "The key that made the webhook was revoked.";
+const PAUSED = "The agent was paused.";
 const UNREAD = "The agent may no longer read that mailbox.";
 /** How long what D1 said of agents' keys and mailboxes counts, while a round of deliveries goes. */
 const READERS_FRESH_MS = 10_000;
@@ -136,10 +137,10 @@ type Listening = {
 };
 
 /**
- * Of some agents' keys, those that still work, and of some agents and mailboxes, as `pair` names
- * them, where the agent may read the mailbox now.
+ * Of some agents' keys, those that still work; of some agents and mailboxes, as `pair` names them,
+ * where the agent may read the mailbox now; and of those agents, the ones paused.
  */
-type Readers = { keys: Set<string>; reading: Set<string> };
+type Readers = { keys: Set<string>; reading: Set<string>; paused: Set<string> };
 
 type DeliveryRow = {
 	id: string;
@@ -461,6 +462,7 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 				workspaceId,
 				keys,
 				agents.map((agent) => ({ agent, mailboxId })),
+				agents,
 			),
 		]);
 		if (!workspace) {
@@ -624,9 +626,11 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 					const why =
 						claim.key === null || !known.keys.has(claim.key)
 							? KEY_GONE
-							: claim.mailboxId !== null && !known.reading.has(pair(claim.agent, claim.mailboxId))
-								? UNREAD
-								: null;
+							: known.paused.has(claim.agent)
+								? PAUSED
+								: claim.mailboxId !== null && !known.reading.has(pair(claim.agent, claim.mailboxId))
+									? UNREAD
+									: null;
 					if (why) {
 						this.#failOne(claim.id, why, Date.now());
 						continue;
@@ -682,10 +686,11 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 				? [{ agent: claim.agent, mailboxId: claim.mailboxId }]
 				: [],
 		);
+		const agents = [...new Set(claims.flatMap((claim) => claim.agent ?? []))];
 		const workspaceId = this.#meta("workspace");
 		if (!workspaceId) return null;
 		try {
-			return await this.#readers(workspaceId, keys, pairs);
+			return await this.#readers(workspaceId, keys, pairs, agents);
 		} catch (error) {
 			console.error("webhooks: D1 didn't answer; an agent's deliveries wait", {
 				name: error instanceof Error ? error.name : "unknown",
@@ -890,21 +895,25 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 	}
 
 	/**
-	 * Of these agents' keys, those that still work, and of each agent and mailbox, whether the agent
-	 * may read that mailbox now, as `canReadMailbox` decides for its routes.
+	 * Of these agents' keys, those that still work; of each agent and mailbox, whether the agent may
+	 * read that mailbox now, as `canReadMailbox` decides for its routes; and of these agents and
+	 * those, which are paused.
 	 */
 	async #readers(
 		workspaceId: string,
 		keys: string[],
 		pairs: { agent: string; mailboxId: string }[],
+		others: string[] = [],
 	): Promise<Readers> {
 		const reading = new Set<string>();
-		if (keys.length === 0 && pairs.length === 0) return { keys: new Set(), reading };
-		const agents = [...new Set(pairs.map((one) => one.agent))];
+		const agents = [...new Set([...pairs.map((one) => one.agent), ...others])];
+		if (keys.length === 0 && agents.length === 0) {
+			return { keys: new Set(), reading, paused: new Set() };
+		}
 		const mailboxIds = [...new Set(pairs.map((one) => one.mailboxId))];
 		const db = createDb(this.env.DB);
 		const { mailbox, mailboxAccess, member } = schema;
-		const [working, roles, grants, boxes] = await Promise.all([
+		const [working, roles, grants, boxes, paused] = await Promise.all([
 			this.#workingKeys(keys),
 			inChunks(agents, (some) =>
 				db
@@ -927,6 +936,7 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 					.where(and(eq(mailbox.organizationId, workspaceId), inArray(mailbox.id, some)))
 					.all(),
 			),
+			inChunks(agents, async (some) => [...(await pausedAmong(db, some))]),
 		]);
 		const roleOf = new Map(roles.map((row) => [row.id, toRole(row.role)]));
 		const granted = new Set(grants.map((row) => pair(row.memberId, row.mailboxId)));
@@ -941,7 +951,7 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 			});
 			if (readable) reading.add(pair(agent, mailboxId));
 		}
-		return { keys: working, reading };
+		return { keys: working, reading, paused: new Set(paused) };
 	}
 
 	/** Has the alarm run by then, unless it runs sooner anyway. */
@@ -962,6 +972,7 @@ const pair = (agent: string, mailboxId: string) => `${agent}/${mailboxId}`;
 function hears(hook: Listening, event: MailEvent, mailboxId: string, readers: Readers): boolean {
 	if (hook.agent === null) return true;
 	if (hook.key === null || !readers.keys.has(hook.key)) return false;
+	if (readers.paused.has(hook.agent)) return false;
 	if (!readers.reading.has(pair(hook.agent, mailboxId))) return false;
 	return event.type === "message.received" || event.sent.by !== hook.agent;
 }

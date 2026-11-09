@@ -122,7 +122,9 @@ These are load-bearing. Breaking one breaks users' data or security, usually sil
     policy, the grant and the limits are checked in the statement that adds the row, every such
     address ends, and it may not take a name in `RESERVED_LOCAL_PARTS` or one in
     `removed_address`. It ends only addresses it made. Whatever else
-    changes something takes `currentMember`, a person signed in. Keep only a key's hash, and never
+    changes something takes `currentMember`, a person signed in. A paused agent's key
+    (`agent_pause`) does nothing: `findAgentByKey` says so, and every way in with a key goes
+    through it, so check a pause there, never route by route. Keep only a key's hash, and never
     log a key. The MCP server (`apps/web/src/server/mcp/`) and the agent API under `/api/v1`
     (`apps/web/src/server/agent-api/`) admit only a working key, never a session. Both are made
     from one list of operations (`agent-api/operations.ts`), which call the same functions as the

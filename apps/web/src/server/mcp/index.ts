@@ -1,6 +1,6 @@
 import { createMcpHandler } from "@modelcontextprotocol/server";
 import { MAX_SEND_BODY } from "../../lib/outbox";
-import { accessFor, agentOfRequest } from "../agent-api/access";
+import { accessFor, agentOfRequest, type NoAgent, noAgentAnswer } from "../agent-api/access";
 import { createMailServer } from "./tools";
 
 /**
@@ -13,7 +13,7 @@ import { createMailServer } from "./tools";
  */
 export async function handleMcpRequest(request: Request): Promise<Response> {
 	const agent = await agentOfRequest(request);
-	if (!("key" in agent)) return unauthorized(agent.hadKey);
+	if (!("key" in agent)) return unauthorized(agent);
 	return mcpHandler.fetch(request, {
 		authInfo: {
 			token: agent.key,
@@ -38,26 +38,22 @@ const mcpHandler = createMcpHandler(
 	{ maxRequestBodySize: MAX_SEND_BODY },
 );
 
-/** A JSON-RPC error, as an MCP client reads one, for a request without a working key. */
-function unauthorized(hadKey: boolean): Response {
+/**
+ * A JSON-RPC error, as an MCP client reads one, for a request without a working key, or with a
+ * paused agent's.
+ */
+function unauthorized(why: NoAgent): Response {
+	const { error, status, challenge } = noAgentAnswer(
+		why,
+		"Mail's MCP server takes an agent's key, as a bearer token. An owner or admin makes one in the workspace's settings, under Agents.",
+	);
 	return Response.json(
+		{ jsonrpc: "2.0", error: { code: -32000, message: error }, id: null },
 		{
-			jsonrpc: "2.0",
-			error: {
-				code: -32000,
-				message: hadKey
-					? "That agent key doesn't work: it was revoked, or its agent deleted."
-					: "Mail's MCP server takes an agent's key, as a bearer token. An owner or admin makes one in the workspace's settings, under Agents.",
-			},
-			id: null,
-		},
-		{
-			status: 401,
+			status,
 			headers: {
 				// No resource metadata: there is no OAuth here that a key could be swapped for.
-				"WWW-Authenticate": hadKey
-					? 'Bearer realm="Gateweave Mail", error="invalid_token"'
-					: 'Bearer realm="Gateweave Mail"',
+				...(status === 401 ? { "WWW-Authenticate": challenge } : {}),
 				"cache-control": "no-store",
 			},
 		},
