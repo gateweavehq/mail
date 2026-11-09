@@ -10,6 +10,7 @@ const TABS = [
 	{ to: "/$workspace/settings/webhooks", label: "Webhooks" },
 	{ to: "/$workspace/settings/domains", label: "Domains" },
 	{ to: "/$workspace/settings/suppressions", label: "Suppressions" },
+	{ to: "/$workspace/settings/images", label: "Images" },
 	{ to: "/$workspace/settings/workspace", label: "Workspace" },
 ] as const;
 

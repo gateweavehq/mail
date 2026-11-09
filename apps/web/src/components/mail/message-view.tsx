@@ -1,9 +1,11 @@
-import { ImageOff, Paperclip, Send, ShieldAlert, ShieldCheck, Trash2 } from "lucide-react";
+import { useRouter } from "@tanstack/react-router";
+import { Image, ImageOff, Paperclip, Send, ShieldAlert, ShieldCheck, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { Button } from "#/components/ui/button";
 import { ConfirmDialog } from "#/components/workspace/confirm-dialog";
 import { isAdminRole, useMyRole } from "#/components/workspace/context";
 import { formatDateTime } from "#/lib/dates";
+import { changeImageSenders } from "#/lib/images";
 import {
 	deleteMessage,
 	htmlUrl,
@@ -61,7 +63,7 @@ export function MessageView({
 				<Sender message={message} />
 			</div>
 
-			{/* A new message starts with its images off, even where the page stays mounted. */}
+			{/* A new message starts as its sender's choice says, even where the page stays mounted. */}
 			<Body key={message.id} workspace={workspace} mailbox={mailbox} message={message} />
 
 			{message.attachments.length > 0 && (
@@ -109,9 +111,10 @@ export function MessageView({
 /**
  * The message as its sender formatted it, when it has HTML, or its text. The HTML is a page of its
  * own in a frame that runs nothing and, until the reader asks, loads nothing from elsewhere; see
- * `server/mailbox/html.ts`. A frame without scripts can't say how tall it is, so it has a height of
- * its own, which the reader can drag. The buttons stay where they are when pressed, and say what
- * they would do next, so the focus stays on them.
+ * `server/mailbox/html.ts`. Images show by themselves when the reader allowed the domain the
+ * message was proved to come from (`lib/images.ts`), and the page says so. A frame without scripts
+ * can't say how tall it is, so it has a height of its own, which the reader can drag. The buttons
+ * stay where they are when pressed, and say what they would do next, so the focus stays on them.
  */
 function Body({
 	workspace,
@@ -122,9 +125,38 @@ function Body({
 	mailbox: string;
 	message: OpenedMessage;
 }) {
+	const router = useRouter();
 	const [asText, setAsText] = useState(false);
-	const [images, setImages] = useState(false);
+	// What the reader chose for this view, and what they last chose for its sender here, until the
+	// page is loaded again with it.
+	const [shown, setShown] = useState<boolean | null>(null);
+	const [saved, setSaved] = useState<boolean | null>(null);
+	const [busy, setBusy] = useState(false);
+	const [error, setError] = useState<string | null>(null);
+	const allowed = saved ?? message.imagesAllowed;
+	const images = shown ?? allowed;
 	const formatted = message.hasHtml && !asText;
+	const domain = message.verifiedDomain;
+
+	async function choose(allow: boolean) {
+		// Not disabled meanwhile, which would take the focus from it: a second press does nothing.
+		if (!domain || busy) return;
+		setBusy(true);
+		setError(null);
+		const answer = await changeImageSenders(
+			workspace,
+			allow ? { action: "allow", mailbox, message: message.id } : { action: "stop", domain },
+		);
+		setBusy(false);
+		if (!answer.ok) {
+			setError(answer.error);
+			return;
+		}
+		setSaved(allow);
+		setShown(null);
+		// The thread's other messages from the sender follow.
+		await router.invalidate();
+	}
 
 	return (
 		<div className="space-y-2">
@@ -135,18 +167,42 @@ function Body({
 					</Button>
 					{formatted && message.remoteImages && (
 						<>
-							<Button size="sm" variant="outline" onClick={() => setImages(!images)}>
+							<Button size="sm" variant="outline" onClick={() => setShown(!images)}>
 								{images ? "Hide remote images" : "Show remote images"}
 							</Button>
-							{!images && (
+							{/* Only a proved domain: a From that nothing proves can be anyone's. */}
+							{domain && (
+								<Button size="sm" variant="outline" onClick={() => choose(!allowed)}>
+									{allowed
+										? `Stop showing images from ${domain}`
+										: `Always show images from ${domain}`}
+								</Button>
+							)}
+							{images && allowed ? (
 								<p className="flex items-center gap-2 text-sm text-muted-foreground">
-									<ImageOff className="size-4 shrink-0" aria-hidden />
-									Remote images are off, so the sender can't tell you opened this.
+									<Image className="size-4 shrink-0" aria-hidden />
+									<span className="min-w-0 break-words">
+										Images show by themselves for mail proved to come from{" "}
+										<span className="font-medium text-foreground">{domain}</span>, as you chose. Its
+										sender can tell you opened this.
+									</span>
 								</p>
+							) : (
+								!images && (
+									<p className="flex items-center gap-2 text-sm text-muted-foreground">
+										<ImageOff className="size-4 shrink-0" aria-hidden />
+										Remote images are off, so the sender can't tell you opened this.
+									</p>
+								)
 							)}
 						</>
 					)}
 				</div>
+			)}
+			{error && (
+				<p role="alert" className="text-sm text-destructive">
+					{error}
+				</p>
 			)}
 			{formatted ? (
 				<div className="h-[70vh] min-h-80 resize-y overflow-hidden rounded-lg border bg-white">

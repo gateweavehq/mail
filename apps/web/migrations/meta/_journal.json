@@ -148,6 +148,13 @@
       "when": 1794239764865,
       "tag": "0020_agent_log",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "6",
+      "when": 1794246961490,
+      "tag": "0021_image_sender",
+      "breakpoints": true
     }
   ]
 }

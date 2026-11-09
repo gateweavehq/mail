@@ -519,6 +519,83 @@ test("a message's HTML shows in a frame that runs nothing and loads only what is
 	await expect(message.getByRole("heading", { name: "Offers" })).toBeVisible();
 });
 
+test("a reader lets a proved sender's images show by themselves, and takes it back", async ({
+	page,
+	request,
+	baseURL,
+}) => {
+	const { slug, mailboxId, to, deliver } = await supportMailbox(page, request, baseURL);
+	const offer = (subject: string, proved: boolean) => [
+		// What Email Routing puts above a message whose sender Cloudflare proved.
+		...(proved
+			? [
+					"Received: from mail.example.org (mail.example.org [192.0.2.1]) by cloudflare-email.net (unknown) id A for <x@example.com>",
+					"Authentication-Results: mx.cloudflare.net; dkim=pass header.d=example.org; dmarc=pass header.from=example.org; spf=pass",
+				]
+			: []),
+		"From: Shop News <news@example.org>",
+		`To: ${to}`,
+		`Subject: ${subject}`,
+		`Message-ID: <${unique("offer")}@example.org>`,
+		"MIME-Version: 1.0",
+		"Content-Type: text/html; charset=utf-8",
+		"",
+		`<h1>${subject}</h1><img src="https://images.example/logo.png" alt="Shop logo">`,
+		"",
+	];
+	await deliver("news@example.org", offer("Kettles", true));
+	// Stands in for the sender's server, which learns each time the message is opened.
+	let asked = 0;
+	await page.route("https://images.example/**", (route) => {
+		asked++;
+		return route.fulfill({ contentType: "image/png", body: Buffer.from(PIXEL, "base64") });
+	});
+	const message = page.frameLocator('iframe[title="The message, as its sender formatted it"]');
+	const openOffer = async (subject: string) => {
+		await page.goto(`/${slug}/mailboxes/${mailboxId}`);
+		await waitForHydration(page);
+		await page.getByRole("link", { name: new RegExp(subject) }).click();
+		await expect(message.getByRole("heading", { name: subject })).toBeVisible();
+	};
+
+	await openOffer("Kettles");
+	expect(asked).toBe(0);
+	await page.getByRole("button", { name: "Always show images from example.org" }).click();
+	await expect.poll(() => asked).toBe(1);
+	await expect(
+		page.getByText(/Images show by themselves for mail proved to come from/),
+	).toBeVisible();
+	await expect(
+		page.getByRole("button", { name: "Stop showing images from example.org" }),
+	).toBeFocused();
+
+	// The next one from the domain shows them without asking.
+	await deliver("news@example.org", offer("Toasters", true));
+	await openOffer("Toasters");
+	await expect.poll(() => asked).toBe(2);
+
+	// One that only says it is from there doesn't, and can't be the reason to allow it.
+	await deliver("news@example.org", offer("Forged", false));
+	await openOffer("Forged");
+	await expect(page.getByRole("button", { name: "Show remote images" })).toBeVisible();
+	await expect(page.getByRole("button", { name: /Always show images/ })).toHaveCount(0);
+	expect(asked).toBe(2);
+
+	// The settings list what was allowed, and take it back.
+	await page.goto(`/${slug}/settings/images`);
+	await waitForHydration(page);
+	const list = page.getByRole("list", { name: "Domains whose images show" });
+	await expect(list.getByText("example.org")).toBeVisible();
+	await list.getByRole("button", { name: "Stop showing images from example.org" }).click();
+	await expect(page.getByText(/None yet/)).toBeVisible();
+
+	await openOffer("Toasters");
+	await expect(
+		page.getByRole("button", { name: "Always show images from example.org" }),
+	).toBeVisible();
+	expect(asked).toBe(2);
+});
+
 test("an owner chooses who reads a mailbox, and only they find it", async ({
 	page,
 	browser,

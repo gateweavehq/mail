@@ -367,3 +367,22 @@ export const mailSuppression = sqliteTable(
 		index("mail_suppression_removed_at_idx").on(table.removedAt),
 	],
 );
+
+/**
+ * A sender whose remote images a person lets show by themselves, by the domain a message is proved
+ * to come from (`verifiedDomain`), never by a `From` that nothing proves. Loading a message's
+ * images tells its sender that someone opened it, and each reader of a shared mailbox decides that
+ * for themselves, so the choice is the member's, in one workspace, and goes with their membership.
+ */
+export const imageSender = sqliteTable(
+	"image_sender",
+	{
+		memberId: text("member_id")
+			.notNull()
+			.references(() => member.id, { onDelete: "cascade" }),
+		/** Lower case, as `verifiedDomain` is. */
+		domain: text("domain").notNull(),
+		createdAt: createdAt(),
+	},
+	(table) => [primaryKey({ columns: [table.memberId, table.domain] })],
+);
