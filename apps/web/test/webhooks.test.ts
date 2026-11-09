@@ -459,6 +459,29 @@ describe("webhooks", () => {
 			{ headers: world.owner.headers },
 		);
 		expect(read.status).toBe(404);
+
+		// One its policy lets go, sent again by a person once its first try was lost, is told of as
+		// sent by them.
+		const lost = `lost-1@${space.slug}.example.org`;
+		const policy = await world.auth("/agents/set-policy", {
+			agentId: agent.id,
+			sendPerDay: 20,
+			allowed: [lost],
+		});
+		expect(policy.status).toBe(200);
+		const third = await written(space, key, { to: [lost], subject: "Send me again" });
+		expect(third.state).toBe("uncertain");
+		const again = await outbox(space, world.owner.headers, {
+			action: "send-again",
+			message: third.id,
+		});
+		expect(await again.json()).toMatchObject({ ok: true, state: "sent" });
+		const [, , , , sentAgain] = await toldAt(path, 5);
+		expect(sentAgain?.type).toBe("message.sent");
+		expect(sentAgain?.data).toMatchObject({
+			message: { id: third.id, writtenBy: writer, approvedBy: null },
+			by: owner,
+		});
 	});
 
 	it("retry a receiver that fails, with the same id and body", async () => {

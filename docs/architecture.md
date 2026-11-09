@@ -277,7 +277,10 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
       approved or rejected the message, by membership, whom it went to, its subject and, for a
       recipient's server, that recipient's state. A rejected message is deleted at once, and is
       told of all the same. A recipient's record that only gets newer, or moves from one kind of
-      bounce to another, tells of nothing. Its alarm, a second later, hands the events to
+      bounce to another, tells of nothing, and as a record never moves back, a delivery reported
+      after a complaint is not told either. A mailbox that has sent mail but neither sent nor
+      received any since it began keeping its `place` takes its mailbox from its own name
+      (`ctx.id.name`) and its workspace from that mail. Its alarm, a second later, hands the events to
       the workspace's object and drops them once it has them, or tries again a minute later. That
       object queues one delivery for each webhook that listens, once per event however often it
       is handed over, and sends them from its own alarm: ten at a time, ten seconds each, claiming
@@ -297,7 +300,8 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
       access. The sender's words come marked as such (`untrusted`), as over the agent API.
       The events about mail the workspace sends carry the workspace, the mailbox, the message
       (ids, when it was written, its From, To, Cc and subject, who wrote and who approved it, and
-      where people open its thread), `by`, who did what the event tells of, and `recipient`, for
+      where people open its thread), `by`, who did what the event tells of (for `message.sent`,
+      who sent it again, or else who approved it, or else who wrote it), and `recipient`, for
       a recipient's server: the address, its state, when, and what the server said. Members are
       named as the workspace has them when the event is queued, with whether they are an agent,
       and by id alone once they have left. Those bodies are marked untrusted too, since a reply

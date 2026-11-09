@@ -1,7 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { and, eq, inArray } from "drizzle-orm";
 import type { z } from "zod";
-import { isPersonRole } from "../../lib/roles";
 import {
 	MAX_WEBHOOKS,
 	type SentEventType,
@@ -15,10 +14,10 @@ import {
 	type webhookPatch,
 } from "../../lib/webhooks";
 import { SENT_UNTRUSTED, UNTRUSTED } from "../agent-api/untrusted";
+import { isAgentMembership } from "../auth/agents";
 import { createDb, schema } from "../db";
 import type { SentFacts } from "../mailbox/events";
 import { decoded, sender } from "../mailbox/people";
-import { toRole } from "../workspaces";
 import { migrate } from "./schema";
 import {
 	attempt,
@@ -297,9 +296,18 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 	 * can't tell, which has the mailbox hand the events over again later.
 	 */
 	async accept(workspaceId: string, mailboxId: string, events: MailEvent[]): Promise<void> {
-		if (this.#listening(mailboxId).length === 0) return;
+		const listening = this.#listening(mailboxId);
+		if (listening.length === 0) return;
 		const origin = this.#meta("origin");
 		if (!origin) return;
+		// Only the people of events some webhook will be told of are looked up.
+		const named = events.filter(
+			(event) =>
+				event.type !== "message.received" &&
+				listening.some((hook) => hook.events.includes(event.type)) &&
+				this.ctx.storage.sql.exec("SELECT 1 FROM seen_event WHERE id = ?", event.id).toArray()
+					.length === 0,
+		);
 		// Named as they are now, and only while they are there: a deleted workspace sends nothing.
 		const db = createDb(this.env.DB);
 		const [workspace, mailbox, members] = await Promise.all([
@@ -315,7 +323,7 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 					and(eq(schema.mailbox.id, mailboxId), eq(schema.mailbox.organizationId, workspaceId)),
 				)
 				.get(),
-			this.#members(workspaceId, events),
+			this.#members(workspaceId, named),
 		]);
 		if (!workspace) {
 			await this.destroy();
@@ -630,7 +638,8 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 				)
 				.all();
 			for (const row of rows) {
-				known.set(row.id, { name: row.name, agent: !isPersonRole(toRole(row.role)) });
+				// As stored, not as `toRole` reads a role it doesn't know, which is for what they may do.
+				known.set(row.id, { name: row.name, agent: isAgentMembership(row.role) });
 			}
 		}
 		return known;

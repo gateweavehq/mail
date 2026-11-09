@@ -60,7 +60,7 @@ export function listed(value: unknown): string[] {
  * Writes an event about a message this mailbox sends into its outbox, with the message as it is
  * now. Called in the transaction that makes the change it tells of, so the one is kept if and only
  * if the other is. `by` is whoever did it; left out, it is who approved the message, or else who
- * wrote it. Nothing when no stored message here has that id.
+ * wrote it, as for a send the alarm tried again. Nothing when no stored message here has that id.
  */
 export function writeSentEvent(
 	sql: SqlStorage,

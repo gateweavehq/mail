@@ -10,7 +10,7 @@ import type { MailEvent } from "../webhooks/durable-object";
 import { bodyHash } from "./body";
 import { DELIVERIES_JSON, type DeliveryEvent, RECIPIENT_COUNT, recordDelivery } from "./deliveries";
 import { type Outcome, outcomeOf, resendOutcome, STALE_SENDING_MS, WAITS_MS } from "./delivery";
-import { type SentFacts, writeSentEvent } from "./events";
+import { listed, type SentFacts, writeSentEvent } from "./events";
 import { indexBatch } from "./indexing";
 import { LINKED_THREADS, migrate } from "./schema";
 import { ftsQuery, searchable } from "./search";
@@ -166,15 +166,7 @@ type Trying = {
 
 /** Who a message goes to, To and Cc, as its request names them. */
 function addressesOf(request: EmailMessageBuilder): string[] {
-	const named = (value: unknown): string[] => {
-		if (Array.isArray(value)) return value.flatMap(named);
-		if (typeof value === "string") return [value];
-		if (value && typeof value === "object" && "email" in value && typeof value.email === "string") {
-			return [value.email];
-		}
-		return [];
-	};
-	return [...named(request.to), ...named(request.cc)];
+	return [...listed(request.to), ...listed(request.cc)];
 }
 
 /** How handing a message over went. */
@@ -615,11 +607,11 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 	}
 
 	/**
-	 * Sends again a message that was refused, or that may or may not have gone. Null when there is
-	 * no such message here, or it isn't one of those.
+	 * Sends again a message that was refused, or that may or may not have gone, as this membership
+	 * asks. Null when there is no such message here, or it isn't one of those.
 	 */
-	async sendAgain(id: string): Promise<SendStatus | null> {
-		return this.#tryNow(id, "again");
+	async sendAgain(id: string, by: string | null = null): Promise<SendStatus | null> {
+		return this.#tryNow(id, "again", null, by ?? undefined);
 	}
 
 	/**
@@ -649,11 +641,13 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 	 * discarded, deleted or tried by someone else meanwhile isn't sent, and the answer is null.
 	 *
 	 * A person who sends again one that stopped because the Resend key changed takes the new key.
+	 * `by`, when they are known, is told as who sent it, should this try send it.
 	 */
 	async #tryNow(
 		id: string,
 		from: "first" | "due" | "again" | "approve",
 		approvedBy: string | null = null,
+		by?: string,
 	): Promise<SendStatus | null> {
 		const sql = this.ctx.storage.sql;
 		const now = Date.now();
@@ -698,7 +692,7 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 						id,
 					)
 					.toArray();
-				if (sent.length > 0) writeSentEvent(sql, "message.sent", id);
+				if (sent.length > 0) writeSentEvent(sql, "message.sent", id, by);
 				return sent.length > 0;
 			});
 			if (told) await this.#tellSoon();
@@ -1095,6 +1089,31 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 		await deletePrefix(this.env.RAW_MAIL, prefix);
 	}
 
+	/**
+	 * Which workspace and mailbox this object is, as the first delivery or send to it said. One that
+	 * has done neither since it began keeping that, but sent mail before, takes its mailbox from its
+	 * own name and its workspace from that mail, and keeps them: an approval, a rejection or a
+	 * delivery event may be what it tells of first.
+	 */
+	#placeOf(): { workspaceId: string; mailboxId: string } | null {
+		const sql = this.ctx.storage.sql;
+		const kept = sql
+			.exec<{ workspaceId: string; mailboxId: string }>(
+				"SELECT workspace_id AS workspaceId, mailbox_id AS mailboxId FROM place",
+			)
+			.toArray()[0];
+		if (kept) return kept;
+		const mailboxId = this.ctx.id.name;
+		const sent = sql
+			.exec<{ workspaceId: string }>(
+				"SELECT workspace_id AS workspaceId FROM outgoing WHERE workspace_id IS NOT NULL LIMIT 1",
+			)
+			.toArray()[0];
+		if (!mailboxId || !sent) return null;
+		this.#place(sent.workspaceId, mailboxId);
+		return { workspaceId: sent.workspaceId, mailboxId };
+	}
+
 	/** Keeps which workspace and mailbox this object is, for the events it tells of. */
 	#place(workspaceId: string, mailboxId: string): void {
 		this.ctx.storage.sql.exec(
@@ -1128,11 +1147,7 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			.toArray();
 		if (rows.length === 0) return "done";
 		const batch = rows.slice(0, EVENT_BATCH);
-		const place = sql
-			.exec<{ workspaceId: string; mailboxId: string }>(
-				"SELECT workspace_id AS workspaceId, mailbox_id AS mailboxId FROM place",
-			)
-			.toArray()[0];
+		const place = this.#placeOf();
 		const events = batch.flatMap((row): MailEvent[] => {
 			if (row.type !== "message.received") {
 				return row.data === null
