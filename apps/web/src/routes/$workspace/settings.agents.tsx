@@ -18,5 +18,12 @@ function AgentsPage() {
 			<Notice title="Agents unavailable">You are no longer a member of this workspace.</Notice>
 		);
 	}
-	return <AgentsSettings admin={data.admin} agents={data.agents} apiUrl={data.apiUrl} />;
+	return (
+		<AgentsSettings
+			admin={data.admin}
+			agents={data.agents}
+			apiUrl={data.apiUrl}
+			domains={data.domains}
+		/>
+	);
 }

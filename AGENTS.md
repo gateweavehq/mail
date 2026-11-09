@@ -116,9 +116,12 @@ These are load-bearing. Breaking one breaks users' data or security, usually sil
     by the cookies that come with it. Reading takes `currentCaller`, and so does the outbox, where
     a key may only send, from a mailbox whose grant lets it (`mailbox_access.send`), within its
     policy (`agent_policy`): mail to anyone the policy doesn't name is `held` until a person
-    approves it. Only people approve, reject, send again or discard. Whatever else changes
-    something takes `currentMember`, a person signed in. Keep only a key's hash, and never log a
-    key.
+    approves it. Only people approve, reject, send again or discard. A key may also make
+    addresses for its agent, in a mailbox it may send from, within `agent_address_policy`. The
+    limits are counted in the statement that adds the row, every such address ends, and it may
+    not take a name in `RESERVED_LOCAL_PARTS`. It ends only addresses it made. Whatever else
+    changes something takes `currentMember`, a person signed in. Keep only a key's hash, and never
+    log a key.
 14. **A message that may have gone is never sent again by itself.** Email Service has no
     idempotency key, so a send that failed without a code, with its own failure, or that nothing
     finished, is `uncertain`, and only a person's "Send again" sends it again. Through Resend, the

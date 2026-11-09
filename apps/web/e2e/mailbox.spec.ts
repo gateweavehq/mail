@@ -631,6 +631,88 @@ test("an agent's mail to someone its settings don't name waits until a person ap
 	).toHaveCount(0);
 });
 
+test("an admin lets an agent make addresses, and the workspace's page says which it made", async ({
+	page,
+	request,
+	baseURL,
+}) => {
+	const { slug, mailboxId, domain } = await supportMailbox(page, request, baseURL);
+
+	await page.goto(`/${slug}/settings/agents`);
+	await waitForHydration(page);
+	await page.getByLabel("Agent name").fill("Sorter");
+	await page.getByRole("button", { name: "Create agent" }).click();
+	const key = await page.getByLabel("Agent key").inputValue();
+	await page.getByRole("button", { name: "Done" }).click();
+	await expect(page.getByText("Can't make addresses.")).toBeVisible();
+
+	// An admin lets it hold a few, for two weeks each, on the workspace's domain.
+	await page.getByRole("button", { name: "More for Sorter" }).click();
+	await page.getByRole("menuitem", { name: "Addresses" }).click();
+	const limits = page.getByRole("dialog", { name: "Addresses Sorter can make" });
+	await limits.getByLabel("How many at once").fill("3");
+	await limits.getByLabel("Each lasts at most, in days").fill("14");
+	await limits.getByLabel(domain).check();
+	await limits.getByRole("button", { name: "Save" }).click();
+	await expect(limits).toBeHidden();
+	await expect(
+		page.getByText(`Makes up to 3 addresses at once on ${domain}, each lasting up to 14 days.`),
+	).toBeVisible();
+
+	// The mailbox lets it send, which an address of its own needs.
+	await page.goto(`/${slug}`);
+	await waitForHydration(page);
+	const card = page
+		.getByRole("listitem")
+		.filter({ has: page.getByRole("heading", { name: "Support" }) });
+	await card.getByRole("button", { name: "Choose who can read Support" }).click();
+	const access = page.getByRole("dialog", { name: "Who can read Support" });
+	await access.getByLabel("Sorter", { exact: true }).check();
+	await access.getByLabel("Sorter can send").check();
+	await access.getByRole("button", { name: "Save" }).click();
+	await expect(access).toBeHidden();
+
+	// It makes one with its key, for a sign-up, and mail to it arrives.
+	const made = await request.post(`/api/mail/${slug}/${mailboxId}/addresses`, {
+		headers: { authorization: `Bearer ${key}` },
+		data: { action: "make", domain, localPart: "signup-1" },
+	});
+	expect(made.status(), await made.text()).toBe(200);
+	const address = `signup-1@${domain}`;
+	expect(await made.json()).toMatchObject({ ok: true, address: { address } });
+	const delivered = await request.post(
+		`/cdn-cgi/local/email?from=shop@example.org&to=${encodeURIComponent(address)}`,
+		{
+			data: [
+				"From: A Shop <shop@example.org>",
+				`To: ${address}`,
+				"Subject: Confirm your account",
+				"Date: Mon, 09 Nov 2026 09:00:00 +0000",
+				`Message-ID: <${Date.now()}.signup@example.org>`,
+				"",
+				"Click to confirm.",
+				"",
+			].join("\r\n"),
+		},
+	);
+	expect(delivered.status()).toBe(200);
+
+	// The workspace's page lists it with who made it, and when it ends.
+	await page.reload();
+	await waitForHydration(page);
+	const listed = card
+		.getByRole("list", { name: "Addresses of Support" })
+		.getByRole("listitem")
+		.filter({
+			hasText: address,
+		});
+	await expect(listed.getByText("Made by Sorter")).toBeVisible();
+	await expect(listed.getByRole("button", { name: `Remove ${address}` })).toBeVisible();
+	await page.goto(`/${slug}/settings/agents`);
+	await waitForHydration(page);
+	await expect(page.getByText("Holds 1 now.", { exact: false })).toBeVisible();
+});
+
 /** A one-pixel PNG. */
 const PIXEL =
 	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";

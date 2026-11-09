@@ -106,6 +106,20 @@
       "when": 1794184998905,
       "tag": "0014_resend_webhook_unused",
       "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "6",
+      "when": 1794190016407,
+      "tag": "0015_agent_addresses",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "6",
+      "when": 1794190017014,
+      "tag": "0016_agent_address_triggers",
+      "breakpoints": true
     }
   ]
 }

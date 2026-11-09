@@ -170,6 +170,29 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     Agents are kept off the members page and out of Better Auth's role and removal endpoints;
     deleting one, from its own page, takes its keys and grants, and a deleted workspace takes its
     agents.
+  - **Addresses an agent makes** (`server/directory/agent-addresses.ts`), such as one for each
+    sign-up or task. An owner or admin sets how many it may hold at once, how long each may last
+    and on which proved domains (`agent_address_policy`, keyed by membership, set on the Agents
+    page with a recent sign-in). Without a policy it makes none. With its key, the agent makes one at
+    `/api/mail/<workspace>/<mailbox>/addresses` (`make`), lists those it made there (`GET`) and
+    ends one of its own early (`end`). The address goes to a mailbox whose grant lets the agent
+    send, never further than its policy says, and always ends: an agent never makes a permanent
+    one. It may make in a day as many as it may hold, so ended addresses, whose names are kept 30
+    days, can't fill the workspace's cap. One `INSERT … SELECT … WHERE` counts both and the
+    workspace's total in the statement that adds the row, so calls at once can't pass them.
+    Without a name of its own, Mail picks 12 random letters and digits. An agent can't take the
+    names that prove who runs a domain: a certificate authority writes to `admin`,
+    `administrator`, `webmaster`, `hostmaster` and `postmaster` before it issues a certificate
+    (CA/Browser Forum Baseline Requirements 3.2.2.4.4). Nor can it take RFC 2142's role names, or
+    `root` and `mailer-daemon` (`RESERVED_LOCAL_PARTS`). An admin can still add any of them.
+    `mail_address.agent_member_id` names the agent. Triggers stand in for a reference
+    (`0016_agent_address_triggers.sql`), as Drizzle Kit's `ADD COLUMN` drops `ON DELETE`:
+    - the agent must be an agent of the mailbox's workspace;
+    - when its membership goes, however that comes about, its addresses end at once and no longer
+      name it.
+
+    Owners and admins see on the workspace's page which agent made each address, and can remove
+    it.
   - **HTML.** A message's HTML is a page of its own, at `…/<message>/html`, which the message's
     page shows in a frame; its text, or the text made from its HTML, is a click away. What makes
     it safe is the policy it is served with (`framePolicy` in `html.ts`): `sandbox` without
@@ -536,7 +559,7 @@ Not built. This is where it is going, and it may change.
   as above.
 - **Remote images per sender**, remembered for those the reader trusts, where now they are asked
   for each time.
-- **Addresses and aliases an agent can make for itself.**
+- **Aliases that point at a mailbox.**
 - **Writing more than plain text**: formatting, attachments, forwarding and replying to all.
 
 ## What Cloudflare does with mail

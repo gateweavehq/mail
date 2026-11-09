@@ -214,6 +214,11 @@ function MailboxCard({
 						<li key={address.id} className="flex flex-wrap items-center justify-between gap-2">
 							<span className="min-w-0 break-all font-mono text-xs">{address.address}</span>
 							<span className="flex items-center gap-2 text-sm text-muted-foreground">
+								{address.madeBy && (
+									<span className="max-w-48 truncate" title={`Made by ${address.madeBy}`}>
+										Made by {address.madeBy}
+									</span>
+								)}
 								{address.domainProved ? (
 									address.expiresAt && <AddressEnd time={address.expiresAt} />
 								) : (

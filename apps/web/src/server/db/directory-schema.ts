@@ -144,11 +144,19 @@ export const mailAddress = sqliteTable(
 		expiresAt: integer("expires_at", { mode: "timestamp_ms" }),
 		createdBy: text("created_by").references(() => user.id, { onDelete: "set null" }),
 		createdAt: createdAt(),
+		/**
+		 * The agent that made it for itself, by membership, within `agent_address_policy`. Triggers
+		 * stand in for a reference (migration 0016), as Drizzle Kit's `ADD COLUMN` drops `ON DELETE`:
+		 * the membership must be in the mailbox's workspace, and when it goes, the address ends and
+		 * this becomes null.
+		 */
+		agentMemberId: text("agent_member_id"),
 	},
 	(table) => [
 		uniqueIndex("mail_address_domain_local_part_unique").on(table.domainId, table.localPart),
 		index("mail_address_mailbox_id_idx").on(table.mailboxId),
 		index("mail_address_expires_at_idx").on(table.expiresAt),
+		index("mail_address_agent_member_id_idx").on(table.agentMemberId),
 	],
 );
 
@@ -164,6 +172,24 @@ export const agentPolicy = sqliteTable("agent_policy", {
 	sendPerDay: integer("send_per_day").notNull(),
 	/** Addresses and whole domains (`@example.com`) its mail goes to without a person, as JSON. */
 	allowed: text("allowed").notNull(),
+	updatedBy: text("updated_by").references(() => user.id, { onDelete: "set null" }),
+	updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+});
+
+/**
+ * What addresses an agent may make for itself, set by owners and admins. An agent without a row
+ * makes none (`lib/agent-addresses.ts`). It belongs to the membership, so it goes with the agent.
+ */
+export const agentAddressPolicy = sqliteTable("agent_address_policy", {
+	memberId: text("member_id")
+		.primaryKey()
+		.references(() => member.id, { onDelete: "cascade" }),
+	/** Live addresses it may hold at once, and make in a day. Zero stops it making any. */
+	maxLive: integer("max_live").notNull(),
+	/** The longest one of them may last, in days. */
+	maxDays: integer("max_days").notNull(),
+	/** The domains it may make them on, by name, as JSON. */
+	domains: text("domains").notNull(),
 	updatedBy: text("updated_by").references(() => user.id, { onDelete: "set null" }),
 	updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
 });
