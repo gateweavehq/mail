@@ -432,7 +432,8 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
         one and byte for byte: the message is refused (`mail:copy_unread`), or `uncertain` after a
         try that may have gone. R2 failing is tried again as a busy moment is. A calendar is kept as
         `application/octet-stream` in the copy, as a reader would decode it as text and change its
-        line ends, and goes as `text/calendar`.
+        line ends, and goes as `text/calendar`. Email Service is handed each file's bytes and
+        Resend its Base64, as each takes them.
       - **Sizes.** Base64 makes 10 MB about 13.4, so the API takes a body of 16 MB to send
         (`MAX_SEND_BODY`), and so does the MCP handler, for every tool, as it reads a request
         before it knows which tool it calls. The agents' API hands the message to the outbox as
@@ -762,3 +763,14 @@ Measured on 2026-11-07. These shape the design above, and Cloudflare may change 
 - **`message.headers.get()` joins a repeated header with ", "**, so it can't tell Cloudflare's
   `Authentication-Results` from a sender's. Mail reads the header block from the raw message
   instead.
+
+Sending through Email Service's Workers binding, measured on 2026-11-09:
+
+- **A file's `content` given as a string goes as those characters,** not as the Base64 they spell,
+  although the binding's type says "Base64 string or binary content". The recipient gets the
+  Base64 text as the file. Mail hands it bytes, and the stand-in binding in `test/mail-worker.ts`
+  does the same as the real one, so a string there fails the tests.
+- **It writes the message again:** parts arrive quoted-printable or 7bit, whatever they were
+  given as, and an inline image arrives without its filename.
+- **It took every kind of file tried,** among them `.html`, `.zip`, `.svg`, `.json`, `.docx` and
+  `.eml`. Mail refuses Resend's refused kinds for both providers all the same.

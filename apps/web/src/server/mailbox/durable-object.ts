@@ -20,7 +20,7 @@ import {
 	WAITS_MS,
 } from "./delivery";
 import { listed, type SentFacts, writeSentEvent } from "./events";
-import { base64Size } from "./files";
+import { base64Size, bytesOfBase64 } from "./files";
 import { indexBatch } from "./indexing";
 import { LINKED_THREADS, migrate } from "./schema";
 import { ftsQuery, searchable } from "./search";
@@ -792,7 +792,20 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 		const request = files.length > 0 ? { ...written, attachments: files } : written;
 		if (row.provider !== "resend") {
 			try {
-				const result = await this.env.EMAIL.send(request);
+				// The binding sends a string's content as it is, Base64 and all, whatever its docs say
+				// (measured 2026-11-09), so the files go to it as bytes.
+				const result = await this.env.EMAIL.send(
+					files.length > 0
+						? {
+								...written,
+								attachments: files.map((file) => ({
+									...file,
+									content:
+										typeof file.content === "string" ? bytesOfBase64(file.content) : file.content,
+								})),
+							}
+						: written,
+				);
 				return { ok: true, providerId: result.messageId };
 			} catch (error) {
 				const outcome = outcomeOf(error, row.attempts, Date.now());
