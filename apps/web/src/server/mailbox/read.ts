@@ -485,5 +485,7 @@ export async function deleteMessageAnswer(
 	if (!isAdminRole(box.member.membership.role)) {
 		return answer({ ok: false, error: "Only an owner or admin can delete mail." }, 403);
 	}
-	return (await box.stub.remove(messageId)) ? answer({ ok: true }) : notFoundJson();
+	return (await box.stub.remove(messageId, box.member.membership.memberId))
+		? answer({ ok: true })
+		: notFoundJson();
 }

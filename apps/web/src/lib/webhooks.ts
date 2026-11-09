@@ -1,15 +1,31 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
+import type { DeliveryState } from "./delivery";
 import type { Person } from "./mailbox";
 import { isAdminRole } from "./roles";
 
 /**
- * Webhooks tell other services, such as an agent's trigger, of mail as it comes. Each delivery is
- * a POST signed per Standard Webhooks (https://www.standardwebhooks.com): `webhook-id`,
- * `webhook-timestamp` and `webhook-signature` headers, with a `whsec_` secret.
+ * Webhooks tell other services, such as an agent's trigger, of mail as it comes and of what becomes
+ * of mail the workspace sends. Each delivery is a POST signed per Standard Webhooks
+ * (https://www.standardwebhooks.com): `webhook-id`, `webhook-timestamp` and `webhook-signature`
+ * headers, with a `whsec_` secret.
  */
-export const WEBHOOK_EVENTS = ["message.received"] as const;
+export const WEBHOOK_EVENTS = [
+	"message.received",
+	"message.held",
+	"message.rejected",
+	"message.sent",
+	"message.delivered",
+	"message.bounced",
+	"message.complained",
+] as const;
 export type WebhookEventType = (typeof WEBHOOK_EVENTS)[number];
+
+/** The events about mail the workspace sends, rather than mail that came to it. */
+export type SentEventType = Exclude<WebhookEventType, "message.received">;
+
+/** The events that tell of one recipient's server, from the provider's delivery events. */
+export type DeliveryEventType = "message.delivered" | "message.bounced" | "message.complained";
 
 /** Sent only when an admin asks for a test delivery, whatever the webhook subscribes to. */
 export const WEBHOOK_TEST_EVENT = "webhook.test";
@@ -110,6 +126,43 @@ export interface WebhookMessage {
 	url: string;
 }
 
+/** A member, as an event names them: who wrote, approved or rejected a message. */
+export interface WebhookActor {
+	/** Their membership's id. */
+	id: string;
+	/** Null once they have left the workspace, as `agent` is. */
+	name: string | null;
+	agent: boolean | null;
+}
+
+/** A message the workspace sent, or wrote to send, and where to open it. */
+export interface WebhookSentMessage {
+	id: string;
+	threadId: string;
+	/** When it was written, as an ISO 8601 date. */
+	writtenAt: string;
+	from: Person | null;
+	to: string[];
+	cc: string[];
+	subject: string;
+	/** Null for mail sent before Mail kept who wrote it. */
+	writtenBy: WebhookActor | null;
+	/** Who approved it, when it waited for approval. */
+	approvedBy: WebhookActor | null;
+	url: string;
+}
+
+/** What one recipient's server did with it, as the provider's delivery event said. */
+export interface WebhookRecipient {
+	/** Lower case. */
+	address: string;
+	state: DeliveryState;
+	/** When it happened, by the provider's clock, as an ISO 8601 date. */
+	at: string;
+	/** What the receiving server or the provider said, cut short. */
+	detail: string | null;
+}
+
 export type WebhookPayload =
 	| {
 			type: "message.received";
@@ -120,6 +173,22 @@ export type WebhookPayload =
 				mailbox: { id: string; name: string };
 				message: WebhookMessage;
 				/** How to read what the sender wrote. */
+				untrusted: string;
+			};
+	  }
+	| {
+			type: SentEventType;
+			/** When it happened, as an ISO 8601 date. */
+			timestamp: string;
+			data: {
+				workspace: WebhookWorkspace;
+				mailbox: { id: string; name: string };
+				message: WebhookSentMessage;
+				/** Who did what the event tells of; null for what a recipient's server did. */
+				by: WebhookActor | null;
+				/** For `message.delivered`, `.bounced` and `.complained`: the recipient it tells of. */
+				recipient: WebhookRecipient | null;
+				/** How to read the subject, and what a recipient's server said. */
 				untrusted: string;
 			};
 	  }

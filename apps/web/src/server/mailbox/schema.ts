@@ -221,6 +221,13 @@ CREATE TABLE event (
 CREATE INDEX event_at ON event (at);
 `;
 
+// Events about mail this mailbox sends, from held to bounced. Each keeps what it tells of in
+// `data`, taken when it happened: the message may be gone by the time it is told, as a rejected one
+// is at once. Events about mail that came keep nothing here and are read from the message.
+const VERSION_9 = `
+ALTER TABLE event ADD COLUMN data TEXT;
+`;
+
 /** Each brings the schema from the version before it. Append only: objects keep what they ran. */
 export const MIGRATIONS: ((sql: SqlStorage) => void)[] = [
 	(sql) => sql.exec(VERSION_1),
@@ -248,6 +255,7 @@ export const MIGRATIONS: ((sql: SqlStorage) => void)[] = [
 	(sql) => sql.exec(VERSION_6),
 	(sql) => sql.exec(VERSION_7),
 	(sql) => sql.exec(VERSION_8),
+	(sql) => sql.exec(VERSION_9),
 ];
 
 /** What migrating needs of a Durable Object's storage. */

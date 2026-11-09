@@ -145,7 +145,7 @@ export async function outboxAnswer(
 		if (!writerOrAdmin && !isHeld(row)) {
 			return refuse("Only who wrote it, or an owner or admin, can discard it.", 403);
 		}
-		return (await box.stub.discard(action.message, !writerOrAdmin))
+		return (await box.stub.discard(action.message, !writerOrAdmin, memberId))
 			? answer({ ok: true })
 			: refuse("Only a message that isn't sent can be discarded.", 409);
 	}
@@ -175,7 +175,7 @@ export async function outboxAnswer(
 		// Counted before it is known to go, as only the object can say, at once.
 		const allowed = await allowSend(workspaceId);
 		if (!allowed.allowed) return tooMany(allowed.retryAfter);
-		const status = await box.stub.sendAgain(action.message);
+		const status = await box.stub.sendAgain(action.message, memberId);
 		return status ? answer({ ok: true, ...status }) : refuse("It is sent, or being sent.", 409);
 	}
 

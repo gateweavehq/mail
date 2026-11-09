@@ -10,8 +10,9 @@ function mailbox() {
 	migrate(storage);
 	db.prepare(
 		`INSERT INTO message (id, state, delivery_key, object, size, arrived_at, envelope_from,
-			envelope_to, sent_by)
-		VALUES ('m1', 'stored', 'sent:m1', 'w/m/m1.eml', 10, 1, 'help@example.com', 'a@x', 'member')`,
+			envelope_to, from_header, subject, sent_by, thread_id)
+		VALUES ('m1', 'stored', 'sent:m1', 'w/m/m1.eml', 10, 1, 'help@example.com', 'a@x',
+			'Help <help@example.com>', 'Your order', 'member', 'm1')`,
 	).run();
 	db.prepare(
 		`INSERT INTO outgoing (message, state, request, provider, provider_id)
@@ -29,7 +30,16 @@ function mailbox() {
 		});
 	const rows = () =>
 		db.prepare("SELECT recipient, state, at, detail FROM delivery ORDER BY recipient").all();
-	return { db, record, rows };
+	/** What the outbox holds for the workspace's webhooks, in the order it was written. */
+	const told = () =>
+		(
+			db.prepare("SELECT type, message, data FROM event ORDER BY rowid").all() as {
+				type: string;
+				message: string;
+				data: string;
+			}[]
+		).map((row) => ({ type: row.type, about: row.message, ...JSON.parse(row.data) }));
+	return { db, record, rows, told };
 }
 
 describe("recording delivery events", () => {
@@ -151,6 +161,49 @@ describe("recording delivery events", () => {
 		expect(JSON.parse(json())).toEqual([
 			{ recipient: "ada@example.org", state: "bounced", at: 1000, detail: "550" },
 		]);
+	});
+
+	it("tells the workspace's webhooks once of each thing a recipient's server came to do", () => {
+		const { record, told } = mailbox();
+		record({ state: "deferred", detail: "451 later" });
+		record({ state: "delivered", at: 2000 });
+		record({ state: "delivered", at: 3000 });
+		record({ recipient: "grace@example.org", state: "bounced", at: 2500, detail: "550" });
+		record({ recipient: "grace@example.org", state: "failed", at: 2600 });
+		record({ state: "complained", at: 9000 });
+		record({ state: "deferred", at: 9500 });
+		expect(
+			told().map((event) => [event.type, event.recipient.address, event.recipient.at]),
+		).toEqual([
+			["message.delivered", "ada@example.org", 2000],
+			["message.bounced", "grace@example.org", 2500],
+			["message.complained", "ada@example.org", 9000],
+		]);
+		const [, bounced] = told();
+		expect(bounced).toMatchObject({
+			about: "m1",
+			by: null,
+			recipient: { address: "grace@example.org", state: "bounced", at: 2500, detail: "550" },
+			message: {
+				id: "m1",
+				threadId: "m1",
+				writtenAt: 1,
+				from: "Help <help@example.com>",
+				to: [],
+				cc: [],
+				subject: "Your order",
+				writtenBy: "member",
+				approvedBy: null,
+			},
+		});
+	});
+
+	it("tells nothing when the event changes no record", () => {
+		const { record, told } = mailbox();
+		record({ state: "complained", at: 9000 });
+		record({ state: "delivered", at: 2000 });
+		record({ state: "complained", at: 9000 });
+		expect(told().map((event) => event.type)).toEqual(["message.complained"]);
 	});
 
 	it("counts the addresses a message went to once each, and none for one it didn't send", () => {

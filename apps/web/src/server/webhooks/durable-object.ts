@@ -1,18 +1,22 @@
 import { DurableObject } from "cloudflare:workers";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import type { z } from "zod";
 import {
 	MAX_WEBHOOKS,
+	type SentEventType,
 	WEBHOOK_TEST_EVENT,
 	type Webhook,
+	type WebhookActor,
 	type WebhookDelivery,
 	type WebhookEventType,
 	type WebhookPayload,
 	type webhookInput,
 	type webhookPatch,
 } from "../../lib/webhooks";
-import { UNTRUSTED } from "../agent-api/untrusted";
+import { SENT_UNTRUSTED, UNTRUSTED } from "../agent-api/untrusted";
+import { isAgentMembership } from "../auth/agents";
 import { createDb, schema } from "../db";
+import type { SentFacts } from "../mailbox/events";
 import { decoded, sender } from "../mailbox/people";
 import { migrate } from "./schema";
 import {
@@ -26,9 +30,14 @@ import {
 	urlRefusal,
 } from "./signing";
 
-/** What a mailbox hands over of mail it stored. Header values are as sent, not decoded. */
-export interface MailEvent {
-	/** The event's own id: the same each time the mailbox hands it over, so it is queued once. */
+/**
+ * What a mailbox hands over of mail it stored, or of mail it sends. Header values are as written,
+ * not decoded. Each has its own id: the same each time the mailbox hands it over, so it is queued
+ * once.
+ */
+export type MailEvent = ReceivedEvent | SentEvent;
+
+export interface ReceivedEvent {
 	id: string;
 	type: "message.received";
 	message: {
@@ -44,6 +53,20 @@ export interface MailEvent {
 		verifiedDomain: string | null;
 	};
 }
+
+export interface SentEvent {
+	id: string;
+	type: SentEventType;
+	/** When it happened. */
+	at: number;
+	sent: SentFacts;
+}
+
+/** A member as the workspace has them now, for naming who wrote, approved or rejected mail. */
+type Known = { name: string; agent: boolean };
+
+/** D1 binds at most 100 values in a statement; one is the workspace's. */
+const MEMBERS_AT_ONCE = 90;
 
 /** What the gateway knows of the workspace a change is for, and where people reach the app. */
 export interface WebhookLink {
@@ -273,12 +296,21 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 	 * can't tell, which has the mailbox hand the events over again later.
 	 */
 	async accept(workspaceId: string, mailboxId: string, events: MailEvent[]): Promise<void> {
-		if (this.#listening(mailboxId).length === 0) return;
+		const listening = this.#listening(mailboxId);
+		if (listening.length === 0) return;
 		const origin = this.#meta("origin");
 		if (!origin) return;
+		// Only the people of events some webhook will be told of are looked up.
+		const named = events.filter(
+			(event) =>
+				event.type !== "message.received" &&
+				listening.some((hook) => hook.events.includes(event.type)) &&
+				this.ctx.storage.sql.exec("SELECT 1 FROM seen_event WHERE id = ?", event.id).toArray()
+					.length === 0,
+		);
 		// Named as they are now, and only while they are there: a deleted workspace sends nothing.
 		const db = createDb(this.env.DB);
-		const [workspace, mailbox] = await Promise.all([
+		const [workspace, mailbox, members] = await Promise.all([
 			db
 				.select({ slug: schema.organization.slug })
 				.from(schema.organization)
@@ -291,6 +323,7 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 					and(eq(schema.mailbox.id, mailboxId), eq(schema.mailbox.organizationId, workspaceId)),
 				)
 				.get(),
+			this.#members(workspaceId, named),
 		]);
 		if (!workspace) {
 			await this.destroy();
@@ -309,14 +342,15 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 				const hooks = this.#listening(mailboxId).filter((hook) => hook.events.includes(event.type));
 				if (hooks.length === 0) continue;
 				sql.exec("INSERT INTO seen_event (id, at) VALUES (?, ?)", event.id, now);
+				const where = {
+					workspace: { id: workspaceId, slug: workspace.slug },
+					mailbox: { id: mailboxId, name: mailbox.name },
+					origin,
+				};
 				const body = JSON.stringify(
-					received(
-						event,
-						{ id: workspaceId, slug: workspace.slug },
-						mailboxId,
-						mailbox.name,
-						origin,
-					),
+					event.type === "message.received"
+						? received(event, where)
+						: sentPayload(event, where, members),
 				);
 				for (const hook of hooks) this.#queue(hook.id, event.type, mailboxId, body, now);
 				any = true;
@@ -577,6 +611,40 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 			.one().due;
 	}
 
+	/** The members events about sent mail name, by membership, as the workspace has them now. */
+	async #members(workspaceId: string, events: MailEvent[]): Promise<Map<string, Known>> {
+		const ids = [
+			...new Set(
+				events.flatMap((event) =>
+					event.type === "message.received"
+						? []
+						: [event.sent.message.writtenBy, event.sent.message.approvedBy, event.sent.by],
+				),
+			),
+		].filter((id) => id !== null);
+		const known = new Map<string, Known>();
+		const db = createDb(this.env.DB);
+		const { member, user } = schema;
+		for (let at = 0; at < ids.length; at += MEMBERS_AT_ONCE) {
+			const rows = await db
+				.select({ id: member.id, name: user.name, role: member.role })
+				.from(member)
+				.innerJoin(user, eq(member.userId, user.id))
+				.where(
+					and(
+						eq(member.organizationId, workspaceId),
+						inArray(member.id, ids.slice(at, at + MEMBERS_AT_ONCE)),
+					),
+				)
+				.all();
+			for (const row of rows) {
+				// As stored, not as `toRole` reads a role it doesn't know, which is for what they may do.
+				known.set(row.id, { name: row.name, agent: isAgentMembership(row.role) });
+			}
+		}
+		return known;
+	}
+
 	/** Has the alarm run by then, unless it runs sooner anyway. */
 	async #alarmBy(at: number): Promise<void> {
 		const current = await this.ctx.storage.getAlarm();
@@ -584,25 +652,31 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 	}
 }
 
-/** The body of a `message.received` delivery: what a listing shows of it, marked untrusted. */
-function received(
-	event: MailEvent,
-	workspace: { id: string; slug: string },
-	mailboxId: string,
-	mailboxName: string,
-	origin: string,
-): WebhookPayload {
-	const message = event.message;
-	const arrivedAt = new Date(message.arrivedAt).toISOString();
-	const path = [workspace.slug, "mailboxes", mailboxId, "threads", message.threadId]
+/** Where an event happened, and where people reach the app. */
+interface Where {
+	workspace: { id: string; slug: string };
+	mailbox: { id: string; name: string };
+	origin: string;
+}
+
+/** Where to open a thread in the app. */
+function threadUrl(where: Where, threadId: string): string {
+	const path = [where.workspace.slug, "mailboxes", where.mailbox.id, "threads", threadId]
 		.map(encodeURIComponent)
 		.join("/");
+	return new URL(`/${path}`, where.origin).href;
+}
+
+/** The body of a `message.received` delivery: what a listing shows of it, marked untrusted. */
+function received(event: ReceivedEvent, where: Where): WebhookPayload {
+	const message = event.message;
+	const arrivedAt = new Date(message.arrivedAt).toISOString();
 	return {
 		type: "message.received",
 		timestamp: arrivedAt,
 		data: {
-			workspace,
-			mailbox: { id: mailboxId, name: mailboxName },
+			workspace: where.workspace,
+			mailbox: where.mailbox,
 			message: {
 				id: message.id,
 				threadId: message.threadId,
@@ -617,9 +691,45 @@ function received(
 				verifiedDomain: message.verifiedDomain,
 				dmarc: message.dmarc,
 				size: message.size,
-				url: new URL(`/${path}`, origin).href,
+				url: threadUrl(where, message.threadId),
 			},
 			untrusted: UNTRUSTED,
+		},
+	};
+}
+
+/**
+ * The body of a delivery about mail the workspace sends: the message as it was then, who did what
+ * the event tells of, and for a recipient's server, what it did.
+ */
+function sentPayload(event: SentEvent, where: Where, members: Map<string, Known>): WebhookPayload {
+	const { message, by, recipient } = event.sent;
+	const actor = (id: string | null): WebhookActor | null => {
+		if (id === null) return null;
+		const known = members.get(id);
+		return { id, name: known?.name ?? null, agent: known?.agent ?? null };
+	};
+	return {
+		type: event.type,
+		timestamp: new Date(event.at).toISOString(),
+		data: {
+			workspace: where.workspace,
+			mailbox: where.mailbox,
+			message: {
+				id: message.id,
+				threadId: message.threadId,
+				writtenAt: new Date(message.writtenAt).toISOString(),
+				from: sender(message.from),
+				to: message.to.map((address) => address.trim().toLowerCase()),
+				cc: message.cc.map((address) => address.trim().toLowerCase()),
+				subject: decoded(message.subject),
+				writtenBy: actor(message.writtenBy),
+				approvedBy: actor(message.approvedBy),
+				url: threadUrl(where, message.threadId),
+			},
+			by: actor(by),
+			recipient: recipient && { ...recipient, at: new Date(recipient.at).toISOString() },
+			untrusted: SENT_UNTRUSTED,
 		},
 	};
 }

@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createWorkspace, signUp } from "./accounts";
-import { type QueuedMessage, type SentEmail, startMail } from "./mail-worker";
+import { type SentEmail, startMail } from "./mail-worker";
+import { sendingEvent as event } from "./sending-events";
 
 // Email Service's delivery events, which Cloudflare hands to the Worker's `queue()` from the
 // deployment's queue, recorded in the mailbox that sent the message and shown in its thread. The
@@ -133,54 +134,6 @@ async function recipients(box: Box, sent: { id: string; threadId: string }) {
 	);
 	const page = (await response.json()) as ThreadPage;
 	return page.messages.find((message) => message.id === sent.id)?.sent.recipients;
-}
-
-let queued = 0;
-
-/** An Email Sending event on the queue, as the staging measurement saw them. */
-function event(
-	type: string,
-	{
-		messageId,
-		sender,
-		recipient,
-		domain = sender.slice(sender.indexOf("@") + 1),
-		at = Date.now(),
-		payload = {},
-	}: {
-		messageId: string;
-		sender: string;
-		recipient: string;
-		domain?: string;
-		at?: number;
-		payload?: Record<string, unknown>;
-	},
-): QueuedMessage {
-	return {
-		id: `queued-${++queued}`,
-		timestamp: new Date(),
-		attempts: 1,
-		body: {
-			type: `cf.email.sending.message.${type}`,
-			source: { zoneId: "zone", domain, type: "email.sending" },
-			metadata: {
-				accountId: "account",
-				eventSubscriptionId: "subscription",
-				eventSchemaVersion: 1,
-				eventTimestamp: new Date(at).toISOString(),
-			},
-			payload: {
-				eventId: crypto.randomUUID(),
-				messageId,
-				sender,
-				recipient,
-				subject: "Hello",
-				terminal: type !== "deferred",
-				delivery: { status: type, provider: "external_smtp" },
-				...payload,
-			},
-		},
-	};
 }
 
 beforeAll(async () => {
@@ -362,8 +315,8 @@ describe("delivery events", () => {
 				domain: "elsewhere.example.net",
 				recipient: "ada@example.org",
 			}),
-			{ id: `queued-${++queued}`, timestamp: new Date(), attempts: 1, body: { type: "nope" } },
-			{ id: `queued-${++queued}`, timestamp: new Date(), attempts: 1, body: "not json" },
+			{ id: "queued-nope", timestamp: new Date(), attempts: 1, body: { type: "nope" } },
+			{ id: "queued-not-json", timestamp: new Date(), attempts: 1, body: "not json" },
 		];
 		const outcome = await mail.runQueue(QUEUE, batch);
 		expect(outcome.retryMessages).toEqual([]);
