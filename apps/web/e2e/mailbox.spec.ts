@@ -502,6 +502,27 @@ test("an admin makes an agent, gives it a mailbox, and its key reads the mail un
 	await page.getByRole("button", { name: "Create agent" }).click();
 	const key = await page.getByLabel("Agent key").inputValue();
 	expect(key).toMatch(/^gwm_/);
+	// The MCP server the page names takes the key.
+	const mcpUrl = new URL("/mcp", page.url()).href;
+	await expect(
+		page.getByText(
+			`claude mcp add --transport http gateweave-mail ${mcpUrl} --header "Authorization: Bearer ${key}"`,
+		),
+	).toBeVisible();
+	const started = await request.post(mcpUrl, {
+		headers: { authorization: `Bearer ${key}`, accept: "application/json, text/event-stream" },
+		data: {
+			jsonrpc: "2.0",
+			id: 1,
+			method: "initialize",
+			params: {
+				protocolVersion: "2025-06-18",
+				capabilities: {},
+				clientInfo: { name: "e2e", version: "1.0.0" },
+			},
+		},
+	});
+	expect(started.status()).toBe(200);
 	await page.getByRole("button", { name: "Done" }).click();
 	// The API, as the agent calls it: its key and nothing else, no cookie.
 	const api = () =>

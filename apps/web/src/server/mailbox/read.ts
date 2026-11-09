@@ -182,9 +182,20 @@ function listed(row: StoredSummary, names: Map<string, string>, me: string): Lis
 		subject: decoded(row.subject),
 		verifiedDomain: row.verifiedDomain,
 		size: row.size,
+		cameTo: row.sentBy === null ? envelopeRecipients(row.envelopeTo) : [],
 		sent: sentOf(row, names, me),
 	};
 }
+
+/**
+ * The addresses an envelope went to, lower case. An object still on the code before listings had
+ * them, during a deploy, gives none.
+ */
+const envelopeRecipients = (envelopeTo: string | undefined) =>
+	(envelopeTo ?? "")
+		.split(",")
+		.map((address) => address.trim().toLowerCase())
+		.filter(Boolean);
 
 /** Who wrote in a thread, each address once. */
 function senders(froms: (string | null)[]): Person[] {

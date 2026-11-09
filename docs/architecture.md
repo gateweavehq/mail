@@ -209,6 +209,37 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
 
     Owners and admins see on the workspace's page which agent made each address, and can remove
     it.
+  - **The MCP server** (`server/mcp/`, at `/mcp`). An agent's MCP client reaches with its key what
+    the REST routes give it, as tools: `list_mailboxes`, `search_email`, `read_email`,
+    `wait_for_email`, `get_verification_code`, `send_email`, `reply`, `list_addresses`,
+    `create_address` and `end_address`. It is stateless (`createMcpHandler` from
+    `@modelcontextprotocol/server`, as in Track) and takes only an agent's key: without one, or
+    with one that doesn't work, it answers 401, whatever cookies come with it. The key only lets
+    the request in. Each tool calls the functions the REST routes call (`listMessages` and the rest
+    of `read.ts`, `outboxAnswer`, `agentAddressesAnswer`), and they read the same
+    `Authorization` through `currentCaller`, so there is no second set of rules to keep in step.
+    A mailbox is named by its id, its name or one of its addresses, among those the agent may
+    read; any other is "no mailbox", whether it exists or not.
+
+    A wait (`wait_for_email`, `get_verification_code`) looks at the mailbox at first every
+    second, then less often, up to every 5 seconds, for up to 50 seconds, under the 60 that MCP
+    clients usually wait, and gives the newest message that came in and matches: to an address
+    (`cameTo`, the envelope's recipient, whatever the `To` says), from an address or a domain and
+    its subdomains, with words in its subject, proved or not. Mail from the 5 minutes before the
+    call counts, as a confirmation may come before the agent asks. Each look asks as the key, so
+    revoking it ends the wait. A key may start 30 waits in 10 minutes (`allowMcpWait`), so a
+    stuck agent can't keep the Worker looking for it.
+
+    Mail is how a stranger reaches an agent, so whatever a tool hands over from a message comes
+    marked as the sender's words, never instructions, beside its proved domain and DMARC verdict.
+    `get_verification_code` gives only the code (`lib/verification-code.ts`), the From's domain
+    and the proof, never the text around it or the part of the address before the @. It needs the
+    sender (`from`), and by default takes only mail whose From's domain DMARC proved, so a stranger
+    who writes first with a forged From and a code of their own is passed over. The code is the
+    first after a word that names one ("code", "OTP"), or one right beside a word such as
+    "verify", in the subject or a line of the text, or one set apart in the lines after, or else
+    the only line in the message that is a code alone; null rather than a guess. Its patterns run
+    in time linear in the text, as a stranger writes the text.
   - **HTML.** A message's HTML is a page of its own, at `…/<message>/html`, which the message's
     page shows in a frame; its text, or the text made from its HTML, is a click away. What makes
     it safe is the policy it is served with (`framePolicy` in `html.ts`): `sandbox` without

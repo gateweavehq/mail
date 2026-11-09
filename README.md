@@ -58,8 +58,10 @@ tools that run on Cloudflare, next to [Gateweave Track](https://github.com/gatew
 - **Resend for domains elsewhere.** A domain whose DNS isn't on your Cloudflare account can send
   through Resend instead, with the workspace's own key, which Mail keeps encrypted and never shows
   again.
-- **Agents.** An admin makes an agent for an AI agent and gives it a key. It reads, through the
-  API, only the mailboxes it is given; opening a mailbox to everyone doesn't open it to agents.
+- **Agents.** An admin makes an agent for an AI agent and gives it a key. It reads, over MCP or
+  through the API, only the mailboxes it is given; opening a mailbox to everyone doesn't open it
+  to agents. Mail's MCP server, at `/mcp`, has tools that wait for mail to come and hand over the
+  code in a sign-up or sign-in message without the rest of its text.
   A mailbox can let an agent send too. Mail to the addresses and domains its settings name goes
   on its own; the rest waits for someone who reads the mailbox to approve or reject it. Each
   agent has a daily limit of its own. An agent can also make addresses for itself, such as one

@@ -182,12 +182,16 @@ export type StoredSummary = {
 	deliveries: string;
 	/** For a message the mailbox sent, how many addresses it went to; 0 for any other. */
 	recipients: number;
+	/**
+	 * The envelope's recipients: for mail that arrived, the one address it was delivered to; for
+	 * mail the mailbox sent, everyone it went to, separated by commas.
+	 */
+	envelopeTo: string;
 };
 
 export type StoredMessage = StoredSummary & {
 	object: string;
 	envelopeFrom: string;
-	envelopeTo: string;
 	messageId: string | null;
 };
 
@@ -237,7 +241,7 @@ const SUMMARY = `id, thread_id AS threadId, arrived_at AS arrivedAt, size, from_
 	(SELECT json_object('state', state, 'code', code, 'nextAt', next_at, 'detail', detail) FROM outgoing
 		WHERE outgoing.message = message.id) AS sending,
 	(SELECT approved_by FROM outgoing WHERE outgoing.message = message.id) AS approvedBy,
-	${DELIVERIES_JSON} AS deliveries, ${RECIPIENT_COUNT} AS recipients`;
+	${DELIVERIES_JSON} AS deliveries, ${RECIPIENT_COUNT} AS recipients, envelope_to AS envelopeTo`;
 
 /**
  * One mailbox: its messages' index in SQLite, their raw mail in R2 under
@@ -963,8 +967,7 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 		return (
 			this.ctx.storage.sql
 				.exec<StoredMessage>(
-					`SELECT ${SUMMARY}, object, envelope_from AS envelopeFrom, envelope_to AS envelopeTo,
-						message_id AS messageId
+					`SELECT ${SUMMARY}, object, envelope_from AS envelopeFrom, message_id AS messageId
 					FROM message WHERE id = ? AND state = 'stored'`,
 					id,
 				)

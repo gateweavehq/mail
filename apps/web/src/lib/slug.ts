@@ -7,6 +7,7 @@ const RESERVED = new Set([
 	"invite",
 	"login",
 	"logout",
+	"mcp",
 	"new",
 	"reset-password",
 	"settings",
