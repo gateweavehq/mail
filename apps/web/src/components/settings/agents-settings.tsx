@@ -79,7 +79,7 @@ export function AgentsSettings({
 				</h2>
 				<p className="text-sm text-muted-foreground">
 					An agent is a member for an AI agent, such as one that sorts what arrives at support. It
-					reads mail through the API with a key, and only the mailboxes it is given: opening a
+					reads mail over MCP or the API with a key, and only the mailboxes it is given: opening a
 					mailbox to everyone doesn't open it to agents. A mailbox can let it send too: what it
 					writes to the addresses its settings here allow goes on its own, and anything else waits
 					for a person to approve it. It never signs in, and it cannot change the workspace.
@@ -181,6 +181,8 @@ function KeyReveal({
 			toast.error(`Could not copy the ${what.toLowerCase()}`);
 		}
 	}
+	const mcpUrl = new URL("/mcp", apiUrl).href;
+	const mcpCommand = `claude mcp add --transport http gateweave-mail ${mcpUrl} --header "Authorization: Bearer ${newKey.secret}"`;
 	const command = `curl -H "Authorization: Bearer ${newKey.secret}" ${apiUrl}/directory/${slug}`;
 
 	return (
@@ -204,9 +206,30 @@ function KeyReveal({
 			</div>
 			<div className="space-y-2 text-sm text-muted-foreground">
 				<p>
-					The agent sends the key as{" "}
-					<code className="font-mono text-xs text-foreground">Authorization: Bearer …</code>. This
-					lists the mailboxes it was given; each one's mail is at{" "}
+					The agent's MCP client connects to{" "}
+					<code className="font-mono text-xs text-foreground break-all">{mcpUrl}</code> and sends
+					the key as{" "}
+					<code className="font-mono text-xs text-foreground">Authorization: Bearer …</code>. Its
+					tools read and wait for mail, give sign-in codes, send and make addresses, as this agent
+					may. With Claude Code, for example:
+				</p>
+				<div className="flex items-start gap-2">
+					<pre className="min-w-0 flex-1 overflow-x-auto rounded-md border bg-background p-2 font-mono text-xs text-foreground">
+						{mcpCommand}
+					</pre>
+					<Button
+						variant="ghost"
+						size="icon"
+						className="size-8"
+						aria-label="Copy the MCP command"
+						onClick={() => copy(mcpCommand, "Command")}
+					>
+						<Copy />
+					</Button>
+				</div>
+				<p>
+					Or it calls the API with the same header. This lists the mailboxes it was given; each
+					one's mail is at{" "}
 					<code className="font-mono text-xs text-foreground break-all">
 						{apiUrl}/mail/{slug}/&lt;mailbox&gt;
 					</code>

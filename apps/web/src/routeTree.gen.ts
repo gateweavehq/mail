@@ -13,6 +13,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as WorkspaceRouteImport } from './routes/$workspace'
 import { Route as ForgotPasswordRouteImport } from './routes/forgot-password'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as McpRouteImport } from './routes/mcp'
 import { Route as ResetPasswordRouteImport } from './routes/reset-password'
 import { Route as WorkspaceIndexRouteImport } from './routes/$workspace/index'
 import { Route as WorkspaceSettingsRouteImport } from './routes/$workspace/settings'
@@ -58,6 +59,11 @@ const ForgotPasswordRoute = ForgotPasswordRouteImport.update({
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const McpRoute = McpRouteImport.update({
+  id: '/mcp',
+  path: '/mcp',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ResetPasswordRoute = ResetPasswordRouteImport.update({
@@ -212,6 +218,7 @@ export interface FileRoutesByFullPath {
   '/$workspace': typeof WorkspaceRouteWithChildren
   '/forgot-password': typeof ForgotPasswordRoute
   '/login': typeof LoginRoute
+  '/mcp': typeof McpRoute
   '/reset-password': typeof ResetPasswordRoute
   '/$workspace/settings': typeof WorkspaceSettingsRouteWithChildren
   '/invite/$invitationId': typeof InviteInvitationIdRoute
@@ -243,6 +250,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/forgot-password': typeof ForgotPasswordRoute
   '/login': typeof LoginRoute
+  '/mcp': typeof McpRoute
   '/reset-password': typeof ResetPasswordRoute
   '/invite/$invitationId': typeof InviteInvitationIdRoute
   '/settings/account': typeof SettingsAccountRoute
@@ -275,6 +283,7 @@ export interface FileRoutesById {
   '/$workspace': typeof WorkspaceRouteWithChildren
   '/forgot-password': typeof ForgotPasswordRoute
   '/login': typeof LoginRoute
+  '/mcp': typeof McpRoute
   '/reset-password': typeof ResetPasswordRoute
   '/$workspace/settings': typeof WorkspaceSettingsRouteWithChildren
   '/invite/$invitationId': typeof InviteInvitationIdRoute
@@ -309,6 +318,7 @@ export interface FileRouteTypes {
     | '/$workspace'
     | '/forgot-password'
     | '/login'
+    | '/mcp'
     | '/reset-password'
     | '/$workspace/settings'
     | '/invite/$invitationId'
@@ -340,6 +350,7 @@ export interface FileRouteTypes {
     | '/'
     | '/forgot-password'
     | '/login'
+    | '/mcp'
     | '/reset-password'
     | '/invite/$invitationId'
     | '/settings/account'
@@ -371,6 +382,7 @@ export interface FileRouteTypes {
     | '/$workspace'
     | '/forgot-password'
     | '/login'
+    | '/mcp'
     | '/reset-password'
     | '/$workspace/settings'
     | '/invite/$invitationId'
@@ -404,6 +416,7 @@ export interface RootRouteChildren {
   WorkspaceRoute: typeof WorkspaceRouteWithChildren
   ForgotPasswordRoute: typeof ForgotPasswordRoute
   LoginRoute: typeof LoginRoute
+  McpRoute: typeof McpRoute
   ResetPasswordRoute: typeof ResetPasswordRoute
   InviteInvitationIdRoute: typeof InviteInvitationIdRoute
   SettingsAccountRoute: typeof SettingsAccountRoute
@@ -449,6 +462,13 @@ declare module '@tanstack/react-router' {
       path: '/login'
       fullPath: '/login'
       preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/mcp': {
+      id: '/mcp'
+      path: '/mcp'
+      fullPath: '/mcp'
+      preLoaderRoute: typeof McpRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/reset-password': {
@@ -683,6 +703,7 @@ const rootRouteChildren: RootRouteChildren = {
   WorkspaceRoute: WorkspaceRouteWithChildren,
   ForgotPasswordRoute: ForgotPasswordRoute,
   LoginRoute: LoginRoute,
+  McpRoute: McpRoute,
   ResetPasswordRoute: ResetPasswordRoute,
   InviteInvitationIdRoute: InviteInvitationIdRoute,
   SettingsAccountRoute: SettingsAccountRoute,

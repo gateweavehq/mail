@@ -22,6 +22,11 @@ export interface ListedMessage {
 	 */
 	verifiedDomain: string | null;
 	size: number;
+	/**
+	 * For a message the mailbox got, the address it came to, lower case, as the envelope had it:
+	 * which of the mailbox's addresses it was for, whatever its To says. Empty for one it sent.
+	 */
+	cameTo: string[];
 	/** For a message this mailbox sent, rather than one it got. */
 	sent: SentInfo | null;
 }
