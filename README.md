@@ -70,7 +70,9 @@ tools that run on Cloudflare, next to [Gateweave Track](https://github.com/gatew
   allows. Each one ends.
 - **Webhooks.** Mail posts each message a mailbox receives to a URL of yours, such as an agent's
   trigger, signed per [Standard Webhooks](https://www.standardwebhooks.com), with who sent it and
-  what it is about but not what it says. It retries for about a day while the receiver fails.
+  what it is about but not what it says. It tells of mail you send too: held for approval,
+  rejected, sent, and delivered, bounced or marked as spam at each recipient. It retries for about
+  a day while the receiver fails.
 
 ## What it is planned to become
 

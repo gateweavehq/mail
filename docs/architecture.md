@@ -255,9 +255,14 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     the only line in the message that is a code alone; null rather than a guess. Its patterns run
     in time linear in the text, as a stranger writes the text.
   - **Webhooks** (`server/webhooks/`, ported from Track). A webhook posts each message a
-    mailbox receives to a URL of the workspace's, such as an agent's trigger, so that an agent
-    hears of mail without waiting for it. Owners and admins manage them on Settings › Webhooks: a
-    URL, its events (`message.received` for now), and every mailbox or the ones chosen. Changes go
+    mailbox receives, and what becomes of mail it sends, to a URL of the workspace's, such as an
+    agent's trigger, so that an agent hears of mail without waiting for it. Owners and admins
+    manage them on Settings › Webhooks: a URL, its events, and every mailbox or the ones chosen.
+    The events are `message.received`; `message.held` (written to wait for approval),
+    `message.rejected` and `message.sent` (taken by Email Service or Resend); and, from the
+    providers' delivery events, `message.delivered`, `message.bounced` (bounced, failed, or
+    rejected by the provider) and `message.complained`, each once per recipient, and none for a
+    delay. Changes go
     through `POST /api/webhooks/<workspace>`, which asks where the request is from and that an
     owner or admin asks, and checks that a chosen mailbox is the workspace's. A webhook points
     over https (plain http only where the app itself runs on it), never at Mail's own host, and a
@@ -266,9 +271,13 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
       their way. Nothing but the gateway and the workspace's mailboxes reach it, and secrets never
       leave it but in the answer that makes one, which the page shows once.
     - **From an outbox.** A mailbox's object writes an event (`event`, schema version 8) in the
-      transaction that stores a message it received, so mail that is kept is always told of and
-      mail that isn't, such as a second delivery of the same message, never is. What the mailbox
-      sends is kept too, but tells of nothing yet. Its alarm, a second later, hands the events to
+      transaction that makes the change it tells of, so mail that is kept is always told of and
+      mail that isn't, such as a second delivery of the same message, never is. One about mail the
+      mailbox sends keeps what it tells of with it (`data`, version 9), taken then: who wrote,
+      approved or rejected the message, by membership, whom it went to, its subject and, for a
+      recipient's server, that recipient's state. A rejected message is deleted at once, and is
+      told of all the same. A recipient's record that only gets newer, or moves from one kind of
+      bounce to another, tells of nothing. Its alarm, a second later, hands the events to
       the workspace's object and drops them once it has them, or tries again a minute later. That
       object queues one delivery for each webhook that listens, once per event however often it
       is handed over, and sends them from its own alarm: ten at a time, ten seconds each, claiming
@@ -286,6 +295,13 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
       the address it came to, the proved domain, the DMARC verdict, its size and where people open
       its thread. Never its text: the receiver reads that with an agent's key, under that agent's
       access. The sender's words come marked as such (`untrusted`), as over the agent API.
+      The events about mail the workspace sends carry the workspace, the mailbox, the message
+      (ids, when it was written, its From, To, Cc and subject, who wrote and who approved it, and
+      where people open its thread), `by`, who did what the event tells of, and `recipient`, for
+      a recipient's server: the address, its state, when, and what the server said. Members are
+      named as the workspace has them when the event is queued, with whether they are an agent,
+      and by id alone once they have left. Those bodies are marked untrusted too, since a reply
+      keeps the subject of the mail it answers and a server's answer is that server's.
       `webhook.test`, sent when an admin asks, one at a time, carries the workspace and the
       webhook's id.
     - **Pausing** a webhook drops what it hadn't delivered; deleting it drops that too. Taking a

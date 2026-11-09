@@ -17,7 +17,9 @@ export function nodeStorage() {
 	});
 	const sql = {
 		exec<T>(query: string, ...bindings: SQLInputValue[]) {
-			if (/^\s*SELECT/i.test(query)) return cursor(db.prepare(query).all(...bindings) as T[]);
+			if (/^\s*SELECT|\bRETURNING\b/i.test(query)) {
+				return cursor(db.prepare(query).all(...bindings) as T[]);
+			}
 			if (bindings.length === 0) db.exec(query);
 			else db.prepare(query).run(...bindings);
 			return cursor<T>([]);

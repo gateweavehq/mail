@@ -145,7 +145,7 @@ export async function outboxAnswer(
 		if (!writerOrAdmin && !isHeld(row)) {
 			return refuse("Only who wrote it, or an owner or admin, can discard it.", 403);
 		}
-		return (await box.stub.discard(action.message, !writerOrAdmin))
+		return (await box.stub.discard(action.message, !writerOrAdmin, memberId))
 			? answer({ ok: true })
 			: refuse("Only a message that isn't sent can be discarded.", 409);
 	}

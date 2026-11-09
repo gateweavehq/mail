@@ -853,6 +853,9 @@ test("an admin adds a webhook, which hears of mail as it arrives, signed, and ca
 		const dialog = page.getByRole("dialog", { name: "Add webhook" });
 		await dialog.getByLabel("URL").fill(url);
 		await expect(dialog.getByLabel("Mail received")).toBeChecked();
+		// What becomes of mail the workspace sends is heard only when chosen.
+		await expect(dialog.getByLabel("Mail sent")).not.toBeChecked();
+		await expect(dialog.getByLabel("Mail bounced")).not.toBeChecked();
 		await expect(dialog.getByLabel("Every mailbox, those made later too")).toBeChecked();
 		await dialog.getByRole("button", { name: "Add webhook" }).click();
 		const secret = await page.getByLabel("Signing secret").inputValue();

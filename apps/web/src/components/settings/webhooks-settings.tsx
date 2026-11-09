@@ -40,6 +40,12 @@ import {
 
 const EVENT_LABELS: Record<WebhookEventType, string> = {
 	"message.received": "Mail received",
+	"message.held": "Mail held for approval",
+	"message.rejected": "Held mail rejected",
+	"message.sent": "Mail sent",
+	"message.delivered": "Mail delivered",
+	"message.bounced": "Mail bounced",
+	"message.complained": "Mail marked as spam",
 };
 
 /** A secret just made, shown once. */
@@ -231,7 +237,9 @@ function WebhookRow({
 	}
 
 	const scope = [
-		webhook.events.map((event) => EVENT_LABELS[event]).join(", "),
+		webhook.events.length === WEBHOOK_EVENTS.length
+			? "Every event"
+			: webhook.events.map((event) => EVENT_LABELS[event]).join(", "),
 		mailboxesHeard(webhook, mailboxes),
 	];
 
