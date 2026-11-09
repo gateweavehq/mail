@@ -158,10 +158,13 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     `agents.invalid` that nobody can sign up, sign in or be invited with, and no password or
     session. It reads with a key, `gwm_` and 256 random bits, of which only a SHA-256 hash and the
     first characters are kept, sent as `Authorization: Bearer`. `currentCaller` in `access.ts`
-    takes a request with a bearer token as the agent's alone: a key that doesn't work, or works
-    for another workspace, gets "not found", and the cookies that came with it are never tried
-    instead. Another scheme, such as Basic auth from a proxy in front of the app, carries no key,
-    so the session decides. Reading takes a caller (`openMailbox`, and listing the directory,
+    takes a request with a bearer token in that shape as the agent's alone: a key that doesn't
+    work, or works for another workspace, gets "not found", and the cookies that came with it are
+    never tried instead. Another bearer token or scheme, such as an ID token or Basic auth from a
+    proxy in front of the app, carries no key, so the session decides. Only the role on an
+    `agents.invalid` address makes a member an agent (`isAgentMember`): a person given the role by
+    hand in the database is listed among the people and can be removed, and reads and sends no
+    more than an agent may. Reading takes a caller (`openMailbox`, and listing the directory,
     which shows an agent the mailboxes it was given), and so does sending, where a key may only
     send, as below, and so do the addresses an agent makes for itself; every other change takes
     `currentMember`, a person signed in. Making an agent

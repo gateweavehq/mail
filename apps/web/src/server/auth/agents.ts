@@ -45,7 +45,7 @@ export const MAX_AGENTS_PER_WORKSPACE = 50;
 export const MAX_KEYS_PER_AGENT = 5;
 
 /** Mail's own prefix, so a key for another Gateweave product is never tried here. */
-const KEY_PREFIX = "gwm_";
+export const KEY_PREFIX = "gwm_";
 const KEY_PATTERN = /^gwm_[A-Za-z0-9_-]{43}$/;
 /** How much of a key is kept to tell keys apart: the prefix and 8 characters, of 47. */
 const KEY_START_LENGTH = 12;
@@ -59,6 +59,15 @@ export function isAgentMembership(role: string): boolean {
 
 export function isAgentEmail(email: string): boolean {
 	return email.trim().toLowerCase().endsWith(`@${AGENT_EMAIL_DOMAIN}`);
+}
+
+/**
+ * Whether a member is an agent: the agent's role, on an agent's address, as the agents plugin
+ * makes them. A person given the role by hand in the database is still a person, whom the Members
+ * page lists and can remove. What they may read and send is still an agent's, the least.
+ */
+export function isAgentMember({ role, email }: { role: string; email: string }): boolean {
+	return isAgentMembership(role) && isAgentEmail(email);
 }
 
 /** Whether a bearer token has the shape of an agent key. Says nothing about whether it works. */
@@ -613,12 +622,12 @@ export function agentMembers({ db }: { db: Database }) {
 						const memberId: unknown = ctx.body?.memberId ?? ctx.body?.memberIdOrEmail;
 						if (typeof memberId !== "string") return;
 						const target = await db
-							.select({ role: member.role })
+							.select({ role: member.role, email: user.email })
 							.from(member)
 							.innerJoin(user, eq(member.userId, user.id))
 							.where(or(eq(member.id, memberId), eq(user.email, memberId.trim().toLowerCase())))
 							.all();
-						if (target.some((row) => isAgentMembership(row.role))) {
+						if (target.some(isAgentMember)) {
 							throw new APIError("FORBIDDEN", {
 								message: "Manage agents in the workspace's agent settings",
 							});

@@ -111,9 +111,10 @@ These are load-bearing. Breaking one breaks users' data or security, usually sil
     (`apps/web/src/server/mailbox/read.ts`), which applies `canReadMailbox`: being in the workspace
     is not enough. Every R2 object is named by the mailbox's object, as pending, before it is
     written, so R2 never holds mail a mailbox doesn't know about.
-13. **A key is an agent's: it reads, and sends only as it was let.** A request with a bearer
-    token is decided by its key alone (`currentCaller` in `apps/web/src/server/access.ts`), never
-    by the cookies that come with it. Reading takes `currentCaller`, and so does the outbox, where
+13. **A key is an agent's: it reads, and sends only as it was let.** A request with an agent's
+    key, a bearer token in Mail's shape (`gwm_…`), is decided by that key alone (`currentCaller`
+    in `apps/web/src/server/access.ts`), never by the cookies that come with it, even when the key
+    is wrong. Another bearer token, such as one a proxy adds, carries no key. Reading takes `currentCaller`, and so does the outbox, where
     a key may only send, from a mailbox whose grant lets it (`mailbox_access.send`), within its
     policy (`agent_policy`): mail to anyone the policy doesn't name is `held` until a person
     approves it. Only people approve, reject, send again or discard. A key may also make
