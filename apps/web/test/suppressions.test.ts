@@ -18,7 +18,8 @@ interface CloudflareEntry {
 	id: string;
 	email: string;
 	reason: string;
-	read_only: boolean;
+	/** Always there in Cloudflare's answers; left out here to make an entry Mail can't read. */
+	read_only?: boolean;
 	scope: { type: "account" } | { type: "sending_domain"; value: string };
 }
 
@@ -68,10 +69,11 @@ function onCloudflareList(
 	email: string,
 	reason: string,
 	scope: CloudflareEntry["scope"],
-	readOnly = false,
+	readOnly: boolean | null = false,
 ) {
 	const id = crypto.randomUUID();
-	cloudflareListed.set(id, { id, email, reason, read_only: readOnly, scope });
+	const flag = readOnly === null ? {} : { read_only: readOnly };
+	cloudflareListed.set(id, { id, email, reason, ...flag, scope });
 	return id;
 }
 
@@ -559,6 +561,8 @@ describe("removing from the list", () => {
 			onCloudflareList(address, "complaint", { type: "account" }),
 			onCloudflareList(address, "hard_bounce", here, true),
 			onCloudflareList(address, "manual", here),
+			// One Mail can't read, which may stop its mail as well.
+			onCloudflareList(address, "hard_bounce", here, null),
 		];
 		const ignored = [
 			onCloudflareList(address, "complaint", { type: "sending_domain", value: "other.example" }),
@@ -570,7 +574,7 @@ describe("removing from the list", () => {
 		expect(await removed.json()).toEqual({
 			ok: true,
 			address,
-			providers: [{ provider: "cloudflare", outcome: "done", removed: 1, kept: 4 }],
+			providers: [{ provider: "cloudflare", outcome: "done", removed: 1, kept: 5 }],
 		});
 		// Eight entries hold the address, two to a page.
 		expect(cloudflareAsked).toEqual(["GET", "GET", "GET", "GET", `DELETE ${ours}`]);

@@ -472,6 +472,19 @@ export interface ReceivedEmail {
 	rawUrl: string | null;
 }
 
+const SentEmail = z.object({ from: z.string().max(1_000) });
+
+/**
+ * Who an email Resend sent was from, by its id, as its `from` says. Needs a key with full access.
+ * The key's account may send for others too, so this tells whose an event about it is.
+ */
+export function getSentEmailSender(api: string, key: string, id: string) {
+	return call(api, key, `/emails/${encodeURIComponent(id)}`, {}, (body) => {
+		const read = SentEmail.safeParse(body);
+		return read.success ? read.data.from : null;
+	});
+}
+
 /** One email Resend received, by its id. Needs a key with full access. */
 export function getReceivedEmail(api: string, key: string, id: string) {
 	return call(

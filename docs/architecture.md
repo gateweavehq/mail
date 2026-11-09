@@ -411,17 +411,29 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
       share, so Mail deletes only an entry for one of this workspace's proved domains (scope
       `sending_domain`, which matches that exact domain only) that Cloudflare made from delivery
       (`complaint`, `hard_bounce` or `soft_bounce`) and doesn't mark `read_only`. An entry for the
-      whole account, one added by hand (`manual`), Cloudflare's own (`policy`) and read-only ones
-      stay, counted for the page; other domains' entries aren't mentioned. What a provider answers
-      never undoes Mail's removal, and the log names what failed, never the address.
+      whole account, one added by hand (`manual`), Cloudflare's own (`policy`), read-only ones, and
+      any Mail can't read or whose scope it doesn't know stay, counted for the page; other domains'
+      entries aren't mentioned. Measured on 2026-11-09: the `email` filter matches the whole
+      address, ignoring case, and refuses anything else with 400; a DELETE answers 200, then 404.
+      The account also had entries for the whole account made by hard bounces, which Mail keeps,
+      as they stop every sender on the account. The domains are read before the entry comes off,
+      and both providers are asked at once. What a provider answers never undoes Mail's removal,
+      and the log names what failed, never the address.
 
       Resend's `suppression.removed`, which the webhook asks for, says someone took the address off
-      Resend's list, as in its dashboard. Mail notes it as a removal of an entry Resend's events
-      made, at the event's time, or now when Resend's clock runs ahead: the entry comes off unless
-      an event said it since, and one from before, which may still come, counts as older than the
-      removal, as after an admin's. A later removal noted already stays. Mail's own removal comes
-      back as one too, and changes nothing more. `suppression.added` isn't mirrored, as Resend's
-      delivery events already put those addresses on.
+      Resend's list, as in its dashboard. Every webhook of the account hears of its list, which the
+      account's other senders share, so it counts only when the email that put the address there
+      (`source_id`) was sent from this workspace's mailbox, as Resend's API says with the
+      workspace's key; one put there by hand names no email, and one whose sender Mail can't learn
+      changes nothing. Mail then notes it as a removal of an entry Resend's events made, at the
+      event's time, or now when Resend's clock runs ahead: the entry comes off unless an event said
+      it since, and one from before, which may still come, counts as older than the removal, as
+      after an admin's. With no entry yet, a hidden removed one is kept for the event still to
+      come. A later removal noted already stays. Mail's own removal comes back as one too, which
+      only moves its time on to Resend's. An entry's provider is the last event's, so a removal at
+      Resend can take off an entry Email Service's events also said; Email Service's list still
+      refuses the address then, which puts it back. `suppression.added` isn't mirrored, as
+      Resend's delivery events already put those addresses on.
   - **Removing.** Removing a mailbox, or deleting its workspace, removes its mail and its object's
     data, after the directory has forgotten its addresses, so nothing new arrives. A trigger in D1
     records each mailbox as its row goes, a workspace's by cascade too (`mailbox_removal`). The

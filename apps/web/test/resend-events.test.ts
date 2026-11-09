@@ -25,7 +25,7 @@ const webhooks = new Map<string, Webhook>();
 /** Each request Resend's API got, as its method and path. */
 const asked: string[] = [];
 /** What Resend was asked to send, with the id it gave. */
-const emails: { id: string; subject: string; to: string[]; cc: string[] }[] = [];
+const emails: { id: string; from: string; subject: string; to: string[]; cc: string[] }[] = [];
 /** The addresses on the Resend account's own suppression list. */
 const resendListed = new Set<string>();
 
@@ -43,12 +43,27 @@ async function resend(request: Request): Promise<Response> {
 		return Response.json({ name: "validation_error" }, { status: 400 });
 	}
 	if (url.pathname === "/emails" && request.method === "POST") {
-		const body = (await request.json()) as { subject: string; to: string[]; cc?: string[] };
+		const body = (await request.json()) as {
+			from: string;
+			subject: string;
+			to: string[];
+			cc?: string[];
+		};
 		const id = crypto.randomUUID();
-		emails.push({ id, subject: body.subject, to: body.to, cc: body.cc ?? [] });
+		emails.push({ id, from: body.from, subject: body.subject, to: body.to, cc: body.cc ?? [] });
 		return Response.json({ id });
 	}
 	if (key === SENDING_KEY) return restricted();
+	const sentId = /^\/emails\/([^/]+)$/.exec(url.pathname)?.[1];
+	if (sentId && request.method === "GET") {
+		if (sentId === "resend-busy")
+			return Response.json({ name: "internal_server_error" }, { status: 500 });
+		const found = emails.find((one) => one.id === decodeURIComponent(sentId));
+		if (!found)
+			return Response.json({ name: "not_found", message: "Email not found" }, { status: 404 });
+		const { id, from, to, subject } = found;
+		return Response.json({ object: "email", id, from, to, subject });
+	}
 	if (url.pathname === "/domains") return Response.json({ data: [] });
 	const unlisted = /^\/suppressions\/([^/]+)$/.exec(url.pathname)?.[1];
 	if (unlisted && request.method === "DELETE") {
@@ -284,16 +299,19 @@ async function unlist(box: Box, address: string) {
 	return response.json();
 }
 
-/** Resend's event saying someone took the address off its own list, as its dashboard does. */
-function unlisted(address: string, at = Date.now(), why = "bounce") {
+/**
+ * Resend's event saying someone took the address off its own list, as its dashboard does, which the
+ * email `source` had put there, or nobody's for one put there by hand.
+ */
+function unlisted(address: string, source: string | null, at = Date.now(), why = "bounce") {
 	return JSON.stringify({
 		type: "suppression.removed",
 		created_at: new Date(at).toISOString(),
 		data: {
 			id: crypto.randomUUID(),
 			email: address,
-			origin: why,
-			source_id: crypto.randomUUID(),
+			origin: source ? why : "manual",
+			source_id: source,
 			created_at: new Date(at - DAY).toISOString(),
 		},
 	});
@@ -767,6 +785,7 @@ describe("Resend's word that an address came off its own list", () => {
 		const sent = await send(box, ["ada@example.org", "bob@example.org"]);
 		const at = Date.now() - 60_000;
 		const bounced = bounce("550 5.1.1 User unknown");
+		const removed = (address: string, when: number) => unlisted(address, sent.emailId, when);
 		expect(
 			await deliver(webhook, event("email.bounced", sent, "ada@example.org", bounced, at)),
 		).toBe(204);
@@ -774,8 +793,8 @@ describe("Resend's word that an address came off its own list", () => {
 			await deliver(webhook, event("email.bounced", sent, "bob@example.org", bounced, at)),
 		).toBe(204);
 		// Taken off in Resend's dashboard since; bob's removal is older than the bounce.
-		expect(await deliver(webhook, unlisted("ADA@example.org", at + 1_000))).toBe(204);
-		expect(await deliver(webhook, unlisted("bob@example.org", at - 1_000))).toBe(204);
+		expect(await deliver(webhook, removed("ADA@example.org", at + 1_000))).toBe(204);
+		expect(await deliver(webhook, removed("bob@example.org", at - 1_000))).toBe(204);
 		expect((await suppressions(box)).map(({ address }) => address)).toEqual(["bob@example.org"]);
 		// A complaint from before bob's removal, coming late, was taken off with it.
 		expect(
@@ -784,7 +803,7 @@ describe("Resend's word that an address came off its own list", () => {
 		expect((await suppressions(box)).map(({ reason }) => reason)).toEqual(["bounced"]);
 
 		// It stays off when the event comes again, and a bounce after it puts it back.
-		expect(await deliver(webhook, unlisted("ada@example.org", at + 1_000))).toBe(204);
+		expect(await deliver(webhook, removed("ada@example.org", at + 1_000))).toBe(204);
 		expect(await deliver(webhook, event("email.bounced", sent, "ada@example.org", bounced))).toBe(
 			204,
 		);
@@ -794,7 +813,7 @@ describe("Resend's word that an address came off its own list", () => {
 		]);
 
 		// A removal dated ahead of the clock counts as now, so a bounce that comes next is newer.
-		expect(await deliver(webhook, unlisted("ada@example.org", Date.now() + 60 * MINUTE))).toBe(204);
+		expect(await deliver(webhook, removed("ada@example.org", Date.now() + 60 * MINUTE))).toBe(204);
 		expect((await suppressions(box)).map(({ address }) => address)).toEqual(["bob@example.org"]);
 		await new Promise((done) => setTimeout(done, 5));
 		expect(await deliver(webhook, event("email.bounced", sent, "ada@example.org", bounced))).toBe(
@@ -806,22 +825,61 @@ describe("Resend's word that an address came off its own list", () => {
 		]);
 
 		// An older removal that comes late doesn't make events from between the two count again.
-		expect(await deliver(webhook, unlisted("ada@example.org", at + 2_000))).toBe(204);
+		expect(await deliver(webhook, removed("ada@example.org", at + 2_000))).toBe(204);
 		expect(
 			await deliver(webhook, event("email.complained", sent, "ada@example.org", {}, at + 3_000)),
 		).toBe(204);
 		expect((await suppressions(box)).map(({ reason }) => reason)).toEqual(["bounced", "bounced"]);
 	});
 
-	it("leaves what Email Service said, another workspace's list, and an event Mail can't read", async () => {
+	it("counts when it comes before the event that it removes, which Resend may try again later", async () => {
+		const box = await workspace();
+		await sendingWithResend(box);
+		const webhook = hookOf(box);
+		const sent = await send(box, ["dan@example.org"]);
+		const at = Date.now() - 60_000;
+		expect(await deliver(webhook, unlisted("dan@example.org", sent.emailId, at + 1_000))).toBe(204);
+		const bounced = bounce("550 5.1.1 User unknown");
+		expect(
+			await deliver(webhook, event("email.bounced", sent, "dan@example.org", bounced, at)),
+		).toBe(204);
+		expect(await suppressions(box)).toEqual([]);
+		// What is said after the removal counts.
+		expect(await deliver(webhook, event("email.complained", sent, "dan@example.org"))).toBe(204);
+		expect((await suppressions(box)).map(({ address, reason }) => [address, reason])).toEqual([
+			["dan@example.org", "complained"],
+		]);
+	});
+
+	it("counts only for the workspace whose mail put the address there", async () => {
+		// Both keys are for one Resend account, every webhook of which hears of its list.
 		const box = await workspace();
 		const other = await workspace();
 		await sendingWithResend(box);
 		await sendingWithResend(other);
+		const mine = await send(box, ["ada@example.org"]);
 		const theirs = await send(other, ["ada@example.org"]);
+		expect(await deliver(hookOf(box), event("email.complained", mine, "ada@example.org"))).toBe(
+			204,
+		);
 		expect(await deliver(hookOf(other), event("email.complained", theirs, "ada@example.org"))).toBe(
 			204,
 		);
+		const removal = unlisted("ada@example.org", theirs.emailId, Date.now(), "complaint");
+		expect(await deliver(hookOf(box), removal)).toBe(204);
+		expect(await deliver(hookOf(other), removal)).toBe(204);
+		expect((await suppressions(box)).map(({ address }) => address)).toEqual(["ada@example.org"]);
+		expect(await suppressions(other)).toEqual([]);
+	});
+
+	it("leaves what Email Service said, and what it can't tell the source of", async () => {
+		const box = await workspace();
+		await sendingWithResend(box);
+		const webhook = hookOf(box);
+		const sent = await send(box, ["ada@example.org", "bob@example.org"]);
+		for (const to of ["ada@example.org", "bob@example.org"]) {
+			expect(await deliver(webhook, event("email.complained", sent, to))).toBe(204);
+		}
 		const at = Date.now() - 60_000;
 		await mail.db
 			.prepare(
@@ -831,13 +889,19 @@ describe("Resend's word that an address came off its own list", () => {
 			.bind(crypto.randomUUID(), box.workspaceId, at, at)
 			.run();
 		const logged = mail.logs.length;
-		const webhook = hookOf(box);
-		expect(await deliver(webhook, unlisted("cy@example.org"))).toBe(204);
-		expect(await deliver(webhook, unlisted("ada@example.org"))).toBe(204);
+		expect(await deliver(webhook, unlisted("cy@example.org", sent.emailId))).toBe(204);
+		// Put there by hand, which names no email, or by one Resend doesn't have.
+		expect(await deliver(webhook, unlisted("ada@example.org", null))).toBe(204);
+		expect(await deliver(webhook, unlisted("bob@example.org", crypto.randomUUID()))).toBe(204);
+		// Resend can't say just now, so it tries again later.
+		expect(await deliver(webhook, unlisted("bob@example.org", "resend-busy"))).toBe(503);
 		const odd = JSON.stringify({ type: "suppression.removed", data: { email: "not an address" } });
 		expect(await deliver(webhook, odd)).toBe(204);
-		expect((await suppressions(box)).map(({ address }) => address)).toEqual(["cy@example.org"]);
-		expect((await suppressions(other)).map(({ address }) => address)).toEqual(["ada@example.org"]);
+		expect((await suppressions(box)).map(({ address }) => address)).toEqual([
+			"ada@example.org",
+			"bob@example.org",
+			"cy@example.org",
+		]);
 		const said = mail.logs.slice(logged).map(({ message }) => message);
 		expect(said.some((message) => message.includes("@example.org"))).toBe(false);
 	});

@@ -253,7 +253,8 @@ Settings › Domains, and sets the domain to send with Resend. With a key that h
 Mail makes a webhook in that Resend account, which tells it what became of each message and keeps
 the workspace's suppression list (see below for the address it needs). Removing an address in
 Mail then takes it off that Resend account's own list too, which holds for all its domains, and
-removing it in Resend's dashboard takes it off Mail's, unless Resend said it again since. A key
+removing it in Resend's dashboard takes it off Mail's when the workspace's mail put it there,
+unless Resend said it again since. A key
 that may only send still sends, but Mail then learns nothing of bounces or complaints, and can't
 take an address off Resend's list: the page says to do that in Resend.
 Keep `SECRETS_KEY` as it is: the keys sealed with it can't be opened with another, and would have

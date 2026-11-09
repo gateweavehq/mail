@@ -14,52 +14,75 @@ export interface ProviderLists {
 	emailSending: EmailSendingApi | null;
 }
 
+/** Which providers' lists can stop the workspace's mail, from how its proved domains send. */
+export interface ListsToClear {
+	resend: boolean;
+	/** The proved domains, when one sends with Email Service; null when none does. */
+	emailService: ReadonlySet<string> | null;
+}
+
 /**
- * Takes an address an owner or admin removed from the workspace's list off the providers' own
- * lists too, which would still stop the mail: Resend's, with the workspace's key, while one of its
- * domains sends with Resend, as that list holds for the key's whole account; and Email Service's,
- * for the workspace's own proved domains, while one sends with it, with the deployment's token.
- * What each did, for the page to say. The log names what failed, never the address.
+ * Reads which providers' lists can stop the workspace's mail. Read before the entry comes off, so
+ * that a failure here leaves the list as it was.
  */
-export async function unlistAtProviders(
-	db: Database,
-	workspaceId: string,
-	address: string,
-	lists: ProviderLists,
-): Promise<ProviderUnlisting[]> {
+export async function listsToClear(db: Database, workspaceId: string): Promise<ListsToClear> {
 	const { mailDomain } = schema;
 	const domains = await db
 		.select({ name: mailDomain.name, sendsWith: mailDomain.sendsWith })
 		.from(mailDomain)
 		.where(and(eq(mailDomain.organizationId, workspaceId), isNotNull(mailDomain.verifiedAt)))
 		.all();
-	const done: ProviderUnlisting[] = [];
+	return {
+		resend: domains.some((domain) => domain.sendsWith === "resend"),
+		emailService: domains.some((domain) => domain.sendsWith === "cloudflare")
+			? new Set(domains.map((domain) => domain.name))
+			: null,
+	};
+}
 
-	if (domains.some((domain) => domain.sendsWith === "resend")) {
-		const opened = await openProviderKey(db, lists.secretsKey, workspaceId, "resend");
-		// Without a key nothing goes through Resend, and its list can't be reached.
-		if (opened.ok) {
+/**
+ * Takes an address an owner or admin removed from the workspace's list off the providers' own
+ * lists too, which would still stop the mail: Resend's, with the workspace's key, as that list
+ * holds for the key's whole account; and Email Service's, for the workspace's own proved domains,
+ * with the deployment's token. Both at once. What each did, for the page to say. Never throws, as
+ * the entry is off already. The log names what failed, never the address.
+ */
+export async function unlistAtProviders(
+	db: Database,
+	workspaceId: string,
+	address: string,
+	clear: ListsToClear,
+	lists: ProviderLists,
+): Promise<ProviderUnlisting[]> {
+	const resend = async (): Promise<ProviderUnlisting[]> => {
+		if (!clear.resend) return [];
+		try {
+			const opened = await openProviderKey(db, lists.secretsKey, workspaceId, "resend");
+			// Without a key nothing goes through Resend, and its list can't be reached.
+			if (!opened.ok) return [];
 			const outcome = await removeResendSuppression(lists.resendApi, opened.key, address);
 			if (outcome === "failed") console.error("suppressions: Resend's list not changed");
-			done.push({ provider: "resend", outcome });
+			return [{ provider: "resend", outcome }];
+		} catch {
+			console.error("suppressions: Resend's list not changed", { failure: "key" });
+			return [{ provider: "resend", outcome: "failed" }];
 		}
-	}
-
-	if (domains.some((domain) => domain.sendsWith === "cloudflare")) {
-		if (!lists.emailSending) {
-			done.push({ provider: "cloudflare", outcome: "notSetUp" });
-		} else {
-			const ours = new Set(domains.map((domain) => domain.name));
-			const cleared = await clearEmailSendingSuppressions(lists.emailSending, address, ours);
-			if (cleared.outcome === "failed") {
-				console.error("suppressions: Email Service's list not changed", {
-					failure: cleared.failure,
-				});
-				done.push({ provider: "cloudflare", outcome: "failed" });
-			} else {
-				done.push({ provider: "cloudflare", ...cleared });
-			}
+	};
+	const emailService = async (): Promise<ProviderUnlisting[]> => {
+		if (!clear.emailService) return [];
+		if (!lists.emailSending) return [{ provider: "cloudflare", outcome: "notSetUp" }];
+		const cleared = await clearEmailSendingSuppressions(
+			lists.emailSending,
+			address,
+			clear.emailService,
+		);
+		if (cleared.outcome === "failed") {
+			console.error("suppressions: Email Service's list not changed", {
+				failure: cleared.failure,
+			});
+			return [{ provider: "cloudflare", outcome: "failed" }];
 		}
-	}
-	return done;
+		return [{ provider: "cloudflare", ...cleared }];
+	};
+	return (await Promise.all([resend(), emailService()])).flat();
 }

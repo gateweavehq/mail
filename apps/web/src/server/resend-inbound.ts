@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { type AnyColumn, and, eq, exists, isNull, lt, notExists, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { RESEND_CODE, type ReceivesWith, type SendsWith } from "../lib/providers";
+import type { SuppressionReason } from "../lib/suppressions";
 import type { Database } from "./db";
 import { schema } from "./db";
 import { directoryIn } from "./delivery-events";
@@ -13,6 +14,7 @@ import {
 	createWebhook,
 	deleteWebhook,
 	getReceivedEmail,
+	getSentEmailSender,
 	RECEIVED_EVENT,
 	RESEND_API,
 	type ReceivedEmail,
@@ -380,15 +382,34 @@ const Received = z.object({
 
 const SuppressionRemoved = z.object({
 	created_at: z.string().max(64).optional().catch(undefined),
-	data: z.object({ email: z.string().max(1_000) }),
+	data: z.object({
+		email: z.string().max(1_000),
+		origin: z.string().max(64).optional().catch(undefined),
+		// The email that put the address on Resend's list; null for one put there by hand.
+		source_id: z
+			.string()
+			.regex(/^[A-Za-z0-9_-]{1,100}$/)
+			.nullable()
+			.optional()
+			.catch(null),
+	}),
 });
+
+/** What put an address on Resend's list, as Mail lists it. */
+const REMOVED_REASON = new Map<string, SuppressionReason>([
+	["bounce", "bounced"],
+	["complaint", "complained"],
+]);
 
 const answer = (status: number) => new Response(null, { status });
 
 /**
- * Takes an address off the workspace's list once someone took it off Resend's own, as in Resend's
- * dashboard: an entry Resend's events made, unless an event said so again since. One Mail can't
- * read is acknowledged, as it would only come again the same. The log never names the address.
+ * Notes that someone took an address off Resend's own list, as in Resend's dashboard, as a removal
+ * of the entry Resend's events made (`removeProviderListed`), only when the email that put it there
+ * was this workspace's: the key's account may send for others, and every webhook of the account
+ * hears of its list, so Mail asks Resend who sent that email. One put there by hand names no email,
+ * and one Mail can't read or tell the sender of changes nothing. Answers 503 when Resend or D1 may
+ * answer later, so Resend tries again. The log never names the address.
  */
 async function unlistRemoved(
 	db: Database,
@@ -402,11 +423,25 @@ async function unlistRemoved(
 		console.warn("resend-events: unreadable");
 		return answer(204);
 	}
+	const { source_id: source, origin } = parsed.data.data;
+	const reason = origin ? REMOVED_REASON.get(origin) : undefined;
+	if (!source || !reason) return answer(204);
 	const time = Date.parse(parsed.data.created_at ?? "");
 	// Never after now, so that an event that comes meanwhile still counts as newer.
 	const at = Number.isFinite(time) ? Math.min(time, now) : now;
 	try {
-		await removeProviderListed(db, workspaceId, address, "resend", at);
+		const opened = await openProviderKey(db, env.SECRETS_KEY, workspaceId, "resend");
+		if (!opened.ok) return answer(204);
+		const sender = await getSentEmailSender(api(), opened.key, source);
+		if (!sender.ok) {
+			if (!sender.failure.later) return answer(204);
+			console.error("resend-events: sender not found", { failure: sender.failure.code });
+			return answer(503);
+		}
+		const from = bareAddress(sender.value);
+		const sentBy = from ? (await directoryIn(db).mailboxesOf(new Set([from]))).get(from) : null;
+		if (sentBy?.workspaceId !== workspaceId) return answer(204);
+		await removeProviderListed(db, { workspaceId, address, provider: "resend", reason, at });
 	} catch {
 		console.error("resend-events: suppression not removed");
 		return answer(503);

@@ -45,6 +45,9 @@ const Entry = z.object({
 		.optional(),
 });
 
+/** Enough of an entry to tell whether it is for the address. */
+const Addressed = z.object({ email: z.string().max(1_000) });
+
 const Listed = z.object({
 	success: z.literal(true),
 	result: z.array(z.unknown()).max(1_000),
@@ -91,6 +94,8 @@ export async function clearEmailSendingSuppressions(
 ): Promise<EmailSendingUnlisting> {
 	// By id, as a page may repeat one of the page before.
 	const entries = new Map<string, z.infer<typeof Entry>>();
+	// Entries for the address Mail can't read, which may still stop its mail.
+	let unread = 0;
 	let cursor: string | null = null;
 	try {
 		for (let page = 0; ; page++) {
@@ -105,10 +110,11 @@ export async function clearEmailSendingSuppressions(
 			const listed = Listed.safeParse(await response.json());
 			if (!listed.success) return { outcome: "failed", failure: "list: unreadable" };
 			for (const one of listed.data.result) {
+				const said = Addressed.safeParse(one);
+				if (!said.success || said.data.email.trim().toLowerCase() !== address) continue;
 				const entry = Entry.safeParse(one);
-				if (entry.success && entry.data.email.trim().toLowerCase() === address) {
-					entries.set(entry.data.id, entry.data);
-				}
+				if (entry.success) entries.set(entry.data.id, entry.data);
+				else unread++;
 			}
 			cursor = listed.data.result_info?.next_cursor ?? null;
 			if (!cursor) break;
@@ -120,12 +126,12 @@ export async function clearEmailSendingSuppressions(
 	const ours = (entry: z.infer<typeof Entry>) =>
 		entry.scope?.type === "sending_domain" &&
 		domains.has((entry.scope.value ?? "").toLowerCase().replace(/\.$/, ""));
-	// What stops this workspace's mail: entries for the whole account, or for one of its domains.
+	// What may stop this workspace's mail: anything but another domain's entry.
 	const stopping = [...entries.values()].filter(
-		(entry) => entry.scope?.type === "account" || ours(entry),
+		(entry) => entry.scope?.type !== "sending_domain" || ours(entry),
 	);
 	let removed = 0;
-	let kept = 0;
+	let kept = unread;
 	for (const entry of stopping) {
 		if (!ours(entry) || entry.read_only || !CLEARABLE.has(entry.reason)) {
 			kept++;

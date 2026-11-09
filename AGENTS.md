@@ -168,7 +168,9 @@ These are load-bearing. Breaking one breaks users' data or security, usually sil
     Resend's with the workspace's own key, and Email Service's, which the deployment's account
     shares, only for that workspace's proved domains, and never an entry for the whole account,
     one added by hand or one marked read-only. Resend's word that it took an address off its own
-    list takes off only an entry Resend's events made, and not one said again since.
+    list, which every webhook of the account hears, counts only for the workspace whose mailbox
+    sent the email that put it there, as Resend's API says with that workspace's key, and takes
+    off only an entry Resend's events made, and not one said again since.
 
 ## Code style
 
