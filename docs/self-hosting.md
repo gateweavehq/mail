@@ -252,9 +252,11 @@ the MX record it shows; as a domain's mail goes to one place, use a subdomain wh
 already gets mail elsewhere. The workspace's key then needs full access, since a sending-only key
 can't read received mail. Set the domain to receive with Resend under Settings › Domains: Mail
 makes the webhook in that Resend account, pointing at `/api/inbound/resend/…` on the server's
-address (`BETTER_AUTH_URL`), which has to be reachable from the internet, and removes it when no
-domain sends or receives with Resend. Resend turns off a webhook whose deliveries keep failing, as while
-the server is down for long; "Check the webhook" on the same page turns it back on.
+address (`BETTER_AUTH_URL`), which has to be reachable from the internet. Once no domain sends or
+receives with Resend, the webhook stays two weeks for what Resend still tells of mail sent before,
+then the daily Cron Trigger removes it. Resend turns off a webhook whose deliveries keep failing, as
+while the server is down for long; "Check the webhook" on the same page turns it back on. A key put
+in later, as one from another Resend account, gets the webhook made in its account.
 Resend takes mail for every address on the domain, so mail to an address that doesn't exist in
 Mail is left out rather than refused, and stays in Resend.
 

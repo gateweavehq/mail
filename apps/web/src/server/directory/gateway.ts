@@ -8,8 +8,8 @@ import { removeMailboxes } from "../mailbox";
 import { appOrigin } from "../origin";
 import { allowDomainCheck } from "../rate-limit";
 import {
-	dropUnusedWebhook,
 	mendWebhook,
+	noteWebhookUse,
 	setDomainReceiving,
 	setDomainSendingWith,
 } from "../resend-inbound";
@@ -126,7 +126,7 @@ async function run(action: z.output<typeof Action>, workspaceId: string, userId:
 			);
 		case "remove-domain": {
 			const result = await removeDomain(db, workspaceId, action.id);
-			if (result.ok) await dropUnusedWebhook(db, workspaceId);
+			if (result.ok) await noteWebhookUse(db, workspaceId);
 			return result;
 		}
 		case "set-domain-sending":

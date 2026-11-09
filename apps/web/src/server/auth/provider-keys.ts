@@ -32,6 +32,11 @@ export interface ProviderSettings {
 	secretsKey?: string | undefined;
 	/** Resend's API, when it isn't Resend's own. */
 	resendApi?: string | undefined;
+	/**
+	 * Sees to what the workspace's domains need of the new key, as the webhook in its Resend
+	 * account. What the key can't do, if anything.
+	 */
+	afterKeySet?: ((workspaceId: string) => Promise<string | null>) | undefined;
 }
 
 const id = z.string().min(1).max(64);
@@ -110,7 +115,8 @@ export function providerKeys({ db, settings }: { db: Database; settings: Provide
 						addedBy: userId,
 					});
 					if (!saved.ok) throw new APIError("BAD_REQUEST", { message: saved.error });
-					return ctx.json({ key: saved.info, access: check.access });
+					const note = (await settings.afterKeySet?.(organizationId)) ?? null;
+					return ctx.json({ key: saved.info, access: check.access, note });
 				},
 			),
 

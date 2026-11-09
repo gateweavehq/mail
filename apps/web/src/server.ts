@@ -6,6 +6,7 @@ import { directoryIn, receiveDeliveryEvents } from "./server/delivery-events";
 import { findAddress } from "./server/directory";
 import { receiveMail } from "./server/inbound";
 import { finishRemovals, mailboxStub, storeMail } from "./server/mailbox";
+import { dropUnusedWebhooks } from "./server/resend-inbound";
 import { newNonce, withSecurityHeaders } from "./server/security-headers";
 
 export { Mailbox } from "./server/mailbox";
@@ -58,5 +59,6 @@ export default {
 	async scheduled() {
 		await pruneExpired(db);
 		await finishRemovals(db);
+		await dropUnusedWebhooks(db);
 	},
 } satisfies ExportedHandler<Cloudflare.Env>;

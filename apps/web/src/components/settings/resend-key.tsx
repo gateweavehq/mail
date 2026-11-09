@@ -106,9 +106,9 @@ export function ResendKey({
 				<AddKey
 					replacing={key !== null}
 					onCancel={key ? () => setReplacing(false) : null}
-					onAdded={async (access) => {
+					onAdded={async (access, note) => {
 						setReplacing(false);
-						setError(null);
+						setError(note);
 						setSaid(accessWords(access));
 						await onChanged();
 					}}
@@ -146,7 +146,8 @@ function AddKey({
 }: {
 	replacing: boolean;
 	onCancel: (() => void) | null;
-	onAdded: (access: ResendAccess) => Promise<void>;
+	/** With what the workspace's domains can't do with the key, if anything. */
+	onAdded: (access: ResendAccess, note: string | null) => Promise<void>;
 }) {
 	const { id: organizationId } = useWorkspace();
 	const [key, setKey] = useState("");
@@ -168,7 +169,7 @@ function AddKey({
 			return;
 		}
 		setKey("");
-		await onAdded(result.data.access);
+		await onAdded(result.data.access, result.data.note);
 	}
 
 	return (

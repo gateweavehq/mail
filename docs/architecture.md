@@ -65,12 +65,18 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
   sending-only key received mail and webhooks. The first domain that receives or sends with Resend
   makes the workspace's webhook in that Resend account (`POST /webhooks`, for `email.received` and
   the delivery events below), at `/api/inbound/resend/<channel>`, a random id per workspace, and
-  keeps its id and signing secret, sealed as the key is, in `resend_inbound`. The last one to stop
-  removes it. Sending doesn't wait for it: with a sending-only key a domain still sends, and Mail
-  says it can't learn what became of the mail. Choosing Resend again, or "Check the webhook" on the
-  Domains page, makes it again when Resend no longer has it, as after the key was replaced with one
-  from another account, turns it back on when Resend turned it off, and gives one made before Mail
-  recorded deliveries the events it lacks. Resend's webhook carries no content, only the email's id. Mail checks the delivery's Svix
+  keeps its id and signing secret, sealed as the key is, in `resend_inbound`. When the last one
+  stops, the row notes since when (`unused_since`) and the webhook stays fourteen days
+  (`UNUSED_WEBHOOK_DAYS`), as Resend still tells of mail sent before, a complaint days later among
+  it; then the daily run removes it, unless a domain uses Resend again. Sending doesn't wait for
+  it: with a sending-only key a domain still sends, and Mail says it can't learn what became of
+  the mail, or, when the webhook is made, that it can't check it. Putting in a new key, choosing
+  Resend again, or "Check the webhook" on the Domains page makes it again when Resend no longer has
+  it, as after the key was replaced with one from another account, turns it back on when Resend
+  turned it off, and gives one made before Mail recorded deliveries the events it lacks. The
+  webhook tells of everything the Resend account receives, so mail received while no domain of the
+  workspace receives with Resend is let go without asking Resend for it.
+  Resend's webhook carries no content, only the email's id. Mail checks the delivery's Svix
   signature, then asks Resend for the email (`GET /emails/receiving/<id>`) and takes its `to`.
   Resend keeps one email for each recipient of the envelope and names that one there, whatever the
   To header says; its `cc` is the Cc header and `received_for` is read from `Received` headers,
@@ -345,8 +351,10 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
       to, where Email Service refuses the whole message. Its signature is checked as for received
       mail, then the event is read with zod, and it counts only when its `from` is an address of a
       mailbox of the webhook's own workspace, on a proved domain, as the key's Resend account may
-      send for others too. It notes when that domain's events last came, for that workspace only,
-      and a domain that changes how it sends forgets it, as those were the other provider's. Mail
+      send for others too. It notes when that domain's events last came, for that workspace only
+      and while the domain still sends with Resend. A domain that changes how it sends forgets the
+      time, as those were the other provider's events, and the other's late events don't set it. An
+      event Mail can't read, as one with an odd `email_id`, is acknowledged. Mail
       answers 503 to an event whose message isn't found yet, for ten minutes from the event, and
       when D1 or the object fails, so Resend tries again; it answers with a success to anything
       else, as Resend turns off a webhook that keeps failing.
@@ -363,7 +371,8 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
       for good by the code its first reply starts with, after Resend's `smtp; `; and
       `email.suppressed`, or a bounce of the subtype `Suppressed`, as the provider's list for seven
       days. Resend sends to the other recipients of such a message, so the entry is what stops the
-      next one.
+      next one. Resend gives the message its id before it leaves an address out, so each of these
+      counts only for a message the mailbox has.
 
       A soft bounce, a delay or another failure adds nothing. A bounce or a complaint counts only
       for a message the mailbox has, so one about mail from before a domain changed workspaces

@@ -149,8 +149,9 @@ function directory(fails?: Error) {
 		["sales@example.net", { mailboxId: "box-sales", workspaceId: "ws-sales" }],
 	]);
 	const found: EventDirectory = {
-		async eventsCame(domains, _at, workspaceId) {
+		async eventsCame(domains, _at, { provider, workspaceId }) {
 			if (fails) throw fails;
+			expect(provider).toBe("resend");
 			came.push({ domains, workspaceId });
 		},
 		async mailboxesOf(senders) {
@@ -241,7 +242,7 @@ describe("recording a Resend event", () => {
 		expect(known.came).toEqual([]);
 	});
 
-	it("asks for a message not found yet again, then lets it go, listing only the provider's refusal", async () => {
+	it("asks for a message not found yet again, then lets it go, listing nothing for it", async () => {
 		const known = directory();
 		const { mailbox } = mailboxes(false);
 		const complaint = read(event("email.complained"));
@@ -254,9 +255,12 @@ describe("recording a Resend event", () => {
 			await recordResendEvent(complaint, "ws-help", known, mailbox, at + FIND_WINDOW_MS + 1),
 		).toEqual({ status: 200, outcome: "notFound", suppressed: 0 });
 		expect(known.suppressed).toEqual([]);
+		// Resend gave the message an id before leaving the address out, so its list counts only for a
+		// message the mailbox has, as everything else does.
 		const kept = read(event("email.suppressed"));
 		const late = await recordResendEvent(kept, "ws-help", known, mailbox, at + FIND_WINDOW_MS + 1);
-		expect(late).toEqual({ status: 200, outcome: "notFound", suppressed: 1 });
+		expect(late).toEqual({ status: 200, outcome: "notFound", suppressed: 0 });
+		expect(known.suppressed).toEqual([]);
 	});
 
 	it("has it come again when D1 or the mailbox fails, naming no address", async () => {
@@ -280,5 +284,22 @@ describe("recording a Resend event", () => {
 		);
 		expect(broken).toMatchObject({ status: 503, outcome: "failed" });
 		expect(known.suppressed).toEqual([]);
+
+		const listing = directory();
+		listing.suppress = async () => {
+			throw new Error("D1 is down for ada@example.org");
+		};
+		const unlisted = await recordResendEvent(
+			complaint,
+			"ws-help",
+			listing,
+			mailboxes().mailbox,
+			at,
+		);
+		expect(unlisted).toMatchObject({ status: 503, outcome: "failed" });
+		expect(unlisted.status === 503 && unlisted.outcome === "failed" && unlisted.failure).toMatch(
+			/^suppressions/,
+		);
+		expect(JSON.stringify(unlisted)).not.toContain("ada@");
 	});
 });

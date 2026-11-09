@@ -141,9 +141,10 @@ export type ResendEventOutcome =
 
 /**
  * Records an event in the mailbox of this workspace that sent the message, and adds its recipient
- * to the workspace's suppression list when it says to. A bounce or a complaint counts only for a
- * message the mailbox has, as with Email Service's. Recording only moves forward and adding to a
- * list twice changes nothing, so an event that comes again does no harm.
+ * to the workspace's suppression list when it says to. Any event counts for the list only for a
+ * message the mailbox has, Resend's list too: unlike Email Service, Resend takes the message and
+ * gives its id before it leaves out an address on its list. Recording only moves forward and adding
+ * to a list twice changes nothing, so an event that comes again does no harm.
  */
 export async function recordResendEvent(
 	read: ReadResendEvent,
@@ -160,7 +161,7 @@ export async function recordResendEvent(
 			return { status: 200, outcome: "notOurs", suppressed: 0 };
 		}
 		const domain = split(read.sender)?.domain;
-		if (domain) await directory.eventsCame([domain], now, workspaceId);
+		if (domain) await directory.eventsCame([domain], now, { provider: "resend", workspaceId });
 	} catch (error) {
 		return { status: 503, outcome: "failed", failure: failureOf("directory", error) };
 	}
@@ -172,7 +173,7 @@ export async function recordResendEvent(
 
 	const suppressions: NewSuppression[] = [];
 	read.events.forEach(({ event, suppression }, index) => {
-		if (!suppression || !(found[index] === true || suppression.reason === "rejected")) return;
+		if (!suppression || found[index] !== true) return;
 		suppressions.push({
 			workspaceId,
 			address: event.recipient,

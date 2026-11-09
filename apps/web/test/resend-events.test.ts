@@ -22,6 +22,8 @@ interface Webhook {
 }
 
 const webhooks = new Map<string, Webhook>();
+/** Each request Resend's API got, as its method and path. */
+const asked: string[] = [];
 /** What Resend was asked to send, with the id it gave. */
 const emails: { id: string; subject: string; to: string[]; cc: string[] }[] = [];
 
@@ -33,6 +35,7 @@ const restricted = () =>
 
 async function resend(request: Request): Promise<Response> {
 	const url = new URL(request.url);
+	asked.push(`${request.method} ${url.pathname}`);
 	const key = request.headers.get("authorization")?.replace(/^Bearer /, "") ?? "";
 	if (key !== FULL_KEY && key !== SENDING_KEY) {
 		return Response.json({ name: "validation_error" }, { status: 400 });
@@ -93,7 +96,7 @@ interface Directory {
 		proof: { value: string } | null;
 	}[];
 	mailboxes: { id: string; name: string }[];
-	resendReceiving: { ready: boolean } | null;
+	resendReceiving: { ready: boolean; trouble: string | null } | null;
 }
 
 async function directory(slug: string, action?: unknown) {
@@ -104,7 +107,7 @@ async function directory(slug: string, action?: unknown) {
 	});
 	return {
 		status: response.status,
-		body: (await response.json()) as Directory & { ok?: boolean; note?: string },
+		body: (await response.json()) as Directory & { ok?: boolean; note?: string; error?: string },
 	};
 }
 
@@ -134,21 +137,43 @@ async function workspace(key = FULL_KEY) {
 		localPart: "help",
 		expiresInDays: null,
 	});
-	const set = await mail.fetch(`${origin}/api/auth/providers/set-key`, {
+	await setKey(workspaceId, key);
+	return { slug, workspaceId, domain, domainId: added.id, mailboxId: made.id };
+}
+
+/** Gives the workspace a Resend key, and what its domains can't do with it, if anything. */
+async function setKey(workspaceId: string, key: string) {
+	const response = await mail.fetch(`${origin}/api/auth/providers/set-key`, {
 		method: "POST",
 		headers: {
 			...owner.headers,
 			origin,
 			"content-type": "application/json",
-			"cf-connecting-ip": `203.0.113.${n}`,
+			"cf-connecting-ip": `203.0.113.${++counter}`,
 		},
 		body: JSON.stringify({ organizationId: workspaceId, provider: "resend", key }),
 	});
-	expect(set.status).toBe(200);
-	return { slug, workspaceId, domain, domainId: added.id, mailboxId: made.id };
+	expect(response.status).toBe(200);
+	return (await response.json()) as { access: string; note: string | null };
 }
 
 type Box = Awaited<ReturnType<typeof workspace>>;
+
+/** Makes the workspace's webhook look unused for that long, as the daily run would find it. */
+async function unusedFor(box: Box, ms: number) {
+	await mail.db
+		.prepare("UPDATE resend_inbound SET unused_since = ? WHERE organization_id = ?")
+		.bind(Date.now() - ms, box.workspaceId)
+		.run();
+}
+
+async function unusedSince(box: Box) {
+	const row = await mail.db
+		.prepare("SELECT unused_since AS since FROM resend_inbound WHERE organization_id = ?")
+		.bind(box.workspaceId)
+		.first<{ since: number | null }>();
+	return row?.since;
+}
 
 /** Each workspace's webhook, noted when it is made. */
 const webhookOf = new Map<string, string>();
@@ -451,6 +476,9 @@ describe("Resend's delivery events", () => {
 		expect(await suppressions(box)).toEqual([]);
 
 		const mine = await send(box, ["ada@example.org"]);
+		// One Mail can't read would only come again the same.
+		const odd = event("email.delivered", { ...mine, emailId: "not an id" }, "ada@example.org");
+		expect(await deliver(hookOf(box), odd)).toBe(204);
 		expect(await deliver(hookOf(box), event("email.sent", mine, "ada@example.org"))).toBe(204);
 		expect(await deliver(hookOf(box), event("email.opened", mine, "ada@example.org"))).toBe(204);
 		const forged = event("email.complained", mine, "ada@example.org");
@@ -488,7 +516,7 @@ describe("sending through Resend with a key that can only send", () => {
 });
 
 describe("the workspace's webhook", () => {
-	it("gains the events when an older one is checked, and goes when no domain uses Resend", async () => {
+	it("gains the events when an older one is checked", async () => {
 		const box = await workspace();
 		await sendingWithResend(box);
 		const webhook = hookOf(box);
@@ -497,20 +525,131 @@ describe("the workspace's webhook", () => {
 		expect((await directory(box.slug, { action: "check-receiving" })).status).toBe(200);
 		expect(webhook.events).toContain("email.bounced");
 		expect(webhook.events).toContain("email.received");
+	});
 
-		// Its events were Resend's, so they are forgotten when the domain sends another way.
-		const sent = await send(box, ["ada@example.org"]);
+	it("stays two weeks once no domain uses Resend, for what it still tells of mail sent before", async () => {
+		const box = await workspace();
+		await sendingWithResend(box);
+		const webhook = hookOf(box);
+		const sent = await send(box, ["ada@example.org", "bob@example.org"]);
 		expect(await deliver(webhook, event("email.delivered", sent, "ada@example.org"))).toBe(204);
-		expect((await directory(box.slug)).body.domains[0]?.eventsAt).not.toBeNull();
+		const first = (await directory(box.slug)).body.domains[0]?.eventsAt;
+		expect(first).toBeGreaterThan(Date.now() - MINUTE);
+		// Choosing the same way again keeps the time.
+		await sendingWithResend(box);
+		expect((await directory(box.slug)).body.domains[0]?.eventsAt).toBe(first);
+
 		const back = await directory(box.slug, {
 			action: "set-domain-sending",
 			id: box.domainId,
 			sendsWith: "cloudflare",
 		});
 		expect(back.status).toBe(200);
+		expect(webhooks.has(webhook.id)).toBe(true);
+		expect(await unusedSince(box)).toBeGreaterThan(Date.now() - MINUTE);
+		// Resend's events were the domain's, so they are forgotten once it sends another way.
+		expect((await directory(box.slug)).body.domains[0]?.eventsAt).toBeNull();
+
+		// A complaint that comes later still stops mail to whoever made it, and says nothing of
+		// Email Service's events.
+		expect(await deliver(webhook, event("email.complained", sent, "bob@example.org"))).toBe(204);
+		expect((await suppressions(box)).map(({ address, reason }) => [address, reason])).toEqual([
+			["bob@example.org", "complained"],
+		]);
+		expect((await directory(box.slug)).body.domains[0]?.eventsAt).toBeNull();
+
+		await mail.runScheduled();
+		expect(webhooks.has(webhook.id)).toBe(true);
+		await unusedFor(box, 15 * DAY);
+		await mail.runScheduled();
 		expect(webhooks.has(webhook.id)).toBe(false);
-		const listed = (await directory(box.slug)).body;
-		expect(listed.domains[0]?.eventsAt).toBeNull();
-		expect(listed.resendReceiving).toBeNull();
+		expect((await directory(box.slug)).body.resendReceiving).toBeNull();
+		expect(await deliver(webhook, event("email.complained", sent, "ada@example.org"))).toBe(404);
+	});
+
+	it("is kept while a domain uses Resend, whatever the row says", async () => {
+		const box = await workspace();
+		await sendingWithResend(box);
+		const webhook = hookOf(box);
+		await directory(box.slug, {
+			action: "set-domain-sending",
+			id: box.domainId,
+			sendsWith: "cloudflare",
+		});
+		await unusedFor(box, 13 * DAY);
+		// Back to Resend within the two weeks: the same webhook, used again.
+		await sendingWithResend(box);
+		expect(hookOf(box).id).toBe(webhook.id);
+		expect(await unusedSince(box)).toBeNull();
+		await unusedFor(box, 30 * DAY);
+		await mail.runScheduled();
+		expect(webhooks.has(webhook.id)).toBe(true);
+	});
+
+	it("counts sending as use when receiving goes back to Cloudflare", async () => {
+		const box = await workspace();
+		await sendingWithResend(box);
+		const receiving = (receivesWith: string) =>
+			directory(box.slug, { action: "set-domain-receiving", id: box.domainId, receivesWith });
+		expect((await receiving("resend")).status).toBe(200);
+		expect((await receiving("cloudflare")).status).toBe(200);
+		expect(await unusedSince(box)).toBeNull();
+	});
+
+	it("costs no call to Resend for mail it received while no domain here receives with it", async () => {
+		const box = await workspace();
+		await sendingWithResend(box);
+		asked.length = 0;
+		const received = JSON.stringify({
+			type: "email.received",
+			created_at: new Date().toISOString(),
+			data: { email_id: crypto.randomUUID(), to: [`help@${box.domain}`] },
+		});
+		expect(await deliver(hookOf(box), received)).toBe(200);
+		expect(asked).toEqual([]);
+		expect((await directory(box.slug)).body.resendReceiving?.trouble).toBeNull();
+	});
+});
+
+describe("a new Resend key", () => {
+	it("gets the webhook made in its account when the old one isn't there", async () => {
+		const box = await workspace();
+		await sendingWithResend(box);
+		const old = hookOf(box);
+		// As a key from another Resend account finds it.
+		webhooks.delete(old.id);
+		const before = new Set(webhooks.keys());
+		expect((await setKey(box.workspaceId, FULL_KEY)).note).toBeNull();
+		const made = [...webhooks.values()].filter((one) => !before.has(one.id));
+		expect(made.map(({ endpoint }) => endpoint)).toEqual([old.endpoint]);
+		const [webhook] = made;
+		if (!webhook) throw new Error("expected a webhook");
+
+		const sent = await send(box, ["ada@example.org"]);
+		expect(await deliver(webhook, event("email.delivered", sent, "ada@example.org"))).toBe(204);
+		expect(await deliveries(box, sent)).toEqual([
+			{ recipient: "ada@example.org", state: "delivered", detail: null },
+		]);
+		// The old webhook's secret went with it.
+		expect(await deliver(old, event("email.complained", sent, "ada@example.org"))).toBe(401);
+	});
+
+	it("that can only send leaves a webhook that is made alone, saying it can't check it", async () => {
+		const box = await workspace();
+		await sendingWithResend(box);
+		const webhook = hookOf(box);
+		const set = await setKey(box.workspaceId, SENDING_KEY);
+		expect(set.access).toBe("sending");
+		expect(set.note).toContain("can't check Resend's webhook");
+		expect(webhooks.get(webhook.id)?.status).toBe("enabled");
+		const check = await directory(box.slug, { action: "check-receiving" });
+		expect(check.body.error).toContain("can't check Resend's webhook");
+		const switched = await sendingWithResend(box);
+		expect(switched.note).toContain("can't check Resend's webhook");
+
+		// And its events still count.
+		const sent = await send(box, ["ada@example.org"]);
+		expect(await deliver(webhook, event("email.delivered", sent, "ada@example.org"))).toBe(204);
+		expect((await deliveries(box, sent))?.[0]?.state).toBe("delivered");
 	});
 });

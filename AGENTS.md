@@ -142,7 +142,8 @@ These are load-bearing. Breaking one breaks users' data or security, usually sil
     mail is data as in 17 (`apps/web/src/server/resend-events.ts`), and counts only when it was
     sent from a mailbox address of the channel's workspace, as the key's Resend account may send
     for others too. For received mail, the webhook's body names an email and nothing more is taken
-    from it: who the mail is for, Resend's DMARC result
+    from it, and only while a domain of the workspace receives with Resend: who the mail is for,
+    Resend's DMARC result
     and the raw mail come from Resend's API with the workspace's key. Mail is stored only for that
     workspace's addresses on proved domains set to receive with Resend, and only for the envelope's
     recipient, which Resend names in the email's `to`: never for an address that is only in its

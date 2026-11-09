@@ -1,6 +1,7 @@
 import { and, eq, inArray, isNotNull } from "drizzle-orm";
 import { z } from "zod";
 import { DELIVERY_STATES, type DeliveryState, MAX_DELIVERY_DETAIL } from "../lib/delivery";
+import type { SendsWith } from "../lib/providers";
 import { SUPPRESSION_DAYS, type SuppressionReason } from "../lib/suppressions";
 import { type Database, schema } from "./db";
 import type { DeliveryEvent } from "./mailbox/deliveries";
@@ -190,10 +191,15 @@ export function split(address: string): { local: string; domain: string } | null
 /** What receiving events needs of the directory, which D1 holds. */
 export interface EventDirectory {
 	/**
-	 * Notes that events came for these domains, where a workspace proved them: the given workspace,
-	 * for events only it could have been sent.
+	 * Notes that the provider's events came for these domains, where a workspace proved them and
+	 * sends with that provider, so a late event for mail sent before a domain changed how it sends
+	 * doesn't speak for the other: of the given workspace, for events only it could have been sent.
 	 */
-	eventsCame(domains: string[], at: number, workspaceId?: string): Promise<void>;
+	eventsCame(
+		domains: string[],
+		at: number,
+		from: { provider: SendsWith; workspaceId?: string },
+	): Promise<void>;
 	/**
 	 * The mailbox of each of these addresses, on domains a workspace proved, and that workspace. A
 	 * temporary address that has ended still counts: it sent the message, and the mailbox still has
@@ -214,7 +220,7 @@ export interface Sender {
 export function directoryIn(db: Database): EventDirectory {
 	const { mailAddress, mailDomain } = schema;
 	return {
-		async eventsCame(domains, at, workspaceId) {
+		async eventsCame(domains, at, { provider, workspaceId }) {
 			await db
 				.update(mailDomain)
 				.set({ eventsAt: new Date(at) })
@@ -222,6 +228,7 @@ export function directoryIn(db: Database): EventDirectory {
 					and(
 						inArray(mailDomain.name, domains),
 						isNotNull(mailDomain.verifiedAt),
+						eq(mailDomain.sendsWith, provider),
 						workspaceId ? eq(mailDomain.organizationId, workspaceId) : undefined,
 					),
 				);
@@ -352,7 +359,9 @@ export async function receiveDeliveryEvents(
 
 	let mailboxes: Map<string, Sender>;
 	try {
-		await directory.eventsCame([...new Set(read.map(({ event }) => event.domain))], now);
+		await directory.eventsCame([...new Set(read.map(({ event }) => event.domain))], now, {
+			provider: "cloudflare",
+		});
 		mailboxes = await directory.mailboxesOf(new Set(read.map(({ event }) => event.sender)));
 	} catch (error) {
 		fail(

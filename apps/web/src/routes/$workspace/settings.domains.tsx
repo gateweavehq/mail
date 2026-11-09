@@ -83,6 +83,7 @@ function DomainsPage() {
 								domain={domain}
 								admin={admin}
 								keyed={resend ? resend.key !== null : null}
+								webhookReady={data.resendReceiving?.ready === true}
 							/>
 						))}
 					</ul>
@@ -317,11 +318,14 @@ function DomainRow({
 	domain,
 	admin,
 	keyed,
+	webhookReady,
 }: {
 	domain: DirectoryDomain;
 	admin: boolean;
 	/** Whether the workspace has a Resend key, once the page knows. */
 	keyed: boolean | null;
+	/** Whether the workspace's webhook in Resend is made, which `WebhookStatus` speaks for. */
+	webhookReady: boolean;
 }) {
 	const { slug } = useWorkspace();
 	const router = useRouter();
@@ -471,13 +475,17 @@ function DomainRow({
 						: `Email Service's delivery events last came ${formatRelative(domain.eventsAt)}.`}
 				</p>
 			)}
-			{admin && domain.verifiedAt !== null && domain.sendsWith === "resend" && keyed !== false && (
-				<p className="text-sm text-muted-foreground">
-					{domain.eventsAt === null
-						? "No delivery events from Resend yet. They come through the workspace's webhook once something is sent."
-						: `Resend's delivery events last came ${formatRelative(domain.eventsAt)}.`}
-				</p>
-			)}
+			{admin &&
+				domain.verifiedAt !== null &&
+				domain.sendsWith === "resend" &&
+				keyed !== false &&
+				(webhookReady || domain.eventsAt !== null) && (
+					<p className="text-sm text-muted-foreground">
+						{domain.eventsAt === null
+							? "No delivery events from Resend yet. They come through the workspace's webhook once something is sent."
+							: `Resend's delivery events last came ${formatRelative(domain.eventsAt)}.`}
+					</p>
+				)}
 			{admin && domain.sendsWith === "resend" && keyed === false && (
 				<p className="text-sm text-destructive">
 					This domain sends through Resend, and the workspace has no Resend key, so its mail can't
