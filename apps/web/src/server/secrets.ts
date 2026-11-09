@@ -72,14 +72,15 @@ export async function sealerFor(
 export const isSealer = (value: Sealer | { unavailable: string }): value is Sealer =>
 	!("unavailable" in value);
 
-function toBase64(bytes: Uint8Array): string {
+/** URL-safe base64, unpadded. */
+export function toBase64(bytes: Uint8Array): string {
 	let binary = "";
 	for (const byte of bytes) binary += String.fromCharCode(byte);
 	return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
 }
 
 /** Standard or URL-safe base64, padded or not; null when it is not base64. */
-function fromBase64(text: string): Uint8Array<ArrayBuffer> | null {
+export function fromBase64(text: string): Uint8Array<ArrayBuffer> | null {
 	const standard = text.trim().replaceAll("-", "+").replaceAll("_", "/").replace(/=+$/, "");
 	if (!/^[A-Za-z0-9+/]*$/.test(standard)) return null;
 	try {

@@ -9,7 +9,7 @@ export const INDEX_BATCH = 20;
  * Stored messages that wait to be indexed, the newest first. Named, as SQLite would otherwise find
  * them through the index on `search_id` and sort them all on every run.
  */
-export const WAITING = `SELECT id, object, size, subject, from_header AS "from"
+export const WAITING = `SELECT id, object, size, seal, subject, from_header AS "from"
 	FROM message INDEXED BY message_unsearched
 	WHERE state = 'stored' AND search_id IS NULL ORDER BY arrived_at DESC, id DESC LIMIT ?`;
 
@@ -18,6 +18,7 @@ export type Waiting = {
 	id: string;
 	object: string;
 	size: number;
+	seal: string | null;
 	subject: string | null;
 	from: string | null;
 };

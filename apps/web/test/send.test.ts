@@ -350,6 +350,30 @@ describe("a reply", () => {
 		});
 	});
 
+	it("still threads a reply to a message whose sealed mail doesn't open, by the id in its row", async () => {
+		const box = await mailboxWithAddress();
+		const first = await arrive(box, [
+			"Subject: Locked",
+			"Message-ID: <locked@example.org>",
+			"References: <zero@example.org>",
+		]);
+		// Its mail no longer opens, as after the server's SECRETS_KEY changed.
+		await mail.bucket.put(`${box.workspaceId}/${box.mailboxId}/${first.id}.eml`, "not it");
+		const sent = await send(box, {
+			to: ["locked@example.net"],
+			subject: "Re: Locked",
+			text: "Got it.",
+			replyTo: first.id,
+		});
+		expect(sent).toMatchObject({ ok: true, threadId: first.threadId, state: "sent" });
+		const [email] = await sentTo("locked@example.net");
+		expect(email?.headers?.["In-Reply-To"]).toBe("<locked@example.org>");
+		// Without the ids before it, which only its mail holds.
+		expect(email?.headers?.References).toMatch(
+			new RegExp(`^<locked@example\\.org> <[0-9a-f-]{36}@${box.domain}>$`),
+		);
+	});
+
 	it("leaves out of its headers an id Email Service would refuse, and stays in its thread", async () => {
 		const box = await mailboxWithAddress();
 		const first = await arrive(box, [

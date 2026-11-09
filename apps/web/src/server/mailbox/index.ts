@@ -12,6 +12,7 @@ import {
 	resendVerifiedDomain,
 	verifiedDomain,
 } from "./headers";
+import { rawMail } from "./sealed";
 import { ownId, referencedIds } from "./thread";
 
 export { Mailbox } from "./durable-object";
@@ -61,8 +62,9 @@ export class MailboxFullError extends Error {
 
 /**
  * Stores a message for a mailbox the directory found. The header block is read from the start of
- * the raw mail, and the whole of it streams into R2 without being held in memory. Anything that
- * goes wrong throws, which tells the sender to try again.
+ * the raw mail, and the whole of it streams into R2, sealed when the deployment has a
+ * `SECRETS_KEY`, without being held in memory. Anything that goes wrong throws, which tells the
+ * sender to try again.
  */
 export async function storeMail(
 	found: { workspaceId: string; mailboxId: string; agentMemberId?: string | null },
@@ -73,6 +75,7 @@ export async function storeMail(
 	const headers = parseHeaders(await readHeaderBlock(forHeaders));
 	const judged = judge(headers);
 	const mailbox = mailboxStub(found.mailboxId);
+	const raw = rawMail(env);
 	const begun = await mailbox.begin({
 		workspaceId: found.workspaceId,
 		mailboxId: found.mailboxId,
@@ -89,17 +92,18 @@ export async function storeMail(
 		dmarc: judged.dmarc,
 		verifiedDomain: judged.verifiedDomain,
 		cameFor: found.agentMemberId ?? null,
+		seal: raw.newSeal(),
 	});
 	if (!begun.ok) {
 		await forStoring.cancel();
 		// Temporary on purpose: the mailbox may have room again by the time the sender retries.
 		throw new MailboxFullError();
 	}
-	// R2 needs the length up front to take a stream, and Cloudflare gives it.
-	const sized = new FixedLengthStream(message.rawSize);
-	const stored = env.RAW_MAIL.put(begun.object, sized.readable);
-	await forStoring.pipeTo(sized.writable);
-	await stored;
+	// Sealed as the mailbox kept it: an object older than sealing keeps no seal, and says none.
+	await raw.put(
+		{ object: begun.object, size: message.rawSize, seal: begun.seal ?? null },
+		forStoring,
+	);
 	if ((await mailbox.finish(begun.id)) === "gone") {
 		// The alarm or a removal let this delivery go while it was on its way, and nothing knows its
 		// mail now. The sender tries again.

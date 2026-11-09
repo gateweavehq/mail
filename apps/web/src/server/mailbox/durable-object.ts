@@ -24,6 +24,7 @@ import { listed, type SentFacts, writeSentEvent } from "./events";
 import { base64Size, bytesOfBase64 } from "./files";
 import { indexBatch } from "./indexing";
 import { LINKED_THREADS, migrate } from "./schema";
+import { type RawRef, rawMail, SealError } from "./sealed";
 import { ftsQuery, searchable } from "./search";
 import { MAX_REFERENCES, messageIds, subjectKey } from "./thread";
 
@@ -129,9 +130,20 @@ export interface Arrival {
 	 * Worker older than agents' pages, during a deploy.
 	 */
 	cameFor?: string | null;
+	/**
+	 * How its raw mail will be sealed, from `RawMail.newSeal`, or null when it is kept as it comes.
+	 * Missing from a Worker older than sealing, which writes it as it comes.
+	 */
+	seal?: string | null;
 }
 
-export type Begun = { ok: true; id: string; object: string } | { ok: false; reason: "full" };
+/**
+ * Where to write a message's raw mail, and the seal to write it with: the one the arrival gave,
+ * kept with its row. An object older than sealing gives none, and its mail is written as it comes.
+ */
+export type Begun =
+	| { ok: true; id: string; object: string; seal: string | null }
+	| { ok: false; reason: "full" };
 
 /** A message the mailbox sends: the copy it keeps, and what Email Service is asked to send. */
 export interface Sending {
@@ -272,6 +284,8 @@ export type StoredSummary = {
 
 export type StoredMessage = StoredSummary & {
 	object: string;
+	/** How its raw mail is sealed, as `RawRef` has it. */
+	seal: string | null;
 	envelopeFrom: string;
 	messageId: string | null;
 };
@@ -368,11 +382,12 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 		// Later than everything before it, so the order of arrival is the order shown even when two
 		// arrive within a millisecond.
 		const arrivedAt = Math.max(Date.now(), held.latest + 1);
+		const seal = typeof arrival.seal === "string" ? arrival.seal : null;
 		sql.exec(
 			`INSERT INTO message (id, state, delivery_key, object, size, arrived_at, envelope_from,
 				envelope_to, from_header, subject, date_header, message_id, dmarc, verified_domain,
-				own_id, subject_key, came_for)
-			VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				own_id, subject_key, came_for, seal)
+			VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			id,
 			arrival.key,
 			object,
@@ -389,6 +404,7 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			arrival.ownId ?? messageIds(arrival.messageId)[0] ?? null,
 			subjectKey(arrival.subject),
 			arrival.cameFor ?? null,
+			seal,
 		);
 		for (const ref of (arrival.references ?? []).slice(-MAX_REFERENCES)) {
 			sql.exec("INSERT OR IGNORE INTO message_reference (message, ref) VALUES (?, ?)", id, ref);
@@ -396,7 +412,7 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 		if ((await this.ctx.storage.getAlarm()) === null) {
 			await this.ctx.storage.setAlarm(Date.now() + PENDING_MS);
 		}
-		return { ok: true, id, object };
+		return { ok: true, id, object, seal };
 	}
 
 	/**
@@ -429,8 +445,8 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 	async #finishOne(id: string, key: string): Promise<"stored" | "duplicate" | "gone"> {
 		const sql = this.ctx.storage.sql;
 		const mine = sql
-			.exec<Copy & { object: string }>(
-				`SELECT object, ${COPY} FROM message WHERE id = ? AND state = 'pending'`,
+			.exec<Copy & RawRef>(
+				`SELECT object, size, seal, ${COPY} FROM message WHERE id = ? AND state = 'pending'`,
 				id,
 			)
 			.toArray()[0];
@@ -440,18 +456,20 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			.toArray();
 		if (earlier.length === 0) return this.#store(id);
 
-		const myHash = await bodyHash(this.env.RAW_MAIL, mine.object);
+		const raw = rawMail(this.env);
+		const myHash = await bodyHash(raw, mine);
 		if (myHash === null) throw new Error("A delivered message isn't in R2");
 		// The first message under a key was stored without its body's hash, as there was nothing to
 		// compare it with then.
 		const unhashed = sql
-			.exec<{ id: string; object: string }>(
-				"SELECT id, object FROM message WHERE delivery_key = ? AND state = 'stored' AND body_hash IS NULL",
+			.exec<{ id: string } & RawRef>(
+				`SELECT id, object, size, seal FROM message
+				WHERE delivery_key = ? AND state = 'stored' AND body_hash IS NULL`,
 				key,
 			)
 			.toArray();
 		for (const other of unhashed) {
-			const hash = await bodyHash(this.env.RAW_MAIL, other.object);
+			const hash = await bodyHash(raw, other);
 			if (hash !== null) sql.exec("UPDATE message SET body_hash = ? WHERE id = ?", hash, other.id);
 		}
 		const kept = sql
@@ -577,6 +595,8 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 	 */
 	async send(sending: Sending): Promise<Sent> {
 		const sql = this.ctx.storage.sql;
+		const raw = rawMail(this.env);
+		const seal = raw.newSeal();
 		// The same draft again, as when its answer was lost: what became of it, not a second send.
 		const earlier = this.drafted(sending.draft);
 		if (earlier) return earlier;
@@ -596,8 +616,9 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 		this.ctx.storage.transactionSync(() => {
 			sql.exec(
 				`INSERT INTO message (id, state, delivery_key, object, size, arrived_at, envelope_from,
-					envelope_to, from_header, subject, date_header, message_id, own_id, subject_key, sent_by)
-				VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					envelope_to, from_header, subject, date_header, message_id, own_id, subject_key, sent_by,
+					seal)
+				VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				id,
 				`sent:${id}`,
 				object,
@@ -612,6 +633,7 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 				sending.ownId,
 				subjectKey(sending.subject),
 				sending.sentBy,
+				seal,
 			);
 			for (const ref of sending.references.slice(-MAX_REFERENCES)) {
 				sql.exec("INSERT OR IGNORE INTO message_reference (message, ref) VALUES (?, ?)", id, ref);
@@ -635,7 +657,7 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			);
 		});
 		await this.#alarmBy(Date.now() + PENDING_MS);
-		await this.env.RAW_MAIL.put(object, sending.raw);
+		await raw.put({ object, size, seal }, sending.raw);
 		if (this.#store(id) === "gone") throw new Error("The copy was given up before it was stored");
 		const threadId = sql
 			.exec<{ threadId: string }>("SELECT thread_id AS threadId FROM message WHERE id = ?", id)
@@ -1002,16 +1024,19 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 		kept: SentFile[],
 	): Promise<EmailAttachment[] | { unread: "unavailable" | "wrong" }> {
 		const row = this.ctx.storage.sql
-			.exec<{ object: string }>("SELECT object FROM message WHERE id = ?", id)
+			.exec<RawRef>("SELECT object, size, seal FROM message WHERE id = ?", id)
 			.toArray()[0];
 		if (!row) return { unread: "wrong" };
-		let bytes: ArrayBuffer;
+		let bytes: Uint8Array<ArrayBuffer>;
 		try {
-			const object = await this.env.RAW_MAIL.get(row.object);
-			if (!object) return { unread: "wrong" };
-			bytes = await object.arrayBuffer();
-		} catch {
-			return { unread: "unavailable" };
+			const read = await rawMail(this.env).bytes(row);
+			if (!read) return { unread: "wrong" };
+			bytes = read;
+		} catch (error) {
+			// A copy that doesn't open under the server's key won't by trying again.
+			return {
+				unread: error instanceof SealError && error.kind === "unopened" ? "wrong" : "unavailable",
+			};
 		}
 		let found: Attachment[];
 		try {
@@ -1285,7 +1310,8 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 		return (
 			this.ctx.storage.sql
 				.exec<StoredMessage>(
-					`SELECT ${SUMMARY}, object, envelope_from AS envelopeFrom, message_id AS messageId
+					`SELECT ${SUMMARY}, object, seal, envelope_from AS envelopeFrom,
+						message_id AS messageId
 					FROM message WHERE id = ? AND state = 'stored'`,
 					id,
 				)
@@ -1530,9 +1556,8 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 		const taken = await this.#holdPaused(due.map(({ id }) => id));
 		// Each is tried only if it still waits when its turn comes.
 		for (const { id } of due) if (!taken.has(id)) await this.#tryNow(id, "due");
-		const indexed = await indexBatch(this.ctx.storage, (message) =>
-			searchable(this.env.RAW_MAIL, message),
-		);
+		const raw = rawMail(this.env);
+		const indexed = await indexBatch(this.ctx.storage, (message) => searchable(raw, message));
 		const next = sql
 			.exec<{ at: number | null }>(
 				"SELECT min(arrived_at) AS at FROM message WHERE state = 'pending'",

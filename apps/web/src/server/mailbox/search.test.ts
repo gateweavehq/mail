@@ -1,5 +1,7 @@
+import { randomBytes } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
+import { RawMail, SealError } from "./sealed";
 import {
 	ftsQuery,
 	MAX_QUERY_WORDS,
@@ -95,11 +97,14 @@ describe("ftsQuery", () => {
 });
 
 describe("searchable", () => {
-	/** A bucket that holds one message's mail. */
+	/** Raw mail that holds one message's, kept as it came. */
 	const holding = (raw: string) =>
-		({
-			get: async () => ({ arrayBuffer: async () => new TextEncoder().encode(raw).buffer }),
-		}) as unknown as Parameters<typeof searchable>[0];
+		new RawMail(
+			{
+				get: async () => ({ size: raw.length, body: new Blob([raw]).stream() }),
+			} as unknown as R2Bucket,
+			undefined,
+		);
 
 	it("makes look-alike forms plain, so that plain words and pasted ones both find them", async () => {
 		const raw = [
@@ -112,6 +117,7 @@ describe("searchable", () => {
 		const found = await searchable(holding(raw), {
 			object: "w/m/x.eml",
 			size: raw.length,
+			seal: null,
 			subject: "=?UTF-8?B?77yp772O772W772P772J772D772F?=",
 			from: "Ｓｈｏｐ <shop@example.org>",
 		});
@@ -154,6 +160,7 @@ describe("searchable", () => {
 		const found = await searchable(holding(raw), {
 			object: "w/m/x.eml",
 			size: raw.length,
+			seal: null,
 			subject: null,
 			from: null,
 		});
@@ -184,6 +191,7 @@ describe("searchable", () => {
 		const found = await searchable(holding(raw), {
 			object: "w/m/x.eml",
 			size: raw.length,
+			seal: null,
 			subject: name,
 			from: `${name} <a@example.org>`,
 		});
@@ -194,16 +202,51 @@ describe("searchable", () => {
 
 	it("throws when R2 can't give it the mail, rather than index the message without it", async () => {
 		const found = await searchable(
-			{
-				get: async () => ({
-					arrayBuffer: async () => {
+			new RawMail(
+				{
+					get: async () => {
 						throw new TypeError("not mail");
 					},
-				}),
-			} as unknown as Parameters<typeof searchable>[0],
-			{ object: "w/m/x.eml", size: 10, subject: "Lunch", from: "a@example.org" },
+				} as unknown as R2Bucket,
+				undefined,
+			),
+			{ object: "w/m/x.eml", size: 10, seal: null, subject: "Lunch", from: "a@example.org" },
 		).catch((error: unknown) => error);
 		// Unlike mail that doesn't parse: the mailbox tries it again later.
 		expect(found).toBeInstanceOf(TypeError);
+	});
+
+	describe("of sealed mail that doesn't open", () => {
+		const sealed = {
+			object: "w/m/x.eml",
+			size: 10,
+			seal: "v1.AAAAAAAAAAAAAAAAAAAAAA",
+			subject: "Lunch",
+			from: "a@example.org",
+		};
+		// As long as the sealed mail would be, and not it.
+		const changed = {
+			get: async () => ({ size: 26, body: new Blob([new Uint8Array(26)]).stream() }),
+		} as unknown as R2Bucket;
+
+		it("finds it by its headers under the server's key, as trying again won't open it", async () => {
+			const found = await searchable(
+				new RawMail(changed, randomBytes(32).toString("base64")),
+				sealed,
+			);
+			expect(found).toEqual({
+				subject: "Lunch",
+				sender: "a@example.org",
+				attachments: "",
+				body: "",
+			});
+		});
+
+		it("throws without a key, for the mailbox to try again once one is set", async () => {
+			const found = await searchable(new RawMail(changed, undefined), sealed).catch(
+				(error: unknown) => error,
+			);
+			expect(found).toBeInstanceOf(SealError);
+		});
 	});
 });

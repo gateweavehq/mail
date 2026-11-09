@@ -65,9 +65,10 @@ Workers Builds, so every push to its main branch deploys. On the form:
 - Leave the build and deploy commands as they are. The deploy command applies the database
   migrations before the new code goes live.
 
-When the build finishes, open the Worker's address, create an account and then a workspace.
-Anyone who can reach the address can sign up and create workspaces of their own; a workspace is
-only visible to its members.
+When the build finishes, set `SECRETS_KEY`, which encrypts mail (see
+[Where mail is kept](#where-mail-is-kept)). Then open the Worker's address, create an account and
+then a workspace. Anyone who can reach the address can sign up and create workspaces of their own;
+a workspace is only visible to its members.
 
 **Preview builds.** The button turns them on: a push to any other branch builds a Preview with its
 own URL. A Preview gets none of the Worker's bindings or secrets, so its address only says that it
@@ -107,8 +108,9 @@ The first deploy does three things:
 
 Every later `pnpm run deploy` builds, applies new migrations, and only then deploys.
 
-Then open the Worker's address, create an account and then a workspace. Anyone who can reach the
-address can sign up and create workspaces of their own. A workspace is only visible to its members.
+Then set `SECRETS_KEY`, which encrypts mail (see [Where mail is kept](#where-mail-is-kept)), open
+the Worker's address, create an account and then a workspace. Anyone who can reach the address can
+sign up and create workspaces of their own. A workspace is only visible to its members.
 
 ## Where the database lives
 
@@ -134,6 +136,23 @@ once. The database keeps a record of each removal, and a daily run removes the m
 or more later, for a removal that stopped part way, then forgets the record. Mail only touches its
 own mailboxes' objects, so the bucket can hold other things too. Deleting an account leaves mail
 alone, since it belongs to the workspace.
+
+**Encryption.** With `SECRETS_KEY` set, each message is encrypted (AES-256-GCM) before it reaches
+R2, under a key of its own that comes from `SECRETS_KEY`, so the bucket, or a copy of it, gives
+nobody the mail itself; R2 still shows each object's name and size. Set it before mail arrives:
+mail kept without it stays as it came, and is read as it is. Make 32 random bytes, keep them
+somewhere safe, such as a password manager, and give them to the Worker:
+
+```sh
+openssl rand -base64 32
+pnpm wrangler secret put SECRETS_KEY
+```
+
+Wrangler never shows a secret again. **Mail encrypted under one `SECRETS_KEY` can't be read under
+another**, so changing or losing it loses that mail, and the workspaces' Resend keys (see
+[Email](#email)) with it. A key shorter than 32 bytes, or not base64, encrypts nothing, and the
+Worker's log says so. Once mail is encrypted, update Mail forward only: a version from before
+encryption can't read it.
 
 R2 storage and Durable Object storage are billed past what the plan includes: see
 [R2 pricing](https://developers.cloudflare.com/r2/pricing/) and
@@ -165,7 +184,7 @@ because `wrangler.jsonc` sets `keep_vars`.
 | `EMAIL_FROM`               | Turns on email (invitations, password reset), such as `Gateweave Mail <mail@example.com>`.                         |
 | `MAILBOX_BYTES`            | How many bytes one mailbox may hold, as a whole number. Unset: 1 GiB.                                              |
 | `SEND_PER_DAY`             | How many messages one workspace may send from its mailboxes a day, as a whole number. Unset: 200.                  |
-| `SECRETS_KEY`              | Encrypts workspaces' keys, such as a Resend key: 32 random bytes, base64. None can be added without it.            |
+| `SECRETS_KEY`              | Encrypts mail in R2 and workspaces' keys: 32 random bytes, base64. See [Where mail is kept](#where-mail-is-kept).  |
 | `EMAIL_SENDING_ACCOUNT_ID` | Your account ID, with the token below, so that removing a suppression also clears Email Service's own list.        |
 | `EMAIL_SENDING_API_TOKEN`  | An API token for that account with Email Sending: Edit. See [Email](#email), under Suppressions.                   |
 | `LEGAL_NOTICE_URL`         | The address of your legal notice. See [below](#your-legal-pages).                                                  |
@@ -243,14 +262,9 @@ page then tells admins that it may still have the address. Without the subscript
 stays empty and only Email Service's applies.
 
 A domain whose DNS isn't on the Cloudflare account that runs Mail can't be onboarded there, so it
-can send through [Resend](https://resend.com) instead, with each workspace's own key. Set
-`SECRETS_KEY` once, which encrypts those keys:
-
-```sh
-openssl rand -base64 32 | pnpm wrangler secret put SECRETS_KEY
-```
-
-Then, in the workspace, an owner or admin verifies the domain at Resend, adds a Resend key under
+can send through [Resend](https://resend.com) instead, with each workspace's own key, which
+`SECRETS_KEY` encrypts (see [Where mail is kept](#where-mail-is-kept)): none can be added without
+it. Then, in the workspace, an owner or admin verifies the domain at Resend, adds a Resend key under
 Settings › Domains, and sets the domain to send with Resend. With a key that has full access,
 Mail makes a webhook in that Resend account, which tells it what became of each message and keeps
 the workspace's suppression list (see below for the address it needs). Removing an address in

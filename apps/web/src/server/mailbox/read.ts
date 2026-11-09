@@ -25,6 +25,7 @@ import type { StoredSummary } from "./durable-object";
 import { cleanHtml, framePolicy, MAX_SHOWN_HTML, mayLoadImages } from "./html";
 import { mailboxStub } from "./index";
 import { decoded, people, sender } from "./people";
+import { rawMail, SealError } from "./sealed";
 import { envelopeAddresses, replySender, senderAddresses } from "./senders";
 import { textOfHtml } from "./text";
 import { threadSubject } from "./thread";
@@ -277,8 +278,22 @@ export async function openThread(
 			thread.messages.length > PAGE_SIZE && oldest
 				? { arrivedAt: oldest.arrivedAt, id: oldest.id }
 				: null,
-		latest: newest ? await readMessage(box, newest.id, from) : null,
+		latest: newest ? await latestOf(box, newest.id, from) : null,
 	};
+}
+
+/**
+ * A thread's newest message, opened. When its sealed mail doesn't open here, as after the server's
+ * `SECRETS_KEY` changed, the thread is still shown, without it: only the message fails to open.
+ */
+async function latestOf(box: OpenMailbox, messageId: string, from: string[]) {
+	try {
+		return await readMessage(box, messageId, from);
+	} catch (error) {
+		if (!(error instanceof SealError)) throw error;
+		console.error("mailbox: a message's sealed mail doesn't open", { reason: error.message });
+		return null;
+	}
 }
 
 /**
@@ -333,10 +348,11 @@ async function readMessage(
 ): Promise<OpenedMessage | null> {
 	const row = await box.stub.get(messageId);
 	if (!row) return null;
-	const object = await env.RAW_MAIL.get(row.object);
+	const object = await rawMail(env).get(row);
 	if (!object) return null;
-	await noteRead(box, row, reading);
 	const email = await PostalMime.parse(object.body);
+	// Once it is read: mail that doesn't open was never given to the agent.
+	await noteRead(box, row, reading);
 	const fromHtml = email.text === undefined && email.html ? await textOfHtml(email.html) : null;
 	const text = fromHtml?.text ?? email.text ?? "";
 	const { workspaceId, memberId } = box.member.membership;
@@ -392,13 +408,35 @@ async function readMessage(
 const notFound = () =>
 	new Response("Not found", { status: 404, headers: { "cache-control": "private, no-store" } });
 
+const UNOPENED = "This message can't be opened on this server.";
+
+/**
+ * Runs an answer about one message, and answers plainly when its sealed mail doesn't open here, as
+ * after `SECRETS_KEY` changed, rather than as any failure would. `json` for the API's answers.
+ */
+async function orUnopened(json: boolean, run: () => Promise<Response>): Promise<Response> {
+	try {
+		return await run();
+	} catch (error) {
+		if (!(error instanceof SealError)) throw error;
+		console.error("mailbox: a message's sealed mail doesn't open", { reason: error.message });
+		const headers = { "cache-control": "private, no-store" };
+		return json
+			? Response.json({ error: UNOPENED }, { status: 500, headers })
+			: new Response(UNOPENED, {
+					status: 500,
+					headers: { ...headers, "content-type": "text/plain; charset=utf-8" },
+				});
+	}
+}
+
 /** A message's raw mail, or null for anyone who can't see it. */
 async function storedMail(slug: string, mailboxId: string, messageId: string) {
 	const box = await openMailbox(slug, mailboxId);
 	if (!box) return null;
 	const row = await box.stub.get(messageId);
 	if (!row) return null;
-	const object = await env.RAW_MAIL.get(row.object);
+	const object = await rawMail(env).get(row);
 	if (object) await noteRead(box, row, "message.read");
 	return object;
 }
@@ -409,16 +447,18 @@ export async function originalMessage(
 	mailboxId: string,
 	messageId: string,
 ): Promise<Response> {
-	const object = await storedMail(slug, mailboxId, messageId);
-	if (!object) return notFound();
-	return new Response(object.body, {
-		headers: {
-			"content-type": "message/rfc822",
-			"content-length": String(object.size),
-			// Never shown in the browser: a message can hold anything.
-			"content-disposition": 'attachment; filename="message.eml"',
-			"cache-control": "private, no-store",
-		},
+	return orUnopened(false, async () => {
+		const object = await storedMail(slug, mailboxId, messageId);
+		if (!object) return notFound();
+		return new Response(object.body, {
+			headers: {
+				"content-type": "message/rfc822",
+				"content-length": String(object.size),
+				// Never shown in the browser: a message can hold anything.
+				"content-disposition": 'attachment; filename="message.eml"',
+				"cache-control": "private, no-store",
+			},
+		});
 	});
 }
 
@@ -432,24 +472,26 @@ export async function messageHtml(
 	messageId: string,
 	url: URL,
 ): Promise<Response> {
-	const object = await storedMail(slug, mailboxId, messageId);
-	if (!object) return notFound();
-	// Attachments stay bytes: only the inline images the HTML names are made text, as needed.
-	const email = await PostalMime.parse(object.body);
-	if (!email.html) return notFound();
-	const images = url.searchParams.get("images") === "1";
-	return new Response(await cleanHtml(email.html, email.attachments, { images }), {
-		headers: {
-			"content-type": "text/html; charset=utf-8",
-			// Its own policy, so the app's, which allows its scripts, never applies to it.
-			"content-security-policy": framePolicy({ images }),
-			"cache-control": "private, no-store",
-			// The frame's address names the workspace, mailbox and message.
-			"referrer-policy": "no-referrer",
-			"cross-origin-resource-policy": "same-origin",
-			// Looking up a link's host would tell the sender's name server the message was opened.
-			"x-dns-prefetch-control": "off",
-		},
+	return orUnopened(false, async () => {
+		const object = await storedMail(slug, mailboxId, messageId);
+		if (!object) return notFound();
+		// Attachments stay bytes: only the inline images the HTML names are made text, as needed.
+		const email = await PostalMime.parse(object.body);
+		if (!email.html) return notFound();
+		const images = url.searchParams.get("images") === "1";
+		return new Response(await cleanHtml(email.html, email.attachments, { images }), {
+			headers: {
+				"content-type": "text/html; charset=utf-8",
+				// Its own policy, so the app's, which allows its scripts, never applies to it.
+				"content-security-policy": framePolicy({ images }),
+				"cache-control": "private, no-store",
+				// The frame's address names the workspace, mailbox and message.
+				"referrer-policy": "no-referrer",
+				"cross-origin-resource-policy": "same-origin",
+				// Looking up a link's host would tell the sender's name server the message was opened.
+				"x-dns-prefetch-control": "off",
+			},
+		});
 	});
 }
 
@@ -506,8 +548,10 @@ export async function messageAnswer(
 	mailboxId: string,
 	messageId: string,
 ): Promise<Response> {
-	const message = await openMessage(slug, mailboxId, messageId);
-	return message ? answer(message) : notFoundJson();
+	return orUnopened(true, async () => {
+		const message = await openMessage(slug, mailboxId, messageId);
+		return message ? answer(message) : notFoundJson();
+	});
 }
 
 /**

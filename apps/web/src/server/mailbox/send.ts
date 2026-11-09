@@ -37,11 +37,12 @@ import {
 } from "./compose";
 import type { Sent } from "./durable-object";
 import { checkFiles } from "./files";
-import { firstHeader, parseHeaders, readHeaderBlock } from "./headers";
+import { firstHeader, type Header, parseHeaders, readHeaderBlock } from "./headers";
 import { sendableHtml } from "./html";
 import type { mailboxStub } from "./index";
 import { decoded } from "./people";
 import { openMailbox } from "./read";
+import { rawMail, SealError } from "./sealed";
 import { envelopeAddresses, replySender, senderAddresses } from "./senders";
 import { textOfHtml } from "./text";
 import { messageIds, ownId } from "./thread";
@@ -436,9 +437,17 @@ async function answered(
 ): Promise<Answering | null> {
 	const row = await stub.get(messageId);
 	if (!row) return null;
-	const object = await env.RAW_MAIL.get(row.object);
-	if (!object) return null;
-	const headers = parseHeaders(await readHeaderBlock(object.body));
+	let headers: Header[];
+	try {
+		const object = await rawMail(env).get(row);
+		if (!object) return null;
+		headers = parseHeaders(await readHeaderBlock(object.body));
+	} catch (error) {
+		if (!(error instanceof SealError)) throw error;
+		// Its own id is in its row, which still threads the reply, without the ids before it.
+		const own = messageIds(row.messageId)[0] ?? null;
+		return { inReplyTo: own, references: own ? [own] : [], addresses: envelopeAddresses(row) };
+	}
 	const own = ownId(headers);
 	// Whole, as a long thread's runs past what `firstHeader` keeps.
 	const before = messageIds(headers.find((header) => header.name === "references")?.value ?? null);

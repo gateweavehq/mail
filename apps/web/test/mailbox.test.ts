@@ -192,6 +192,9 @@ beforeAll(async () => {
 	mail = await startMail(origin, {
 		hosts: { "cloudflare-dns.com": dns },
 		settings: { MAILBOX_BYTES: String(MAILBOX_BYTES) },
+		// The second copy has no SECRETS_KEY, as a deployment before sealing, and keeps mail as it came.
+		isolates: 2,
+		isolateSettings: [{}, { SECRETS_KEY: "" }],
 	});
 	owner = await signUp(mail, origin, "Owner");
 	outsider = await signUp(mail, origin, "Outsider");
@@ -267,6 +270,117 @@ describe("storing mail", () => {
 		const second = (await more.json()) as Page;
 		expect(second.messages.map((one) => one.subject)).toEqual(["Number 1", "Number 0"]);
 		expect(second.next).toBeNull();
+	});
+});
+
+/** What R2 holds for a message, read as bytes one for one. */
+async function inBucket(box: { workspaceId: string; mailboxId: string }, id: string | undefined) {
+	const object = await mail.bucket.get(`${box.workspaceId}/${box.mailboxId}/${id}.eml`);
+	if (!object) throw new Error("expected the message's mail in R2");
+	return Buffer.from(await object.arrayBuffer());
+}
+
+describe("raw mail in R2", () => {
+	it("is sealed: the bucket holds nothing of a message, which still reads as it came", async () => {
+		const box = await mailboxWithAddress();
+		const raw = message(box.address, {
+			subject: "Harbour plans",
+			body: "The harbour opens at nine.",
+		});
+		await kept(box.address, raw);
+		const [listed] = (await messages(box.slug, box.mailboxId)).messages;
+		const stored = await inBucket(box, listed?.id);
+		expect(stored.length).toBeGreaterThan(raw.length);
+		for (const part of ["arbour", box.address, "sender@example.org", "Message-ID"]) {
+			expect(stored.toString("latin1")).not.toContain(part);
+		}
+		const opened = await open(box.slug, box.mailboxId, listed?.id ?? "");
+		expect(opened.subject).toBe("Harbour plans");
+		expect(opened.text.trim()).toBe("The harbour opens at nine.");
+		const original = await mail.fetch(
+			`${origin}/api/mail/${box.slug}/${box.mailboxId}/${listed?.id}/original`,
+			{ headers: owner.headers },
+		);
+		expect(await original.text()).toBe(raw);
+	});
+
+	it("doesn't open one message's mail put over another's", async () => {
+		const box = await mailboxWithAddress();
+		// The same length, so only the seal tells them apart.
+		await kept(box.address, message(box.address, { subject: "First", body: "Meet at the gate." }));
+		await kept(box.address, message(box.address, { subject: "Other", body: "Meet at the dock." }));
+		const [second, first] = (await messages(box.slug, box.mailboxId)).messages;
+		const firstMail = await inBucket(box, first?.id);
+		expect((await inBucket(box, second?.id)).length).toBe(firstMail.length);
+		await mail.bucket.put(
+			`${box.workspaceId}/${box.mailboxId}/${second?.id}.eml`,
+			new Uint8Array(firstMail).buffer,
+		);
+		const path = `${origin}/api/mail/${box.slug}/${box.mailboxId}/${second?.id}`;
+		const opened = await mail.fetch(path, { headers: owner.headers });
+		expect(opened.status).toBe(500);
+		expect(await opened.json()).toEqual({ error: "This message can't be opened on this server." });
+		// Before a download begins, so it isn't one cut short.
+		for (const page of ["original", "html"]) {
+			const answer = await mail.fetch(`${path}/${page}`, { headers: owner.headers });
+			expect(answer.status).toBe(500);
+			expect(await answer.text()).toBe("This message can't be opened on this server.");
+		}
+		// Its thread still shows, without it opened.
+		const threadId = (second as { threadId?: string } | undefined)?.threadId;
+		const thread = await mail.fetch(
+			`${origin}/api/mail/${box.slug}/${box.mailboxId}/threads/${threadId}`,
+			{ headers: owner.headers },
+		);
+		expect(thread.status).toBe(200);
+		expect(await thread.json()).toMatchObject({ count: 1, subject: "Other", latest: null });
+		// The message it came from still opens.
+		expect((await open(box.slug, box.mailboxId, first?.id ?? "")).text.trim()).toBe(
+			"Meet at the gate.",
+		);
+	});
+
+	it("is searched by the start of a message bigger than search reads, from only that part", async () => {
+		const box = await mailboxWithAddress();
+		// Over SEARCH_READ_BYTES (2 MiB), so search reads its start as a range of the sealed object.
+		const filler = Array.from({ length: 30_000 }, () => "x".repeat(76)).join("\r\n");
+		await kept(
+			box.address,
+			message(box.address, { subject: "Notes", body: `Lighthouse keeper.\r\n${filler}` }),
+		);
+		const until = Date.now() + 15_000;
+		let threads: { subject: string }[] = [];
+		while (threads.length === 0 && Date.now() < until) {
+			const response = await mail.fetch(
+				`${origin}/api/mail/${box.slug}/${box.mailboxId}/threads?q=lighthouse`,
+				{ headers: owner.headers },
+			);
+			threads = ((await response.json()) as { threads: { subject: string }[] }).threads;
+			if (threads.length === 0) await new Promise((resolve) => setTimeout(resolve, 200));
+		}
+		expect(threads.map((thread) => thread.subject)).toEqual(["Notes"]);
+	});
+
+	it("reads mail kept as it came, before sealing, beside sealed mail", async () => {
+		const box = await mailboxWithAddress();
+		const before = message(box.address, { subject: "Before", body: "Kept as it came." });
+		expect((await mail.deliver("sender@example.org", box.address, before, 1)).status).toBe(200);
+		const after = message(box.address, { subject: "After", body: "Kept sealed." });
+		await kept(box.address, after);
+		const [sealed, plain] = (await messages(box.slug, box.mailboxId)).messages;
+		expect((await inBucket(box, plain?.id)).toString("latin1")).toBe(before);
+		expect((await inBucket(box, sealed?.id)).toString("latin1")).not.toContain("Kept");
+		for (const [listed, raw, text] of [
+			[plain, before, "Kept as it came."],
+			[sealed, after, "Kept sealed."],
+		] as const) {
+			expect((await open(box.slug, box.mailboxId, listed?.id ?? "")).text.trim()).toBe(text);
+			const original = await mail.fetch(
+				`${origin}/api/mail/${box.slug}/${box.mailboxId}/${listed?.id}/original`,
+				{ headers: owner.headers },
+			);
+			expect(await original.text()).toBe(raw);
+		}
 	});
 });
 

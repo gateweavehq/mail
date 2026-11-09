@@ -58,7 +58,8 @@ export interface QueueOutcome {
 /** What tests do with the bucket raw mail goes to. */
 interface TestBucket {
 	list(options: { prefix: string }): Promise<{ objects: { key: string }[] }>;
-	put(key: string, value: string): Promise<unknown>;
+	get(key: string): Promise<{ arrayBuffer(): Promise<ArrayBuffer> } | null>;
+	put(key: string, value: string | ArrayBuffer): Promise<unknown>;
 }
 
 /** The address Mail sends from in tests. */
@@ -166,6 +167,7 @@ export async function startMail(
 		hosts = {},
 		withoutDatabase = false,
 		withoutSecret = false,
+		plainMail = false,
 		settings = {},
 		isolateSettings = [],
 	}: {
@@ -174,6 +176,8 @@ export async function startMail(
 		/** What a branch's Preview lacks. */
 		withoutDatabase?: boolean;
 		withoutSecret?: boolean;
+		/** No `SECRETS_KEY`, so raw mail is kept as it comes, as before sealing. */
+		plainMail?: boolean;
 		settings?: Record<string, string>;
 		/** Settings that only this copy has, as a deployment's old and new versions would differ. */
 		isolateSettings?: Record<string, string>[];
@@ -184,6 +188,8 @@ export async function startMail(
 	const logs: WorkerLog[] = [];
 	const modules = builtModules();
 	const secret = randomBytes(32).toString("base64url");
+	// Raw mail is sealed, as a deployment with this setting seals it. `settings` may name another.
+	const secretsKey = randomBytes(32).toString("base64");
 	const names = Array.from({ length: isolates }, (_, i) => (i === 0 ? "mail" : `mail-${i + 1}`));
 	// Miniflare 5 still takes its documented v4 options through this converter.
 	const mf = new Miniflare(
@@ -205,6 +211,7 @@ export async function startMail(
 					compatibilityFlags: config.compatibility_flags,
 					bindings: {
 						...(withoutSecret ? {} : { BETTER_AUTH_SECRET: secret }),
+						...(plainMail ? {} : { SECRETS_KEY: secretsKey }),
 						BETTER_AUTH_URL: origin,
 						EMAIL_FROM: `${EMAIL_FROM.name} <${EMAIL_FROM.email}>`,
 						...settings,
@@ -345,9 +352,12 @@ export async function startMail(
 		 * Delivers a message to the Worker's `email()` handler, as Cloudflare Email Routing would,
 		 * and says whether the handler refused it, and why.
 		 */
-		async deliver(from: string, to: string, raw: string) {
+		async deliver(from: string, to: string, raw: string, isolate = 0) {
+			const name = names[isolate];
+			if (!name) throw new Error(`There are only ${names.length} isolates`);
+			const host = isolate > 0 ? `${name}.test` : "localhost";
 			const response = await mf.dispatchFetch(
-				`http://localhost/cdn-cgi/local/email?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+				`http://${host}/cdn-cgi/local/email?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
 				{ method: "POST", body: raw },
 			);
 			return { status: response.status, text: await response.text() };

@@ -43,7 +43,7 @@ tools that run on Cloudflare, next to [Gateweave Track](https://github.com/gatew
   choose who else reads each one: everyone in the workspace, or the people they pick.
 - **Receiving mail.** The Worker's `email()` handler looks up each message's address and refuses
   one that doesn't exist. Mail for one that does is kept in its mailbox, once even when it arrives
-  twice, up to 1 GiB per mailbox.
+  twice, up to 1 GiB per mailbox, and encrypted in R2 when the server has a `SECRETS_KEY`.
 - **Reading mail.** Whoever may read a mailbox sees its threads, newest news first, and reads
   their messages, with the attachments listed and the original to download. HTML mail shows in a
   sandbox that runs nothing and loads remote images only when asked. Replies join
