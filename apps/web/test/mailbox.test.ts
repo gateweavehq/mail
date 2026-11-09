@@ -762,8 +762,9 @@ describe("an agent", () => {
 			`Bearer ${agent.key}x`,
 			`Bearer gwm_${"A".repeat(43)}`,
 			`Bearer ${strangers.key}`,
-			"Bearer",
-			"bearer ",
+			`Bearer ${agent.key} ${agent.key}`,
+			"Bearer gwm_",
+			`bearer GWM_${"A".repeat(43)}`,
 		];
 		for (const authorization of turnedAway) {
 			// The owner's cookie would open it, but a request with a key is the key's alone.
@@ -773,12 +774,18 @@ describe("an agent", () => {
 		expect((await readMailbox(box.slug, box.mailboxId, agent.headers)).status).toBe(200);
 		const lowercase = { authorization: `bearer ${agent.key}` };
 		expect((await readMailbox(box.slug, box.mailboxId, lowercase)).status).toBe(200);
-		// Another scheme carries no key, such as Basic auth from a proxy in front of the app: the
-		// session decides, and without one nobody is let in.
-		const basic = { authorization: "Basic b3duZXI6cGFzc3dvcmQ=" };
-		const withCookie = { ...owner.headers, ...basic };
-		expect((await readMailbox(box.slug, box.mailboxId, withCookie)).status).toBe(200);
-		expect((await readMailbox(box.slug, box.mailboxId, basic)).status).toBe(404);
+		// A token of another shape or another scheme carries no key, such as an ID token or Basic
+		// auth from a proxy in front of the app: the session decides, and without one nobody is
+		// let in.
+		for (const authorization of [
+			"Basic b3duZXI6cGFzc3dvcmQ=",
+			"Bearer eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJvd25lciJ9.c2lnbmF0dXJl",
+			"Bearer",
+		]) {
+			const withCookie = { ...owner.headers, authorization };
+			expect((await readMailbox(box.slug, box.mailboxId, withCookie)).status).toBe(200);
+			expect((await readMailbox(box.slug, box.mailboxId, { authorization })).status).toBe(404);
+		}
 		// Its key works only in its own workspace.
 		const across = { headers: agent.headers };
 		expect((await readMailbox(elsewhere.slug, elsewhere.mailboxId, across.headers)).status).toBe(
@@ -871,6 +878,28 @@ describe("an agent", () => {
 		for (const response of await Promise.all(asPerson)) expect(response.status).toBe(403);
 		const [listed] = await agentsOf(box.workspaceId);
 		expect(listed).toMatchObject({ id: agent.id, name: "Sorter", keys: [{ id: keyId }] });
+	});
+
+	it("is only what the agents plugin made: a person given its role by hand is managed as people are", async () => {
+		const box = await mailboxWithAddress();
+		const person = await join(box.workspaceId, "agent");
+		const others = await join(box.workspaceId, "agent");
+		const fixed = await auth("/organization/update-member-role", owner, {
+			memberId: person.memberId,
+			role: "member",
+			organizationId: box.workspaceId,
+		});
+		expect(fixed.status).toBe(200);
+		const removed = await auth("/organization/remove-member", owner, {
+			memberIdOrEmail: others.memberId,
+			organizationId: box.workspaceId,
+		});
+		expect(removed.status).toBe(200);
+		const left = await mail.db
+			.prepare("SELECT id, role FROM member WHERE organization_id = ? AND id IN (?, ?)")
+			.bind(box.workspaceId, person.memberId, others.memberId)
+			.all();
+		expect(left.results).toEqual([{ id: person.memberId, role: "member" }]);
 	});
 
 	it("is out of reach for an admin of another workspace", async () => {
