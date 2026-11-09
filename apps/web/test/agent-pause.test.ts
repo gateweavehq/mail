@@ -219,4 +219,74 @@ describe("pausing an agent", () => {
 		expect(await sentTo()).toHaveLength(1);
 		expect((await listed(space, agent.id))?.paused).not.toBeNull();
 	});
+
+	it("holds what it wrote once it is deleted too, but lets go what a person approved", {
+		timeout: 60_000,
+	}, async () => {
+		const space = await workspace();
+		const agent = await agentOf(space);
+		const domain = `${space.slug}.example.org`;
+		const policy = await auth("/agents/set-policy", {
+			agentId: agent.id,
+			sendPerDay: 20,
+			allowed: [`@${domain}`],
+		});
+		expect(policy.status).toBe(200);
+		const send = async (to: string) => {
+			const sent = await rest(agent.key, "POST", `/mailboxes/${space.signUps.id}/messages`, {
+				to: [to],
+				subject: "Waiting",
+				text: "Hello.",
+			});
+			return sent.body as { id: string; threadId: string; state: string };
+		};
+		// Its own: Email Service is busy the first time, so it waits to be tried again by itself.
+		const own = `busy-1@${domain}`;
+		const waiting = await send(own);
+		expect(waiting.state).toBe("waiting");
+		// One its policy holds, which a person approves, and which then waits in the same way.
+		const theirs = `busy-1@elsewhere-${space.slug}.example.org`;
+		const held = await send(theirs);
+		expect(held.state).toBe("held");
+		const approved = await world.mail.fetch(
+			`${origin}/api/mail/${space.slug}/${space.signUps.id}/outbox`,
+			{
+				method: "POST",
+				headers: { ...world.owner.headers, origin, "content-type": "application/json" },
+				body: JSON.stringify({ action: "approve", message: held.id }),
+			},
+		);
+		expect(await approved.json()).toMatchObject({ ok: true, state: "waiting" });
+
+		// Paused, then deleted, which takes its pause with it.
+		expect((await auth("/agents/pause", { agentId: agent.id })).status).toBe(200);
+		expect((await auth("/agents/delete", { agentId: agent.id })).status).toBe(200);
+
+		const states = async () =>
+			[await stateOf(space, waiting.threadId), await stateOf(space, held.threadId)] as const;
+		let now = await states();
+		for (let waited = 0; now.includes("waiting") && waited < 40_000; waited += 1_000) {
+			await new Promise((resolve) => setTimeout(resolve, 1_000));
+			now = await states();
+		}
+		expect(now).toEqual(["held", "sent"]);
+		const sentTo = async (to: string) =>
+			(await world.mail.emails()).filter((email) => [email.to].flat().includes(to));
+		expect(await sentTo(own)).toEqual([]);
+		expect(await sentTo(theirs)).toHaveLength(1);
+	});
+
+	it("tells a request that was waiting for mail that it was paused, not that its key went", {
+		timeout: 30_000,
+	}, async () => {
+		const space = await workspace();
+		const agent = await agentOf(space);
+		const waiting = rest(agent.key, "GET", `/wait?mailbox=${space.signUps.id}&timeoutSeconds=20`);
+		// Long enough for it to have looked once and gone to sleep.
+		await new Promise((resolve) => setTimeout(resolve, 1_500));
+		expect((await auth("/agents/pause", { agentId: agent.id })).status).toBe(200);
+		const answer = await waiting;
+		expect(answer.status).toBe(403);
+		expect(answer.body.error).toMatch(PAUSED);
+	});
 });

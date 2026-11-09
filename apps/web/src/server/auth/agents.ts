@@ -162,6 +162,22 @@ export async function pausedAmong(db: Database, memberIds: string[]): Promise<Se
 }
 
 /**
+ * Of these memberships, those whose mail mustn't be tried again by itself: agents paused now, and
+ * anyone no longer a member, as an agent deleted while paused takes its pause with it. At most 100
+ * at once, as D1 binds.
+ */
+export async function heldWriters(db: Database, memberIds: string[]): Promise<Set<string>> {
+	if (memberIds.length === 0) return new Set();
+	const { member } = schema;
+	const [paused, present] = await Promise.all([
+		pausedAmong(db, memberIds),
+		db.select({ id: member.id }).from(member).where(inArray(member.id, memberIds)).all(),
+	]);
+	const members = new Set(present.map((row) => row.id));
+	return new Set(memberIds.filter((id) => paused.has(id) || !members.has(id)));
+}
+
+/**
  * Deletes agents that no longer belong to a workspace. An agent belongs to one workspace only, so
  * once that workspace is gone, nothing else can use it. Anyone with a way to sign in is a person,
  * whatever their address, and is never touched.

@@ -3,7 +3,7 @@ import PostalMime, { type Attachment } from "postal-mime";
 import { type SendStatus, SUPPRESSED_CODE } from "../../lib/outbox";
 import { KEY_CHANGED, RESEND_CODE, type SendsWith } from "../../lib/providers";
 import type { SentEventType } from "../../lib/webhooks";
-import { pausedAmong } from "../auth/agents";
+import { heldWriters } from "../auth/agents";
 import { createDb } from "../db";
 import { openProviderKey } from "../providers/keys";
 import { RESEND_API, type ResendFailure, sendWithResend } from "../providers/resend";
@@ -779,8 +779,9 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 	}
 
 	/**
-	 * Of mail waiting to be tried again, puts what a paused agent wrote in a person's hands: held, as
-	 * its policy would hold it, for someone to approve or reject. Says which it took. When D1 doesn't
+	 * Of mail waiting to be tried again, puts what a paused agent wrote, or someone no longer a
+	 * member, in a person's hands: held, as an agent's policy would hold it, for someone to approve
+	 * or reject. Mail a person approved is theirs and goes on. Says which it took. When D1 doesn't
 	 * say who is paused, it takes all that someone wrote, to try in a minute, rather than send what a
 	 * paused agent wrote.
 	 */
@@ -788,15 +789,19 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 		const sql = this.ctx.storage.sql;
 		const writers = new Map<string, string>();
 		for (const id of ids) {
-			const by = sql
-				.exec<{ by: string | null }>("SELECT sent_by AS by FROM message WHERE id = ?", id)
-				.toArray()[0]?.by;
-			if (by) writers.set(id, by);
+			const row = sql
+				.exec<{ by: string | null; approvedBy: string | null }>(
+					`SELECT message.sent_by AS by, outgoing.approved_by AS approvedBy
+					FROM message JOIN outgoing ON outgoing.message = message.id WHERE message.id = ?`,
+					id,
+				)
+				.toArray()[0];
+			if (row?.by && row.approvedBy === null) writers.set(id, row.by);
 		}
 		if (writers.size === 0) return new Set();
 		let paused: Set<string>;
 		try {
-			paused = await pausedAmong(createDb(this.env.DB), [...new Set(writers.values())]);
+			paused = await heldWriters(createDb(this.env.DB), [...new Set(writers.values())]);
 		} catch (error) {
 			console.error("mailbox: D1 didn't say which agents are paused; their mail waits", {
 				name: error instanceof Error ? error.name : "unknown",
