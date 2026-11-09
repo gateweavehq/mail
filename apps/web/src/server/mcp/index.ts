@@ -10,6 +10,7 @@ import { type AgentAddressAction, agentAddressesAnswer } from "../directory/agen
 import { listMessages, listThreads, openMessage, openThread } from "../mailbox/read";
 import { type OutboxAction, outboxAnswer } from "../mailbox/send";
 import { appOrigin } from "../origin";
+import { allowMcpWait } from "../rate-limit";
 import { type Answer, createMailServer, type MailAccess } from "./tools";
 
 /**
@@ -131,6 +132,10 @@ function accessFor(slug: string, key: string): MailAccess {
 				addressPolicyOf(db, memberId),
 			]);
 			return { sending, addresses };
+		},
+		async startWait() {
+			const { memberId } = await caller();
+			return allowMcpWait(memberId);
 		},
 		messages: (mailboxId, before) => listMessages(slug, mailboxId, before),
 		threads: (mailboxId, before, query) => listThreads(slug, mailboxId, before, query),

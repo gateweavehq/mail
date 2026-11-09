@@ -127,12 +127,23 @@ async function agentOf(space: Workspace) {
 	return { ...agent, key };
 }
 
-async function connect(key: string) {
-	const client = new Client({ name: "signer", version: "1.0.0" });
+/**
+ * An MCP client with the agent's key and any other headers. By default it speaks the 2025
+ * protocol, as most clients do; with `modern`, it asks for the newest and takes what the server
+ * offers.
+ */
+async function connect(
+	key: string,
+	{ headers = {}, modern = false }: { headers?: Record<string, string>; modern?: boolean } = {},
+) {
+	const client = new Client(
+		{ name: "signer", version: "1.0.0" },
+		modern ? { versionNegotiation: { mode: "auto" } } : {},
+	);
 	await client.connect(
 		new StreamableHTTPClientTransport(new URL(`${origin}/mcp`), {
 			fetch: mail.fetch,
-			requestInit: { headers: { authorization: `Bearer ${key}` } },
+			requestInit: { headers: { ...headers, authorization: `Bearer ${key}` } },
 		}),
 	);
 	return client;
@@ -281,7 +292,8 @@ describe("an agent's MCP server", () => {
 	it("waits for the code mail to an address the agent made, and gives only the code", async () => {
 		const space = await workspace();
 		const agent = await agentOf(space);
-		const mcp = await connect(agent.key);
+		const mcp = await connect(agent.key, { modern: true });
+		expect(mcp.getProtocolEra()).toBe("modern");
 
 		const made = await ok<{ id: string; address: string; expiresAt: string }>(
 			mcp,
@@ -291,13 +303,14 @@ describe("an agent's MCP server", () => {
 		expect(made.address).toBe(`github-signup@${space.domain}`);
 		expect(Date.parse(made.expiresAt)).toBeGreaterThan(Date.now() + 47 * 60 * 60 * 1000);
 
-		// Mail to the mailbox's other address, and older mail, aren't what it waits for.
+		// Mail to the mailbox's other address isn't what it waits for, though it came from the same
+		// sender in the minutes before.
 		await arrive(space.signUps.address, {
 			from: "noreply@github.com",
 			subject: "Your code",
 			body: "Your code is 111111.",
 		});
-		const asked = ok<{ found: boolean; code: string; from: string; verifiedDomain: string }>(
+		const asked = ok<{ found: boolean; code: string; fromDomain: string; verifiedDomain: string }>(
 			mcp,
 			"get_verification_code",
 			{ to: made.address, from: "github.com", timeoutSeconds: 20 },
@@ -317,7 +330,7 @@ describe("an agent's MCP server", () => {
 		expect(code).toMatchObject({
 			found: true,
 			code: "482913",
-			from: "noreply@github.com",
+			fromDomain: "github.com",
 			verifiedDomain: "github.com",
 			dmarc: "pass",
 		});
@@ -375,10 +388,37 @@ describe("an agent's MCP server", () => {
 
 		const forged = await ok<{ found: boolean; message: Opened }>(mcp, "wait_for_email", {
 			to,
-			from: "github.com",
+			from: "@github.com",
 			timeoutSeconds: 0,
 		});
 		expect(forged.message).toMatchObject({ verifiedDomain: null, dmarc: "fail" });
+
+		// A code is taken only from a sender DMARC proved, unless the agent says otherwise.
+		expect(
+			await ok(mcp, "get_verification_code", { to, from: "github.com", timeoutSeconds: 0 }),
+		).toEqual({ found: false });
+		expect(
+			await ok(mcp, "get_verification_code", {
+				to,
+				from: "github.com",
+				provedOnly: false,
+				timeoutSeconds: 0,
+			}),
+		).toMatchObject({ found: true, code: null, fromDomain: "github.com", verifiedDomain: null });
+		expect(await refused(mcp, "get_verification_code", { to, timeoutSeconds: 0 })).toMatch(/from/);
+	});
+
+	it("lets a key run only so many waits", async () => {
+		const space = await workspace();
+		const agent = await agentOf(space);
+		const mcp = await connect(agent.key);
+		const wait = { to: space.signUps.address, timeoutSeconds: 0 };
+		for (let n = 0; n < 30; n++) {
+			expect(await ok(mcp, "wait_for_email", wait)).toEqual({ found: false });
+		}
+		expect(await refused(mcp, "wait_for_email", wait)).toMatch(/waited for mail many times/);
+		// Reading isn't waiting.
+		await ok(mcp, "search_email", { mailbox: space.signUps.id });
 	});
 
 	it("searches and reads threads", async () => {
@@ -517,16 +557,35 @@ describe("an agent's MCP server", () => {
 			/^No mailbox/,
 		);
 
-		// A revoked key stops working, even for a client that connected with it.
-		const connected = await connect(agent.key);
+		// The owner's cookies beside the key change nothing: the key alone decides.
+		const both = await connect(agent.key, { headers: { cookie: owner.headers.cookie ?? "" } });
+		const seen = await ok<Listed>(both, "list_mailboxes");
+		expect(seen.mailboxes.map((box) => box.id)).toEqual([space.signUps.id]);
+		expect(await refused(both, "search_email", { mailbox: space.billing.id })).toMatch(
+			/^No mailbox/,
+		);
+
+		// A key revoked while it waits ends the wait, and stops working for a client that connected.
 		const keys = (await (
 			await mail.fetch(`${origin}/api/auth/agents/list?organizationId=${space.workspaceId}`, {
 				headers: owner.headers,
 			})
 		).json()) as { id: string; keys: { id: string }[] }[];
 		const keyId = keys.find((one) => one.id === agent.id)?.keys[0]?.id;
+		const started = Date.now();
+		const waiting = both.callTool({
+			name: "wait_for_email",
+			arguments: { to: space.signUps.address, timeoutSeconds: 20 },
+		}) as Promise<ToolAnswer>;
+		await new Promise((resolve) => setTimeout(resolve, 1500));
 		expect((await auth("/agents/revoke-key", { keyId })).status).toBe(200);
+		const ended = await waiting;
+		expect(ended.isError).toBe(true);
+		expect(ended.content[0]?.text).toMatch(/no longer read this mailbox/);
+		expect(Date.now() - started).toBeLessThan(10_000);
 		expect(await mcpStatus({ authorization: `Bearer ${agent.key}` })).toBe(401);
-		await expect(connected.callTool({ name: "list_mailboxes", arguments: {} })).rejects.toThrow();
+		await expect(both.callTool({ name: "list_mailboxes", arguments: {} })).rejects.toMatchObject({
+			status: 401,
+		});
 	});
 });

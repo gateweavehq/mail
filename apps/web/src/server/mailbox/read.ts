@@ -187,9 +187,12 @@ function listed(row: StoredSummary, names: Map<string, string>, me: string): Lis
 	};
 }
 
-/** The addresses an envelope went to, lower case. */
-const envelopeRecipients = (envelopeTo: string) =>
-	envelopeTo
+/**
+ * The addresses an envelope went to, lower case. An object still on the code before listings had
+ * them, during a deploy, gives none.
+ */
+const envelopeRecipients = (envelopeTo: string | undefined) =>
+	(envelopeTo ?? "")
 		.split(",")
 		.map((address) => address.trim().toLowerCase())
 		.filter(Boolean);

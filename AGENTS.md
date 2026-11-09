@@ -124,8 +124,9 @@ These are load-bearing. Breaking one breaks users' data or security, usually sil
     changes something takes `currentMember`, a person signed in. Keep only a key's hash, and never
     log a key. The MCP server (`apps/web/src/server/mcp/`) admits only a working key, never a
     session, and its tools call the same functions as the REST routes, with the request's own key,
-    never around them: it adds no rules of its own, and must not widen theirs. What it hands an
-    agent from a message is marked as the sender's words, beside the proved domain.
+    never around them: it adds no access rules of its own, and must not widen theirs. What it
+    hands an agent from a message is marked as the sender's words, beside the proved domain, and
+    `get_verification_code` hands over only the code and the From's domain.
 14. **A message that may have gone is never sent again by itself.** Email Service has no
     idempotency key, so a send that failed without a code, with its own failure, or that nothing
     finished, is `uncertain`, and only a person's "Send again" sends it again. Through Resend, the
