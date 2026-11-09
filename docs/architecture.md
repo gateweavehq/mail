@@ -209,17 +209,31 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
 
     Owners and admins see on the workspace's page which agent made each address, and can remove
     it.
-  - **The MCP server** (`server/mcp/`, at `/mcp`). An agent's MCP client reaches with its key what
-    the REST routes give it, as tools: `list_mailboxes`, `search_email`, `read_email`,
-    `wait_for_email`, `get_verification_code`, `send_email`, `reply`, `list_addresses`,
-    `create_address` and `end_address`. It is stateless (`createMcpHandler` from
-    `@modelcontextprotocol/server`, as in Track) and takes only an agent's key: without one, or
-    with one that doesn't work, it answers 401, whatever cookies come with it. The key only lets
-    the request in. Each tool calls the functions the REST routes call (`listMessages` and the rest
-    of `read.ts`, `outboxAnswer`, `agentAddressesAnswer`), and they read the same
-    `Authorization` through `currentCaller`, so there is no second set of rules to keep in step.
-    A mailbox is named by its id, its name or one of its addresses, among those the agent may
-    read; any other is "no mailbox", whether it exists or not.
+  - **The MCP server and the agent API** (`server/mcp/` at `/mcp`, `server/agent-api/` under
+    `/api/v1`). An agent reaches with its key what the REST routes give it, as ten operations:
+    `list_mailboxes`, `search_email`, `read_email`, `wait_for_email`, `get_verification_code`,
+    `send_email`, `reply`, `list_addresses`, `create_address` and `end_address`. Each is defined
+    once, in `agent-api/operations.ts`: its input and output as zod schemas (the outputs in
+    `outputs.ts`), its words, and its REST route. The MCP server makes a tool of each, the API a
+    route (`GET /api/v1/mailboxes`, `GET /api/v1/verification-code` and so on), and
+    `/api/v1/openapi.json` is written from the same schemas (`z.toJSONSchema`), so a tool, its
+    route and the document can't say different things. A route takes its inputs from its path,
+    then from its query string for a GET or DELETE, reading numbers and booleans as the input
+    has them, or from its JSON body for a POST (1 MB at most, however it is sent), and answers
+    what the tool would, checked against the same schema, or `{ "error" }` with 400, 401, 403,
+    404, 409, 413 or 429 (with `Retry-After` when known). A failure of Mail's own is a 500 over
+    REST and a tool error over MCP, in the same words, and is logged by its kind alone, as what a
+    database or a message said may hold mail. Any site may call the API (CORS without
+    credentials), as only a key counts and a browser sends none of its own.
+
+    Both are stateless (the MCP server is `createMcpHandler` from `@modelcontextprotocol/server`,
+    as in Track) and take only an agent's key: without one, or with one that doesn't work, they
+    answer 401, whatever cookies come with it. The key only lets the request in. Each operation
+    calls the functions the REST routes call (`listMessages` and the rest of `read.ts`,
+    `outboxAnswer`, `agentAddressesAnswer`), and they read the same `Authorization` through
+    `currentCaller`, so there is no second set of rules to keep in step. A mailbox is named by its
+    id, its name or one of its addresses, among those the agent may read; any other is "no
+    mailbox", whether it exists or not. The document itself is public.
 
     A wait (`wait_for_email`, `get_verification_code`) looks at the mailbox at first every
     second, then less often, up to every 5 seconds, for up to 50 seconds, under the 60 that MCP
@@ -227,10 +241,10 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     (`cameTo`, the envelope's recipient, whatever the `To` says), from an address or a domain and
     its subdomains, with words in its subject, proved or not. Mail from the 5 minutes before the
     call counts, as a confirmation may come before the agent asks. Each look asks as the key, so
-    revoking it ends the wait. A key may start 30 waits in 10 minutes (`allowMcpWait`), so a
-    stuck agent can't keep the Worker looking for it.
+    revoking it ends the wait. A key may start 30 waits in 10 minutes, over MCP and REST together
+    (`allowAgentWait`), so a stuck agent can't keep the Worker looking for it.
 
-    Mail is how a stranger reaches an agent, so whatever a tool hands over from a message comes
+    Mail is how a stranger reaches an agent, so whatever an operation hands over from a message comes
     marked as the sender's words, never instructions, beside its proved domain and DMARC verdict.
     `get_verification_code` gives only the code (`lib/verification-code.ts`), the From's domain
     and the proof, never the text around it or the part of the address before the @. It needs the

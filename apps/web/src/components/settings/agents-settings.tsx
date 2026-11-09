@@ -172,7 +172,6 @@ function KeyReveal({
 	apiUrl: string;
 	onDone: () => void;
 }) {
-	const { slug } = useWorkspace();
 	async function copy(text: string, what: string) {
 		try {
 			await navigator.clipboard.writeText(text);
@@ -183,7 +182,8 @@ function KeyReveal({
 	}
 	const mcpUrl = new URL("/mcp", apiUrl).href;
 	const mcpCommand = `claude mcp add --transport http gateweave-mail ${mcpUrl} --header "Authorization: Bearer ${newKey.secret}"`;
-	const command = `curl -H "Authorization: Bearer ${newKey.secret}" ${apiUrl}/directory/${slug}`;
+	const restUrl = `${apiUrl}/v1`;
+	const command = `curl -H "Authorization: Bearer ${newKey.secret}" ${restUrl}/mailboxes`;
 
 	return (
 		<div className="space-y-3 rounded-lg border bg-muted/40 p-3" aria-live="polite">
@@ -228,12 +228,18 @@ function KeyReveal({
 					</Button>
 				</div>
 				<p>
-					Or it calls the API with the same header. This lists the mailboxes it was given; each
-					one's mail is at{" "}
-					<code className="font-mono text-xs text-foreground break-all">
-						{apiUrl}/mail/{slug}/&lt;mailbox&gt;
-					</code>
-					.
+					Or its own code calls the API at{" "}
+					<code className="font-mono text-xs text-foreground break-all">{restUrl}</code> with the
+					same header, for what the tools do. This lists the mailboxes it was given; the{" "}
+					<a
+						href={`${restUrl}/openapi.json`}
+						target="_blank"
+						rel="noreferrer"
+						className="text-foreground underline underline-offset-4"
+					>
+						OpenAPI document
+					</a>{" "}
+					describes the rest.
 				</p>
 				<div className="flex items-start gap-2">
 					<pre className="min-w-0 flex-1 overflow-x-auto rounded-md border bg-background p-2 font-mono text-xs text-foreground">
