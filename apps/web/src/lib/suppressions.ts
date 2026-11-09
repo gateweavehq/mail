@@ -98,3 +98,54 @@ export function suppressedRefusal(
 /** Where a workspace's suppressions are listed and removed. */
 export const suppressionsUrl = (workspace: string) =>
 	`/api/suppressions/${encodeURIComponent(workspace)}`;
+
+/**
+ * What removing an address from the workspace's list did to a provider's own list, which can still
+ * stop the mail: Resend's for the workspace's key's account, Email Service's for the workspace's
+ * domains. `kept` counts Email Service entries only whoever runs the deployment can change.
+ */
+export type ProviderUnlisting =
+	| { provider: "resend"; outcome: "removed" | "notListed" | "sendingOnly" | "failed" }
+	| { provider: "cloudflare"; outcome: "notSetUp" }
+	| { provider: "cloudflare"; outcome: "failed" }
+	| { provider: "cloudflare"; outcome: "done"; removed: number; kept: number };
+
+/** What the page learns when an entry came off: what the providers' own lists did too. */
+export interface RemovedAnswer {
+	ok: true;
+	address: string;
+	providers: ProviderUnlisting[];
+}
+
+/** What the page says once an address is removed: what the providers' own lists now hold. */
+export function removalWords(address: string, unlistings: ProviderUnlisting[]): string {
+	const said = [`Removed ${address}.`];
+	for (const one of unlistings) {
+		if (one.provider === "resend") {
+			if (one.outcome === "removed") said.push("Resend's own list no longer has it either.");
+			if (one.outcome === "sendingOnly") {
+				said.push(
+					"Resend's own list may still have it, as the workspace's key can only send: remove it there too.",
+				);
+			}
+			if (one.outcome === "failed") {
+				said.push("Resend didn't answer, so its own list may still have it: remove it there too.");
+			}
+			continue;
+		}
+		if (one.outcome === "notSetUp") {
+			said.push(
+				"Email Service's own list may still have it, which only whoever runs this deployment can change.",
+			);
+		} else if (one.outcome === "failed") {
+			said.push("Email Service's own list couldn't be checked just now, so it may still have it.");
+		} else if (one.kept > 0) {
+			said.push(
+				"Email Service's own list still has it, in an entry only whoever runs this deployment can change.",
+			);
+		} else if (one.removed > 0) {
+			said.push("Email Service's own list no longer has it either.");
+		}
+	}
+	return said.join(" ");
+}

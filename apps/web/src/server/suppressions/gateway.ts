@@ -1,9 +1,14 @@
+import { env } from "cloudflare:workers";
 import { z } from "zod";
 import { isAdminRole } from "../../lib/roles";
+import type { RemovedAnswer } from "../../lib/suppressions";
 import { currentMember } from "../access";
 import { db } from "../auth";
 import { appOrigin } from "../origin";
+import { emailSendingApi } from "../providers/email-sending";
+import { RESEND_API } from "../providers/resend";
 import { listSuppressions, readCursor, removeSuppression } from "./index";
+import { listsToClear, unlistAtProviders } from "./providers";
 
 const Action = z.object({ action: z.literal("remove"), id: z.string().min(1).max(64) });
 
@@ -55,8 +60,16 @@ export async function changeSuppressions(request: Request, slug: string): Promis
 	if ("refused" in caller) return caller.refused;
 	const parsed = Action.safeParse(await request.json().catch(() => null));
 	if (!parsed.success) return answer({ ok: false, error: "That isn't a change we know." }, 400);
+	const clear = await listsToClear(db, caller.workspaceId);
+	const address = await removeSuppression(db, caller.workspaceId, parsed.data.id, Date.now());
 	// `gone` tells the page that the entry is off the list, as it would be had this removed it.
-	return (await removeSuppression(db, caller.workspaceId, parsed.data.id, Date.now()))
-		? answer({ ok: true })
-		: answer({ ok: false, error: "It isn't on the list any more.", gone: true }, 404);
+	if (address === null) {
+		return answer({ ok: false, error: "It isn't on the list any more.", gone: true }, 404);
+	}
+	const providers = await unlistAtProviders(db, caller.workspaceId, address, clear, {
+		secretsKey: env.SECRETS_KEY,
+		resendApi: env.RESEND_API_URL || RESEND_API,
+		emailSending: emailSendingApi(env),
+	});
+	return answer({ ok: true, address, providers } satisfies RemovedAnswer);
 }

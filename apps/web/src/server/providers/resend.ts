@@ -301,8 +301,18 @@ export const DELIVERY_EVENTS = {
 
 export type DeliveryEventType = keyof typeof DELIVERY_EVENTS;
 
-/** Every event the workspace's webhook asks for: received mail, and what became of sent mail. */
-export const WEBHOOK_EVENTS: readonly string[] = [RECEIVED_EVENT, ...Object.keys(DELIVERY_EVENTS)];
+/** The event Resend sends when someone took an address off the account's suppression list. */
+export const SUPPRESSION_REMOVED_EVENT = "suppression.removed";
+
+/**
+ * Every event the workspace's webhook asks for: received mail, what became of sent mail, and
+ * removals from the account's suppression list.
+ */
+export const WEBHOOK_EVENTS: readonly string[] = [
+	RECEIVED_EVENT,
+	...Object.keys(DELIVERY_EVENTS),
+	SUPPRESSION_REMOVED_EVENT,
+];
 
 /**
  * Makes a webhook in the key's Resend account that tells `endpoint` of each mail Resend receives,
@@ -391,6 +401,32 @@ export async function deleteWebhook(api: string, key: string, id: string) {
 	return done;
 }
 
+/** What became of taking an address off the Resend account's list. */
+export type ResendUnlisting = "removed" | "notListed" | "sendingOnly" | "failed";
+
+/**
+ * Takes an address off the key's Resend account's suppression list, which holds for every domain of
+ * that account. Measured 2026-11-09: 200 when it was there, 404 `not_found` when it wasn't, and 401
+ * `restricted_api_key` for a key that can only send, whether or not it was there.
+ */
+export async function removeResendSuppression(
+	api: string,
+	key: string,
+	address: string,
+): Promise<ResendUnlisting> {
+	const done = await call(
+		api,
+		key,
+		`/suppressions/${encodeURIComponent(address)}`,
+		{ method: "DELETE" },
+		() => true,
+	);
+	if (done.ok) return "removed";
+	if (done.failure.code === `${RESEND_CODE}not_found`) return "notListed";
+	if (done.failure.code === `${RESEND_CODE}restricted_api_key`) return "sendingOnly";
+	return "failed";
+}
+
 /** A list of addresses, keeping only what can be one: an odd entry doesn't lose the others. */
 const Addresses = z
 	.array(z.unknown())
@@ -434,6 +470,19 @@ export interface ReceivedEmail {
 	dmarc: string | null;
 	/** A signed address the raw mail can be downloaded from for about an hour, or null. */
 	rawUrl: string | null;
+}
+
+const SentEmail = z.object({ from: z.string().max(1_000) });
+
+/**
+ * Who an email Resend sent was from, by its id, as its `from` says. Needs a key with full access.
+ * The key's account may send for others too, so this tells whose an event about it is.
+ */
+export function getSentEmailSender(api: string, key: string, id: string) {
+	return call(api, key, `/emails/${encodeURIComponent(id)}`, {}, (body) => {
+		const read = SentEmail.safeParse(body);
+		return read.success ? read.data.from : null;
+	});
 }
 
 /** One email Resend received, by its id. Needs a key with full access. */

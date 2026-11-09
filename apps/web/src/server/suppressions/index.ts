@@ -244,18 +244,67 @@ export async function listSuppressions(
 /**
  * Takes an entry off the workspace's list, now. The row stays, removed, for `REMOVED_KEPT_DAYS`, so
  * that `suppress` knows an event from before then. Never before its last event, even one whose
- * clock ran ahead, so that event can't count as newer. False when the list has no such entry.
+ * clock ran ahead, so that event can't count as newer. The entry's address, or null when the list
+ * has no such entry.
  */
 export async function removeSuppression(
 	db: Database,
 	workspaceId: string,
 	id: string,
 	now: number,
-): Promise<boolean> {
-	const { meta } = await db
+): Promise<string | null> {
+	const [removed] = await db
 		.update(mailSuppression)
 		.set({ removedAt: sql`max(${now}, ${mailSuppression.lastAt})` })
 		.where(and(eq(mailSuppression.id, id), eq(mailSuppression.organizationId, workspaceId), listed))
+		.returning({ address: mailSuppression.address })
+		.all();
+	return removed?.address ?? null;
+}
+
+/** What `removeProviderListed` notes: the provider took the address off its own list. */
+export interface ProviderRemoval {
+	workspaceId: string;
+	/** Lower case. */
+	address: string;
+	provider: SendsWith;
+	/** What had put it on the provider's list, should the event that says so come only after. */
+	reason: SuppressionReason;
+	at: number;
+}
+
+/**
+ * Notes that the provider took the address off its own list at `at`, as when someone removed it in
+ * Resend's dashboard, for an entry that provider's events made: it comes off unless an event said
+ * it since, and an event from before then, which may still come, counts as older than a removal,
+ * as for `removeSuppression`. A removal noted already that is later stays; one that is earlier,
+ * of an entry already off, moves on to this one, as the events between are older than it too.
+ * With no entry yet, as when the event that would make it is still to come again, a removed one is
+ * kept for it, which no list shows and pruning drops with the others.
+ */
+export async function removeProviderListed(
+	db: Database,
+	{ workspaceId, address, provider, reason, at }: ProviderRemoval,
+) {
+	await db
+		.insert(mailSuppression)
+		.values({
+			id: crypto.randomUUID(),
+			organizationId: workspaceId,
+			address,
+			reason,
+			provider,
+			detail: null,
+			firstAt: new Date(at),
+			lastAt: new Date(at),
+			expiresAt: null,
+			removedAt: new Date(at),
+		})
+		.onConflictDoUpdate({
+			target: [mailSuppression.organizationId, mailSuppression.address],
+			// In an upsert's SET, a bare column is the stored row's.
+			set: { removedAt: sql`max(coalesce(removed_at, 0), ${at})` },
+			setWhere: eq(mailSuppression.provider, provider),
+		})
 		.run();
-	return meta.changes > 0;
 }

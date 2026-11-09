@@ -8,6 +8,8 @@ import { ConfirmDialog } from "#/components/workspace/confirm-dialog";
 import { isAdminRole, useMyRole, useWorkspace } from "#/components/workspace/context";
 import { formatDateTime } from "#/lib/dates";
 import {
+	type RemovedAnswer,
+	removalWords,
 	type Suppression,
 	type SuppressionsPage,
 	suppressionLabel,
@@ -72,6 +74,8 @@ function SuppressionList() {
 	}>({ query: "", entries: [], next: null });
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState<string | null>(null);
+	// What the last removal did, here and at the providers.
+	const [said, setSaid] = useState("");
 	const searchField = useRef<HTMLInputElement>(null);
 
 	const search = useCallback(
@@ -101,10 +105,12 @@ function SuppressionList() {
 
 	function submit(event: FormEvent) {
 		event.preventDefault();
+		setSaid("");
 		void search(query.trim());
 	}
 
-	function removed(id: string) {
+	function removed(id: string, words: string) {
+		setSaid(words);
 		// As the list is now: a search may have come back while the removal was on its way.
 		setShown((now) => ({ ...now, entries: now.entries.filter((one) => one.id !== id) }));
 		// The row and its button are gone, so the search box takes the focus.
@@ -146,10 +152,18 @@ function SuppressionList() {
 					{error}
 				</p>
 			)}
+			{/* Always there, so that a screen reader hears it when the words change. */}
+			<p role="status" className={said ? "text-sm" : "sr-only"}>
+				{said}
+			</p>
 			{shown.entries.length > 0 ? (
 				<ul aria-label="Suppressions" className="space-y-3">
 					{shown.entries.map((entry) => (
-						<SuppressionRow key={entry.id} entry={entry} onRemoved={() => removed(entry.id)} />
+						<SuppressionRow
+							key={entry.id}
+							entry={entry}
+							onRemoved={(words) => removed(entry.id, words)}
+						/>
 					))}
 				</ul>
 			) : (
@@ -173,7 +187,14 @@ function SuppressionList() {
 	);
 }
 
-function SuppressionRow({ entry, onRemoved }: { entry: Suppression; onRemoved: () => void }) {
+function SuppressionRow({
+	entry,
+	onRemoved,
+}: {
+	entry: Suppression;
+	/** With what the page says of it. */
+	onRemoved: (words: string) => void;
+}) {
 	const { slug } = useWorkspace();
 	const [asking, setAsking] = useState(false);
 	const [error, setError] = useState<string | null>(null);
@@ -187,11 +208,12 @@ function SuppressionRow({ entry, onRemoved }: { entry: Suppression; onRemoved: (
 				body: JSON.stringify({ action: "remove", id: entry.id }),
 			});
 			const body = (await response.json()) as
-				| { ok: true }
+				| RemovedAnswer
 				| { ok: false; error: string; gone?: boolean };
 			setAsking(false);
 			// Gone either way: removed now, or by someone else before.
-			if (body.ok || body.gone) onRemoved();
+			if (body.ok) onRemoved(removalWords(body.address, body.providers));
+			else if (body.gone) onRemoved(`${entry.address} isn't on the list any more.`);
 			else setError(body.error);
 		} catch {
 			setAsking(false);
@@ -246,9 +268,9 @@ function SuppressionRow({ entry, onRemoved }: { entry: Suppression; onRemoved: (
 					onConfirm={remove}
 					onClose={() => setAsking(false)}
 				>
-					Mailboxes of this workspace can send to it again. {provider} keeps a list of its own, and
-					may still refuse it: an entry there ends by itself, or comes off where the provider's own
-					suppressions are listed.
+					Mailboxes of this workspace can send to it again. The providers that send its mail keep
+					lists of their own: Mail takes it off those too where it can, and says if one may still
+					refuse it.
 				</ConfirmDialog>
 			)}
 		</li>

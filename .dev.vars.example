@@ -31,6 +31,12 @@ BETTER_AUTH_SECRET=
 # without it. 32 random bytes, base64: openssl rand -base64 32. `pnpm dev:setup` fills one in.
 # SECRETS_KEY=
 
+# Optional: your account id and an API token with Email Sending: Edit, so that removing an address
+# from a workspace's suppressions also takes it off Email Service's own list, for that workspace's
+# domains. Without them, only you can take it off there.
+# EMAIL_SENDING_ACCOUNT_ID=
+# EMAIL_SENDING_API_TOKEN=
+
 # Optional: the addresses of your legal pages, linked from the sign-in pages and the workspace menu.
 # Nothing is linked when they are unset.
 # LEGAL_NOTICE_URL=
