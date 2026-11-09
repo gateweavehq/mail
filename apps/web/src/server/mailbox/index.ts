@@ -65,7 +65,7 @@ export class MailboxFullError extends Error {
  * goes wrong throws, which tells the sender to try again.
  */
 export async function storeMail(
-	found: { workspaceId: string; mailboxId: string },
+	found: { workspaceId: string; mailboxId: string; agentMemberId?: string | null },
 	message: ArrivingMessage,
 	judge: Judge = judgedByCloudflare,
 ): Promise<void> {
@@ -88,6 +88,7 @@ export async function storeMail(
 		references: referencedIds(headers),
 		dmarc: judged.dmarc,
 		verifiedDomain: judged.verifiedDomain,
+		cameFor: found.agentMemberId ?? null,
 	});
 	if (!begun.ok) {
 		await forStoring.cancel();

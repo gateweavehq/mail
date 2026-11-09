@@ -97,6 +97,11 @@ export interface Arrival {
 	dmarc: string | null;
 	/** The domain the message is proved to come from, from `verifiedDomain` or `resendVerifiedDomain`. */
 	verifiedDomain: string | null;
+	/**
+	 * The membership of the agent that made the address it came to, when one did. Missing from a
+	 * Worker older than agents' pages, during a deploy.
+	 */
+	cameFor?: string | null;
 }
 
 export type Begun = { ok: true; id: string; object: string } | { ok: false; reason: "full" };
@@ -339,8 +344,8 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 		sql.exec(
 			`INSERT INTO message (id, state, delivery_key, object, size, arrived_at, envelope_from,
 				envelope_to, from_header, subject, date_header, message_id, dmarc, verified_domain,
-				own_id, subject_key)
-			VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				own_id, subject_key, came_for)
+			VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			id,
 			arrival.key,
 			object,
@@ -356,6 +361,7 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			arrival.verifiedDomain,
 			arrival.ownId ?? messageIds(arrival.messageId)[0] ?? null,
 			subjectKey(arrival.subject),
+			arrival.cameFor ?? null,
 		);
 		for (const ref of (arrival.references ?? []).slice(-MAX_REFERENCES)) {
 			sql.exec("INSERT OR IGNORE INTO message_reference (message, ref) VALUES (?, ?)", id, ref);
@@ -1050,6 +1056,39 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 					take,
 				);
 		return rows.toArray();
+	}
+
+	/**
+	 * What an agent did in this mailbox, newest first: the mail it wrote, what of that waits for a
+	 * person, and the mail that came to the addresses it made. Up to `limit` of each.
+	 */
+	ofAgent(
+		memberId: string,
+		limit: number,
+	): { wrote: StoredSummary[]; held: StoredSummary[]; received: StoredSummary[] } {
+		const take = Math.min(Math.max(1, limit), MAX_LISTED);
+		const sql = this.ctx.storage.sql;
+		const newest = (column: "sent_by" | "came_for") =>
+			sql
+				.exec<StoredSummary>(
+					`SELECT ${SUMMARY} FROM message WHERE ${column} = ? AND state = 'stored'
+					ORDER BY arrived_at DESC, id DESC LIMIT ?`,
+					memberId,
+					take,
+				)
+				.toArray();
+		// From the held ones, by `outgoing_due`: an agent can have written far more than waits.
+		const held = sql
+			.exec<StoredSummary>(
+				`SELECT ${SUMMARY} FROM message
+				WHERE id IN (SELECT message FROM outgoing WHERE state = 'held')
+					AND sent_by = ? AND state = 'stored'
+				ORDER BY arrived_at DESC, id DESC LIMIT ?`,
+				memberId,
+				take,
+			)
+			.toArray();
+		return { wrote: newest("sent_by"), held, received: newest("came_for") };
 	}
 
 	/** Threads, the one with the newest message first, after `before` when given. */

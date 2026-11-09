@@ -567,6 +567,44 @@ describe("receiving through Resend", () => {
 		);
 	});
 
+	it("notes the agent whose address it came to, for the agent's page", async () => {
+		const box = await workspace();
+		const webhook = await receiving(box);
+		const created = await mail.fetch(`${origin}/api/auth/agents/create`, {
+			method: "POST",
+			headers: {
+				...owner.headers,
+				origin,
+				"content-type": "application/json",
+				"cf-connecting-ip": "192.0.2.77",
+			},
+			body: JSON.stringify({ organizationId: box.workspaceId, name: "Inbox agent" }),
+		});
+		expect(created.status).toBe(200);
+		const { agent } = (await created.json()) as { agent: { id: string; memberId: string } };
+		// An address of the mailbox's that the agent made, as its key would have.
+		await addAddress(box, 0, "made-by-agent");
+		await mail.db
+			.prepare("UPDATE mail_address SET agent_member_id = ? WHERE local_part = ? AND domain_id = ?")
+			.bind(agent.memberId, "made-by-agent", box.domains[0]?.id)
+			.run();
+
+		const to = `made-by-agent@${box.domains[0]?.name}`;
+		const forAgent = receivedFor(box, { subject: "For the agent", to }, { to: [to] });
+		expect((await deliver(webhook, eventFor(forAgent))).status).toBe(200);
+		const forPeople = receivedFor(box, { subject: "For people" });
+		expect((await deliver(webhook, eventFor(forPeople))).status).toBe(200);
+
+		const page = await mail.fetch(`${origin}/api/agents/${box.slug}/${agent.id}`, {
+			headers: owner.headers,
+		});
+		expect(page.status).toBe(200);
+		const { received: came } = (await page.json()) as {
+			received: { subject: string; to: string[] }[];
+		};
+		expect(came).toEqual([expect.objectContaining({ subject: "For the agent", to: [to] })]);
+	});
+
 	it("refuses what isn't signed with the workspace's secret, or came too long ago", async () => {
 		const box = await workspace();
 		const webhook = await receiving(box);

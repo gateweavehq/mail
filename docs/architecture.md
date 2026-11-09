@@ -192,6 +192,18 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     object trusts what D1 last said. Mail to its addresses still arrives in the mailbox for people to read. Pausing
     needs no recent sign-in, so it is quick; resuming, which gives its keys back, does, as making
     a key does.
+  - **An agent's page** (`server/mailbox/agent-activity.ts`; its name on the Agents page opens
+    it, and `/api/agents/<workspace>/<agent>` gives the same as JSON) shows an owner or admin what
+    it may do and holds, and what it did, newest first: what it wrote (`message.sent_by`), what of
+    that waits for approval, and what came to the addresses it made. The last is
+    `message.came_for` (schema version 11), the agent's membership when the address the mail
+    arrived at is one it made, noted on arrival by Email Routing or Resend from
+    `mail_address.agent_member_id`. It stays when the address ends or is removed; mail that
+    arrived before it was noted has none, and mail to a mailbox's own addresses isn't the agent's.
+    The page asks every mailbox of the workspace (`ofAgent`, by partial indexes on both columns),
+    as what an agent wrote stays where it wrote it after its grant goes, and keeps the newest 50 of
+    each list. Anyone else, the agent included, gets the same 404 as for an agent that doesn't
+    exist. While it is open and in sight, it looks again every 15 seconds.
   - **Addresses an agent makes** (`server/directory/agent-addresses.ts`), such as one for each
     sign-up or task. An owner or admin sets how many it may hold at once, how long each may last
     and on which proved domains (`agent_address_policy`, keyed by membership, set on the Agents
