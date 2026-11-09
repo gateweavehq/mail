@@ -7,7 +7,12 @@ import { db } from "../auth";
 import { removeMailboxes } from "../mailbox";
 import { appOrigin } from "../origin";
 import { allowDomainCheck } from "../rate-limit";
-import { dropUnusedReceivingWebhook, mendReceiving, setDomainReceiving } from "../resend-inbound";
+import {
+	mendWebhook,
+	noteWebhookUse,
+	setDomainReceiving,
+	setDomainSendingWith,
+} from "../resend-inbound";
 import { DEFAULT_DNS_RESOLVER, dnsLookup } from "./dns";
 import {
 	addAddress,
@@ -19,7 +24,6 @@ import {
 	removeAddress,
 	removeDomain,
 	removeMailbox,
-	setDomainSending,
 	setMailboxAccess,
 } from "./index";
 
@@ -122,15 +126,15 @@ async function run(action: z.output<typeof Action>, workspaceId: string, userId:
 			);
 		case "remove-domain": {
 			const result = await removeDomain(db, workspaceId, action.id);
-			if (result.ok) await dropUnusedReceivingWebhook(db, workspaceId);
+			if (result.ok) await noteWebhookUse(db, workspaceId);
 			return result;
 		}
 		case "set-domain-sending":
-			return setDomainSending(db, workspaceId, action.id, action.sendsWith);
+			return setDomainSendingWith(db, workspaceId, action.id, action.sendsWith, appOrigin());
 		case "set-domain-receiving":
 			return setDomainReceiving(db, workspaceId, action.id, action.receivesWith, appOrigin());
 		case "check-receiving":
-			return mendReceiving(db, workspaceId, appOrigin());
+			return mendWebhook(db, workspaceId, appOrigin());
 		case "add-mailbox":
 			return addMailbox(db, workspaceId, action.name, action.everyone);
 		case "set-mailbox-access":

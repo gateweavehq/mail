@@ -329,7 +329,8 @@ export async function removeDomain(db: Database, workspaceId: string, id: string
 
 /**
  * How a domain's mail is sent from now on. Resend needs the workspace's key first, so that mail
- * written next has a way to go. Mail already written keeps the way it was written with.
+ * written next has a way to go. Mail already written keeps the way it was written with. When the
+ * way changes, when events last came is forgotten, as they were the other provider's.
  */
 export async function setDomainSending(
 	db: Database,
@@ -347,7 +348,10 @@ export async function setDomainSending(
 	}
 	const { meta } = await db
 		.update(mailDomain)
-		.set({ sendsWith })
+		.set({
+			sendsWith,
+			eventsAt: sql`CASE WHEN ${mailDomain.sendsWith} = ${sendsWith} THEN ${mailDomain.eventsAt} END`,
+		})
 		.where(and(eq(mailDomain.id, id), eq(mailDomain.organizationId, workspaceId)))
 		.run();
 	return meta.changes ? { ok: true } : notFound();

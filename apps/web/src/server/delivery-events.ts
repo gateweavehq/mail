@@ -1,6 +1,7 @@
 import { and, eq, inArray, isNotNull } from "drizzle-orm";
 import { z } from "zod";
 import { DELIVERY_STATES, type DeliveryState, MAX_DELIVERY_DETAIL } from "../lib/delivery";
+import type { SendsWith } from "../lib/providers";
 import { SUPPRESSION_DAYS, type SuppressionReason } from "../lib/suppressions";
 import { type Database, schema } from "./db";
 import type { DeliveryEvent } from "./mailbox/deliveries";
@@ -75,8 +76,8 @@ export interface ReadEvent {
 const isState = (value: string): value is DeliveryState =>
 	(DELIVERY_STATES as readonly string[]).includes(value);
 
-/** One line of what a server or Email Service said, cut short. Null when there is none. */
-function said(...values: unknown[]): string | null {
+/** One line of what a server or the provider said, cut short. Null when there is none. */
+export function said(...values: unknown[]): string | null {
 	for (const value of values) {
 		if (typeof value !== "string") continue;
 		// biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are what it removes.
@@ -114,15 +115,20 @@ const NO_SUCH_MAILBOX = new Set(["5.1.1", "5.1.2", "5.1.3", "5.1.10"]);
 /** An enhanced status code as an SMTP reply starts with it: `550 5.1.1 User unknown`. */
 const REPLY_CODE = /^\s*5\d\d[\s-]+(5\.\d{1,3}\.\d{1,3})(?![\d.])/;
 
+/** The enhanced status code an SMTP reply starts with, or null. */
+export function codeOfReply(reply: unknown): string | null {
+	const match = typeof reply === "string" ? REPLY_CODE.exec(reply) : null;
+	return match?.[1] ?? null;
+}
+
+/** Whether an enhanced status code says the mailbox or domain doesn't exist. */
+export const noSuchMailbox = (code: string | null) => code !== null && NO_SUCH_MAILBOX.has(code);
+
 /** The enhanced status code of a bounce: the one the event gives, or the one its reply starts with. */
 function enhancedCode(payload: Payload): string | null {
 	const given = payload.delivery?.smtpEnhancedStatusCode;
 	if (typeof given === "string" && given.trim()) return given.trim();
-	for (const reply of [payload.bounce?.reason, payload.delivery?.smtpResponse]) {
-		const match = typeof reply === "string" ? REPLY_CODE.exec(reply) : null;
-		if (match?.[1]) return match[1];
-	}
-	return null;
+	return codeOfReply(payload.bounce?.reason) ?? codeOfReply(payload.delivery?.smtpResponse);
 }
 
 /**
@@ -137,7 +143,7 @@ function suppressionOf(state: DeliveryState, payload: Payload): SuppressionSaid 
 			return { reason: "complained", forever: true };
 		case "bounced": {
 			if (payload.bounce?.type !== "hard") return null;
-			return { reason: "bounced", forever: NO_SUCH_MAILBOX.has(enhancedCode(payload) ?? "") };
+			return { reason: "bounced", forever: noSuchMailbox(enhancedCode(payload)) };
 		}
 		case "rejected":
 			return payload.rejection?.reason === "suppressed"
@@ -176,7 +182,7 @@ export function readEvent(body: unknown, receivedAt: number): ReadEvent | null {
 }
 
 /** The address's two parts, when it is one. */
-function split(address: string): { local: string; domain: string } | null {
+export function split(address: string): { local: string; domain: string } | null {
 	const at = address.lastIndexOf("@");
 	if (at < 1 || at === address.length - 1) return null;
 	return { local: address.slice(0, at), domain: address.slice(at + 1) };
@@ -184,8 +190,16 @@ function split(address: string): { local: string; domain: string } | null {
 
 /** What receiving events needs of the directory, which D1 holds. */
 export interface EventDirectory {
-	/** Notes that events came for these domains, where a workspace proved them. */
-	eventsCame(domains: string[], at: number): Promise<void>;
+	/**
+	 * Notes that the provider's events came for these domains, where a workspace proved them and
+	 * sends with that provider, so a late event for mail sent before a domain changed how it sends
+	 * doesn't speak for the other: of the given workspace, for events only it could have been sent.
+	 */
+	eventsCame(
+		domains: string[],
+		at: number,
+		from: { provider: SendsWith; workspaceId?: string },
+	): Promise<void>;
 	/**
 	 * The mailbox of each of these addresses, on domains a workspace proved, and that workspace. A
 	 * temporary address that has ended still counts: it sent the message, and the mailbox still has
@@ -206,11 +220,18 @@ export interface Sender {
 export function directoryIn(db: Database): EventDirectory {
 	const { mailAddress, mailDomain } = schema;
 	return {
-		async eventsCame(domains, at) {
+		async eventsCame(domains, at, { provider, workspaceId }) {
 			await db
 				.update(mailDomain)
 				.set({ eventsAt: new Date(at) })
-				.where(and(inArray(mailDomain.name, domains), isNotNull(mailDomain.verifiedAt)));
+				.where(
+					and(
+						inArray(mailDomain.name, domains),
+						isNotNull(mailDomain.verifiedAt),
+						eq(mailDomain.sendsWith, provider),
+						workspaceId ? eq(mailDomain.organizationId, workspaceId) : undefined,
+					),
+				);
 		},
 		async mailboxesOf(senders) {
 			const byDomain = new Map<string, string[]>();
@@ -289,7 +310,7 @@ const ADDRESS = /[^\s<>"'(),;:]*@[^\s<>"'(),;:]+/g;
  * from Drizzle lists the query's values, which include parts of addresses, so it gives its cause
  * or only its name.
  */
-function failureOf(where: string, error: unknown): string {
+export function failureOf(where: string, error: unknown): string {
 	const inner = error instanceof Error && error.cause instanceof Error ? error.cause : error;
 	if (!(inner instanceof Error)) return `${where}: ${typeof inner}`;
 	if (inner === error && inner.name === "DrizzleQueryError") return `${where}: ${inner.name}`;
@@ -338,7 +359,9 @@ export async function receiveDeliveryEvents(
 
 	let mailboxes: Map<string, Sender>;
 	try {
-		await directory.eventsCame([...new Set(read.map(({ event }) => event.domain))], now);
+		await directory.eventsCame([...new Set(read.map(({ event }) => event.domain))], now, {
+			provider: "cloudflare",
+		});
 		mailboxes = await directory.mailboxesOf(new Set(read.map(({ event }) => event.sender)));
 	} catch (error) {
 		fail(

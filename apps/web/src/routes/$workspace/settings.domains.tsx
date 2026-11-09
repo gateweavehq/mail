@@ -69,9 +69,10 @@ function DomainsPage() {
 					<p className="text-sm text-muted-foreground">An owner or admin can add a domain.</p>
 				)}
 				{admin && (
-					<ReceivingStatus
+					<WebhookStatus
 						state={data.resendReceiving}
-						inUse={data.domains.some((domain) => domain.receivesWith === "resend")}
+						receiving={data.domains.some((domain) => domain.receivesWith === "resend")}
+						sending={data.domains.some((domain) => domain.sendsWith === "resend")}
 					/>
 				)}
 				{data.domains.length > 0 && (
@@ -82,6 +83,7 @@ function DomainsPage() {
 								domain={domain}
 								admin={admin}
 								keyed={resend ? resend.key !== null : null}
+								webhookReady={data.resendReceiving?.ready === true}
 							/>
 						))}
 					</ul>
@@ -97,8 +99,10 @@ function DomainsPage() {
 						Each domain sends one of two ways. Cloudflare Email Service sends from domains that the
 						Cloudflare account running this server has onboarded for Email Sending. For a domain
 						whose DNS is somewhere else, send through Resend: verify the domain at Resend, add the
-						workspace's Resend key here, then set the domain to send with Resend. A key that can
-						only send is enough for sending; receiving through Resend needs one with full access.
+						workspace's Resend key here, then set the domain to send with Resend. With a key that
+						has full access, Mail makes a webhook in that Resend account, which tells it what became
+						of each message and lets it stop writing to addresses that bounce. A key that can only
+						send still sends, but Mail learns none of that.
 					</p>
 				</div>
 				{admin ? (
@@ -229,16 +233,25 @@ const RECEIVES_WITH_WORDS: Record<ReceivesWith, string> = {
 };
 
 /**
- * How receiving through Resend went for the workspace. With no state, the webhook isn't made, as
- * when a domain was set to Resend while receiving was turned off at the same moment.
+ * How the workspace's webhook in Resend is, which tells Mail of mail Resend received and of what
+ * became of mail it sent. With no state, the webhook isn't made: the key can only send, or a domain
+ * was set to Resend while the last was turned off at the same moment.
  */
-function ReceivingStatus({ state, inUse }: { state: ResendReceiving | null; inUse: boolean }) {
+function WebhookStatus({
+	state,
+	receiving,
+	sending,
+}: {
+	state: ResendReceiving | null;
+	receiving: boolean;
+	sending: boolean;
+}) {
 	const { slug } = useWorkspace();
 	const router = useRouter();
 	const [pending, setPending] = useState(false);
 	const [said, setSaid] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
-	if (!inUse) return null;
+	if (!receiving && !sending) return null;
 
 	async function check() {
 		setPending(true);
@@ -254,10 +267,14 @@ function ReceivingStatus({ state, inUse }: { state: ResendReceiving | null; inUs
 
 	return (
 		<div className="space-y-2 rounded-lg border p-4 text-sm">
-			<p className="font-medium">Receiving through Resend</p>
+			<p className="font-medium">Resend's webhook</p>
 			{!state?.ready && (
 				<p className="text-destructive">
-					The webhook in Resend isn't made, so no mail comes through it. Check it to make it again.
+					The webhook in Resend isn't made, so{" "}
+					{receiving
+						? "no mail comes through it"
+						: "Mail can't learn what became of mail sent through Resend, or stop writing to addresses that bounce"}
+					. Check it to make it again, which needs a key with full access.
 				</p>
 			)}
 			{state?.trouble && (
@@ -267,9 +284,10 @@ function ReceivingStatus({ state, inUse }: { state: ResendReceiving | null; inUs
 				</p>
 			)}
 			<p className="text-muted-foreground">
-				{state?.receivedAt == null
-					? "No mail has come through it yet."
-					: `Mail last came through it ${formatDateTime(state.receivedAt)}.`}{" "}
+				{receiving &&
+					(state?.receivedAt == null
+						? "No mail has come through it yet. "
+						: `Mail last came through it ${formatDateTime(state.receivedAt)}. `)}
 				Resend turns off a webhook whose deliveries keep failing; checking it turns it back on, and
 				makes it again if Resend no longer has it.
 			</p>
@@ -300,11 +318,14 @@ function DomainRow({
 	domain,
 	admin,
 	keyed,
+	webhookReady,
 }: {
 	domain: DirectoryDomain;
 	admin: boolean;
 	/** Whether the workspace has a Resend key, once the page knows. */
 	keyed: boolean | null;
+	/** Whether the workspace's webhook in Resend is made, which `WebhookStatus` speaks for. */
+	webhookReady: boolean;
 }) {
 	const { slug } = useWorkspace();
 	const router = useRouter();
@@ -332,13 +353,16 @@ function DomainRow({
 		setSwitching(true);
 		setError(null);
 		setSaid(null);
-		const result = await changeDirectory(slug, {
+		const result = await changeDirectory<{ note?: string }>(slug, {
 			action: "set-domain-sending",
 			id: domain.id,
 			sendsWith,
 		});
-		if (result.ok) await router.invalidate();
-		else setError(result.error);
+		if (result.ok) {
+			// It sends now, but Mail may not learn what becomes of its mail: that it says.
+			if (result.note) setError(result.note);
+			await router.invalidate();
+		} else setError(result.error);
 		setSwitching(false);
 	}
 
@@ -451,6 +475,17 @@ function DomainRow({
 						: `Email Service's delivery events last came ${formatRelative(domain.eventsAt)}.`}
 				</p>
 			)}
+			{admin &&
+				domain.verifiedAt !== null &&
+				domain.sendsWith === "resend" &&
+				keyed !== false &&
+				(webhookReady || domain.eventsAt !== null) && (
+					<p className="text-sm text-muted-foreground">
+						{domain.eventsAt === null
+							? "No delivery events from Resend yet. They come through the workspace's webhook once something is sent."
+							: `Resend's delivery events last came ${formatRelative(domain.eventsAt)}.`}
+					</p>
+				)}
 			{admin && domain.sendsWith === "resend" && keyed === false && (
 				<p className="text-sm text-destructive">
 					This domain sends through Resend, and the workspace has no Resend key, so its mail can't

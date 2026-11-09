@@ -27,8 +27,8 @@ function failure(
 
 const accessWords = (access: ResendAccess) =>
 	access === "sending"
-		? "Resend takes it. It can only send, which is all Mail needs."
-		: "Resend takes it. It has full access to the Resend account; a sending-only key would be enough, and safer.";
+		? "Resend takes it. It can only send, so Mail can't make the webhook that tells it what became of the mail it sends, or of mail Resend receives."
+		: "Resend takes it. It has full access to the Resend account, which Mail needs to make the webhook that tells it what became of the mail it sends, and of mail Resend receives.";
 
 /** The workspace's Resend key, for owners and admins: add, check, replace or remove it. */
 export function ResendKey({
@@ -106,9 +106,9 @@ export function ResendKey({
 				<AddKey
 					replacing={key !== null}
 					onCancel={key ? () => setReplacing(false) : null}
-					onAdded={async (access) => {
+					onAdded={async (access, note) => {
 						setReplacing(false);
-						setError(null);
+						setError(note);
 						setSaid(accessWords(access));
 						await onChanged();
 					}}
@@ -146,7 +146,8 @@ function AddKey({
 }: {
 	replacing: boolean;
 	onCancel: (() => void) | null;
-	onAdded: (access: ResendAccess) => Promise<void>;
+	/** With what the workspace's domains can't do with the key, if anything. */
+	onAdded: (access: ResendAccess, note: string | null) => Promise<void>;
 }) {
 	const { id: organizationId } = useWorkspace();
 	const [key, setKey] = useState("");
@@ -168,7 +169,7 @@ function AddKey({
 			return;
 		}
 		setKey("");
-		await onAdded(result.data.access);
+		await onAdded(result.data.access, result.data.note);
 	}
 
 	return (

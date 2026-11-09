@@ -78,7 +78,17 @@ function buildAuth() {
 		allowPasswordTry,
 		allowSpentTriesEmail,
 		removeMailboxes,
-		providers: { secretsKey: env.SECRETS_KEY, resendApi: env.RESEND_API_URL },
+		providers: {
+			secretsKey: env.SECRETS_KEY,
+			resendApi: env.RESEND_API_URL,
+			afterKeySet: async (workspaceId) => {
+				const [{ webhookForNewKey }, { appOrigin }] = await Promise.all([
+					import("../resend-inbound"),
+					import("../origin"),
+				]);
+				return webhookForNewKey(db, workspaceId, appOrigin());
+			},
+		},
 	});
 }
 

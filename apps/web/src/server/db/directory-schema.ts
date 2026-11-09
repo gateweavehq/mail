@@ -45,8 +45,10 @@ export const mailDomain = sqliteTable(
 		 */
 		receivesWith: text("receives_with", { enum: RECEIVES_WITH }).default("cloudflare").notNull(),
 		/**
-		 * When Email Service's delivery events for it last reached the deployment's queue, whoever
-		 * sent the mail. Null until the first, as while its event subscription is missing.
+		 * When delivery events last came from the provider it sends with: Email Service's through the
+		 * deployment's queue, whoever sent the mail, or Resend's through the workspace's webhook. Null
+		 * until the first, as while its event subscription is missing, and again when it changes how it
+		 * sends.
 		 */
 		eventsAt: integer("events_at", { mode: "timestamp_ms" }),
 	},
@@ -209,6 +211,11 @@ export const resendInbound = sqliteTable("resend_inbound", {
 	/** What went wrong last, as a code `receivingTrouble` puts in words, until mail is stored again. */
 	trouble: text("trouble"),
 	troubleAt: integer("trouble_at", { mode: "timestamp_ms" }),
+	/**
+	 * Since when none of the workspace's domains sends or receives with Resend. The webhook stays a
+	 * while for what Resend still tells of mail sent before, then the daily run removes it.
+	 */
+	unusedSince: integer("unused_since", { mode: "timestamp_ms" }),
 });
 
 /**

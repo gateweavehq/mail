@@ -175,8 +175,9 @@ function directory(
 	return {
 		came,
 		suppressed,
-		async eventsCame(domains) {
+		async eventsCame(domains, _at, { provider }) {
 			if (fails) throw fails;
+			expect(provider).toBe("cloudflare");
 			came.push(domains);
 		},
 		async mailboxesOf(senders) {

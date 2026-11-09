@@ -102,15 +102,18 @@ async function resend(request: Request): Promise<Response> {
 			const body = (await request.json()) as {
 				status?: "enabled" | "disabled";
 				endpoint?: string;
+				events?: string[];
 			};
 			if (body.status) found.status = body.status;
 			if (body.endpoint) found.endpoint = body.endpoint;
+			if (body.events) found.events = body.events;
 		}
 		return Response.json({
 			object: "webhook",
 			id: webhook,
 			status: found.status,
 			endpoint: found.endpoint,
+			events: found.events,
 		});
 	}
 	const email = /^\/emails\/receiving\/([^/]+)$/.exec(url.pathname)?.[1];
@@ -258,6 +261,24 @@ async function workspace(key: string | null = FULL_KEY) {
 }
 
 type Box = Awaited<ReturnType<typeof workspace>>;
+
+const DAY = 24 * 60 * 60 * 1000;
+
+/** Makes the workspace's webhook look unused for that long, as the daily run would find it. */
+async function unusedFor(box: Box, ms: number) {
+	await mail.db
+		.prepare("UPDATE resend_inbound SET unused_since = ? WHERE organization_id = ?")
+		.bind(Date.now() - ms, box.workspaceId)
+		.run();
+}
+
+async function unusedSince(box: Box) {
+	const row = await mail.db
+		.prepare("SELECT unused_since AS since FROM resend_inbound WHERE organization_id = ?")
+		.bind(box.workspaceId)
+		.first<{ since: number | null }>();
+	return row?.since;
+}
 
 /** Another mailbox in the box's workspace, with this address on its first domain. */
 async function secondMailbox(box: Box, localPart: string) {
@@ -455,10 +476,10 @@ describe("receiving through Resend", () => {
 		expect(without.body.error).toMatch(/Resend key first/);
 	});
 
-	it("makes one webhook for the workspace and removes it when no domain receives with Resend", async () => {
+	it("makes one webhook for the workspace, and removes it two weeks after no domain receives with Resend", async () => {
 		const box = await workspace();
 		const webhook = await receiving(box);
-		expect(webhook.events).toEqual(["email.received"]);
+		expect(webhook.events).toEqual(expect.arrayContaining(["email.received", "email.bounced"]));
 		expect(webhook.endpoint).toMatch(/^https:\/\/mail\.test\/api\/inbound\/resend\/[a-f0-9]{32}$/);
 		let listed = (await directory(box.slug)).body;
 		expect(listed.domains[0]?.receivesWith).toBe("resend");
@@ -472,15 +493,24 @@ describe("receiving through Resend", () => {
 
 		expect((await receiveWith(box, "cloudflare", 0)).status).toBe(200);
 		expect(webhooks.has(webhook.id)).toBe(true);
+		expect(await unusedSince(box)).toBeNull();
 		expect((await receiveWith(box, "cloudflare", 1)).status).toBe(200);
+		// It stays a while for what Resend still tells of mail sent before, and stores no mail.
+		expect(webhooks.has(webhook.id)).toBe(true);
+		expect(await unusedSince(box)).toBeGreaterThan(Date.now() - 60_000);
+		const email = receivedFor(box);
+		expect((await deliver(webhook, eventFor(email))).status).toBe(200);
+		expect(await messages(box)).toHaveLength(0);
+
+		await unusedFor(box, 15 * DAY);
+		await mail.runScheduled();
 		expect(webhooks.has(webhook.id)).toBe(false);
 		listed = (await directory(box.slug)).body;
 		expect(listed.resendReceiving).toBeNull();
 		// Its address leads nowhere now.
-		const email = receivedFor(box);
 		expect((await deliver(webhook, eventFor(email))).status).toBe(404);
 
-		// Removing the last domain that receives with Resend removes it too.
+		// Removing the last domain that receives with Resend counts too.
 		const again = await receiving(box);
 		expect(again.endpoint).not.toBe(webhook.endpoint);
 		for (const domain of box.domains) {
@@ -488,6 +518,9 @@ describe("receiving through Resend", () => {
 				200,
 			);
 		}
+		expect(await unusedSince(box)).toBeGreaterThan(Date.now() - 60_000);
+		await unusedFor(box, 15 * DAY);
+		await mail.runScheduled();
 		expect(webhooks.has(again.id)).toBe(false);
 		expect((await directory(box.slug)).body.resendReceiving).toBeNull();
 	});
