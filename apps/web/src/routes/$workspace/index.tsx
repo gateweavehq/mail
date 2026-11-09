@@ -74,8 +74,9 @@ function WorkspaceHome() {
 
 			<p className="text-sm text-muted-foreground">
 				Gateweave Mail is early: it keeps what arrives at a mailbox's addresses and shows it to
-				whoever may read that mailbox. Owners and admins read every one and choose who else can. It
-				can't send or reply yet. Mail to an address that doesn't exist is refused.
+				whoever may read that mailbox, who can answer it and write new mail in plain text. Owners
+				and admins read every one and choose who else can. Mail to an address that doesn't exist is
+				refused.
 			</p>
 
 			{admin && <AddMailbox />}
