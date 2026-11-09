@@ -2,7 +2,7 @@ import type { SendsWith } from "./providers";
 
 /**
  * Why Mail won't send to an address, weakest first: the provider's own suppression list has it
- * (`rejected`), mail to it bounced for good (`bounced`), or its person marked mail as spam
+ * (`rejected`), mail to it bounced (`bounced`), or its person marked mail as spam
  * (`complained`). A stronger reason replaces a weaker one.
  */
 export const SUPPRESSION_REASONS = ["rejected", "bounced", "complained"] as const;
@@ -58,13 +58,18 @@ export function suppressionLabel(reason: SuppressionReason): string {
 	}
 }
 
-/** What a reason means, for an admin deciding whether to remove it. */
-export function suppressionMeaning(reason: SuppressionReason): string {
+/**
+ * What a reason means, for an admin deciding whether to remove it. A bounce is for good only when
+ * the entry never ends, as when the mailbox or domain doesn't exist.
+ */
+export function suppressionMeaning(reason: SuppressionReason, expiresAt: number | null): string {
 	switch (reason) {
 		case "rejected":
 			return "The provider refused to send to it, as its own list has it.";
 		case "bounced":
-			return "Their mail server refused mail to it for good.";
+			return expiresAt === null
+				? "Their mail server refused mail to it for good: the mailbox or domain doesn't exist."
+				: "Their mail server refused mail to it.";
 		case "complained":
 			return "They marked mail from this workspace as spam.";
 	}
