@@ -65,13 +65,14 @@ const SERVED = [
 	"POST /organization/update",
 	"POST /organization/update-member-role",
 
-	// Agents, their keys and what they may send, for owners and admins (`agents.ts`). Making an
-	// agent or a key, each a credential, has a limit of its own.
+	// Agents, their keys, what they may send and what addresses they may make, for owners and admins
+	// (`agents.ts`). Making an agent or a key, each a credential, has a limit of its own.
 	"GET /agents/list",
 	"POST /agents/create",
 	"POST /agents/create-key",
 	"POST /agents/delete",
 	"POST /agents/revoke-key",
+	"POST /agents/set-address-policy",
 	"POST /agents/set-policy",
 	"POST /agents/update",
 

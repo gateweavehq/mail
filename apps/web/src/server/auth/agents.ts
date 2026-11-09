@@ -7,8 +7,14 @@ import {
 	freshSessionMiddleware,
 	sessionMiddleware,
 } from "better-auth/api";
-import { and, asc, count, eq, like, notExists, or } from "drizzle-orm";
+import { and, asc, count, eq, inArray, isNotNull, like, notExists, or } from "drizzle-orm";
 import * as z from "zod";
+import {
+	type AgentAddressPolicy,
+	AgentAddressPolicyInput,
+	DEFAULT_AGENT_ADDRESS_POLICY,
+	readDomains,
+} from "../../lib/agent-addresses";
 import {
 	type AgentPolicy,
 	AgentPolicyInput,
@@ -18,6 +24,7 @@ import {
 import { isAdminRole } from "../../lib/roles";
 import type { Database } from "../db";
 import { schema } from "../db";
+import { liveAddressCounts } from "../directory/agent-address-store";
 import { toRole } from "../workspaces";
 
 /**
@@ -157,6 +164,10 @@ export interface AgentInfo {
 	keys: AgentKeyInfo[];
 	/** What it may send. */
 	policy: AgentPolicy;
+	/** What addresses it may make for itself. */
+	addressPolicy: AgentAddressPolicy;
+	/** How many of those it holds now. */
+	liveAddresses: number;
 }
 
 /**
@@ -179,7 +190,7 @@ const agentName = z.string().trim().min(1).max(80);
 const id = z.string().min(1).max(64);
 
 export function agentMembers({ db }: { db: Database }) {
-	const { agentKey, agentPolicy, member, user } = schema;
+	const { agentAddressPolicy, agentKey, agentPolicy, mailDomain, member, user } = schema;
 
 	async function requireAdmin(organizationId: string, userId: string) {
 		const row = await db
@@ -279,6 +290,11 @@ export function agentMembers({ db }: { db: Database }) {
 							createdAt: member.createdAt,
 							sendPerDay: agentPolicy.sendPerDay,
 							allowed: agentPolicy.allowed,
+							address: {
+								maxLive: agentAddressPolicy.maxLive,
+								maxDays: agentAddressPolicy.maxDays,
+								domains: agentAddressPolicy.domains,
+							},
 							key: {
 								id: agentKey.id,
 								start: agentKey.start,
@@ -290,6 +306,7 @@ export function agentMembers({ db }: { db: Database }) {
 						.innerJoin(user, eq(member.userId, user.id))
 						.leftJoin(agentKey, eq(agentKey.userId, user.id))
 						.leftJoin(agentPolicy, eq(agentPolicy.memberId, member.id))
+						.leftJoin(agentAddressPolicy, eq(agentAddressPolicy.memberId, member.id))
 						.where(
 							and(
 								eq(member.organizationId, organizationId),
@@ -299,6 +316,11 @@ export function agentMembers({ db }: { db: Database }) {
 						)
 						.orderBy(asc(user.name), asc(agentKey.createdAt))
 						.all();
+					const live = await liveAddressCounts(
+						db,
+						[...new Set(rows.map((row) => row.memberId))],
+						new Date(),
+					);
 					const agents = new Map<string, AgentInfo>();
 					for (const row of rows) {
 						const agent = agents.get(row.id) ?? {
@@ -311,6 +333,14 @@ export function agentMembers({ db }: { db: Database }) {
 								row.sendPerDay === null || row.allowed === null
 									? DEFAULT_AGENT_POLICY
 									: { sendPerDay: row.sendPerDay, allowed: readAllowed(row.allowed) },
+							addressPolicy: row.address
+								? {
+										maxLive: row.address.maxLive,
+										maxDays: row.address.maxDays,
+										domains: readDomains(row.address.domains),
+									}
+								: DEFAULT_AGENT_ADDRESS_POLICY,
+							liveAddresses: live.get(row.memberId) ?? 0,
 						};
 						agents.set(row.id, agent);
 						if (row.key) {
@@ -378,6 +408,8 @@ export function agentMembers({ db }: { db: Database }) {
 						createdAt: now.getTime(),
 						keys: [key.info],
 						policy: DEFAULT_AGENT_POLICY,
+						addressPolicy: DEFAULT_AGENT_ADDRESS_POLICY,
+						liveAddresses: 0,
 					};
 					return ctx.json({ agent, key: key.secret });
 				},
@@ -429,6 +461,58 @@ export function agentMembers({ db }: { db: Database }) {
 						allowed: readAllowed(allowed),
 					};
 					return ctx.json({ id: agent.id, policy });
+				},
+			),
+
+			setAgentAddressPolicy: createAuthEndpoint(
+				"/agents/set-address-policy",
+				{
+					method: "POST",
+					body: z.object({ agentId: id }).extend(AgentAddressPolicyInput.shape),
+					// Letting an agent take mail at addresses of its own is as much a grant as a key.
+					use: [freshSessionMiddleware],
+				},
+				async (ctx) => {
+					const agent = await agentForAdmin(ctx.body.agentId, ctx.context.session.user.id);
+					const domains = [...new Set(ctx.body.domains)].sort();
+					// Only domains the workspace has proved now. One proved later is given then.
+					const proved =
+						domains.length === 0
+							? []
+							: await db
+									.select({ name: mailDomain.name })
+									.from(mailDomain)
+									.where(
+										and(
+											eq(mailDomain.organizationId, agent.organizationId),
+											isNotNull(mailDomain.verifiedAt),
+											inArray(mailDomain.name, domains),
+										),
+									)
+									.all();
+					if (proved.length !== domains.length) {
+						throw new APIError("BAD_REQUEST", {
+							message: "Choose among the domains this workspace has proved.",
+						});
+					}
+					const values = {
+						maxLive: ctx.body.maxLive,
+						maxDays: ctx.body.maxDays,
+						domains: JSON.stringify(domains),
+						updatedBy: ctx.context.session.user.id,
+						updatedAt: new Date(),
+					};
+					await db
+						.insert(agentAddressPolicy)
+						.values({ memberId: agent.memberId, ...values })
+						.onConflictDoUpdate({ target: agentAddressPolicy.memberId, set: values })
+						.run();
+					const addressPolicy: AgentAddressPolicy = {
+						maxLive: ctx.body.maxLive,
+						maxDays: ctx.body.maxDays,
+						domains,
+					};
+					return ctx.json({ id: agent.id, addressPolicy });
 				},
 			),
 

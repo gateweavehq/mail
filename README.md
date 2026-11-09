@@ -62,7 +62,9 @@ tools that run on Cloudflare, next to [Gateweave Track](https://github.com/gatew
   API, only the mailboxes it is given; opening a mailbox to everyone doesn't open it to agents.
   A mailbox can let an agent send too. Mail to the addresses and domains its settings name goes
   on its own; the rest waits for someone who reads the mailbox to approve or reject it. Each
-  agent has a daily limit of its own.
+  agent has a daily limit of its own. An agent can also make addresses for itself, such as one
+  for each sign-up, on the domains an admin gives it, as many and for as long as the admin
+  allows. Each one ends.
 
 ## What it is planned to become
 
@@ -70,7 +72,6 @@ None of this exists yet; it is the direction, and it may change.
 
 - Agents that act on mail as well as read and send it, such as filing or labelling it.
 - Formatting, attachments, forwarding and replying to all when writing.
-- Addresses an agent can make for itself.
 - Aliases that point at a mailbox.
 - Transactional sending and templates, through Cloudflare Email Service.
 

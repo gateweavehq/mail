@@ -15,6 +15,7 @@ export const getWorkspaceAgents = createServerFn({ method: "GET" })
 	.handler(async ({ data: slug }) => {
 		const { getAuth, db } = await import("#/server/auth");
 		const { findMembership } = await import("#/server/workspaces");
+		const { provedDomains } = await import("#/server/directory/agent-address-store");
 		const { appOrigin } = await import("#/server/origin");
 		const auth = getAuth();
 		const headers = getRequestHeaders();
@@ -26,5 +27,7 @@ export const getWorkspaceAgents = createServerFn({ method: "GET" })
 		const agents: AgentInfo[] = admin
 			? await auth.api.listAgents({ query: { organizationId: membership.workspaceId }, headers })
 			: [];
-		return { admin, agents, apiUrl: `${appOrigin()}/api` };
+		// The domains an agent may be let make addresses on: those the workspace has proved.
+		const domains = admin ? await provedDomains(db, membership.workspaceId) : [];
+		return { admin, agents, apiUrl: `${appOrigin()}/api`, domains };
 	});

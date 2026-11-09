@@ -40,6 +40,8 @@ export interface DirectoryAddress {
 	expiresAt: number | null;
 	/** False when someone else has since proved its domain, so mail to it is refused. */
 	domainProved: boolean;
+	/** The name of the agent that made it for itself, for owners and admins. */
+	madeBy: string | null;
 }
 
 export interface DirectoryMailbox {

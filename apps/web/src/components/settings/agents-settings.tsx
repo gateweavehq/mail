@@ -1,9 +1,10 @@
 // Ported from Gateweave Track's agent settings (apps/web/src/components/settings/agents-settings.tsx).
 import { Link, useRouter } from "@tanstack/react-router";
-import { Bot, Copy, Ellipsis, KeyRound, Plus, Send } from "lucide-react";
+import { AtSign, Bot, Copy, Ellipsis, KeyRound, Plus, Send } from "lucide-react";
 import { type FormEvent, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "#/components/ui/button";
+import { Checkbox } from "#/components/ui/checkbox";
 import {
 	Dialog,
 	DialogContent,
@@ -23,6 +24,11 @@ import { Label } from "#/components/ui/label";
 import { Textarea } from "#/components/ui/textarea";
 import { ConfirmDialog } from "#/components/workspace/confirm-dialog";
 import { useWorkspace } from "#/components/workspace/context";
+import {
+	addressPolicySummary,
+	MAX_AGENT_ADDRESS_DAYS,
+	MAX_AGENT_LIVE_ADDRESSES,
+} from "#/lib/agent-addresses";
 import {
 	MAX_AGENT_SEND_PER_DAY,
 	MAX_ALLOWED_ENTRIES,
@@ -54,11 +60,14 @@ export function AgentsSettings({
 	admin,
 	agents,
 	apiUrl,
+	domains,
 }: {
 	admin: boolean;
 	agents: AgentInfo[];
 	/** Where the API is, such as `https://mail.example.com/api`. */
 	apiUrl: string;
+	/** The workspace's proved domains, which an agent may be let make addresses on. */
+	domains: string[];
 }) {
 	const { slug } = useWorkspace();
 	const [newKey, setNewKey] = useState<NewKey | null>(null);
@@ -98,7 +107,7 @@ export function AgentsSettings({
 				) : (
 					<ul aria-label="Agents" className="divide-y rounded-lg border">
 						{agents.map((agent) => (
-							<AgentRow key={agent.id} agent={agent} onNewKey={setNewKey} />
+							<AgentRow key={agent.id} agent={agent} domains={domains} onNewKey={setNewKey} />
 						))}
 					</ul>
 				))}
@@ -225,9 +234,17 @@ function KeyReveal({
 	);
 }
 
-function AgentRow({ agent, onNewKey }: { agent: AgentInfo; onNewKey: (key: NewKey) => void }) {
+function AgentRow({
+	agent,
+	domains,
+	onNewKey,
+}: {
+	agent: AgentInfo;
+	domains: string[];
+	onNewKey: (key: NewKey) => void;
+}) {
 	const router = useRouter();
-	const [action, setAction] = useState<"rename" | "sending" | "delete" | null>(null);
+	const [action, setAction] = useState<"rename" | "sending" | "addresses" | "delete" | null>(null);
 	const [revoking, setRevoking] = useState<AgentKeyInfo | null>(null);
 
 	async function newKey() {
@@ -275,6 +292,10 @@ function AgentRow({ agent, onNewKey }: { agent: AgentInfo; onNewKey: (key: NewKe
 						Created {formatShortDate(agent.createdAt)}
 					</p>
 					<p className="text-xs text-muted-foreground">{policySummary(agent.policy)}</p>
+					<p className="text-xs text-muted-foreground">
+						{addressPolicySummary(agent.addressPolicy)}
+						{agent.liveAddresses > 0 && ` Holds ${agent.liveAddresses} now.`}
+					</p>
 				</div>
 				<Button variant="outline" size="sm" onClick={newKey}>
 					<KeyRound />
@@ -296,6 +317,10 @@ function AgentRow({ agent, onNewKey }: { agent: AgentInfo; onNewKey: (key: NewKe
 						<DropdownMenuItem onSelect={() => setAction("sending")}>
 							<Send />
 							Sending
+						</DropdownMenuItem>
+						<DropdownMenuItem onSelect={() => setAction("addresses")}>
+							<AtSign />
+							Addresses
 						</DropdownMenuItem>
 						<DropdownMenuItem
 							className="text-destructive focus:text-destructive"
@@ -355,6 +380,9 @@ function AgentRow({ agent, onNewKey }: { agent: AgentInfo; onNewKey: (key: NewKe
 			)}
 			{action === "rename" && <RenameAgentDialog agent={agent} onClose={() => setAction(null)} />}
 			{action === "sending" && <PolicyDialog agent={agent} onClose={() => setAction(null)} />}
+			{action === "addresses" && (
+				<AddressPolicyDialog agent={agent} domains={domains} onClose={() => setAction(null)} />
+			)}
 		</li>
 	);
 }
@@ -445,6 +473,160 @@ function PolicyDialog({ agent, onClose }: { agent: AgentInfo; onClose: () => voi
 							own only when everyone it is to is listed.
 						</p>
 					</div>
+					{error && (
+						<p role="alert" className="text-sm text-destructive">
+							{error}
+						</p>
+					)}
+					<DialogFooter className="gap-2">
+						<Button type="button" variant="outline" onClick={onClose} disabled={pending}>
+							Cancel
+						</Button>
+						<Button type="submit" disabled={pending}>
+							{pending ? "Saving…" : "Save"}
+						</Button>
+					</DialogFooter>
+				</form>
+			</DialogContent>
+		</Dialog>
+	);
+}
+
+/** How many addresses an agent may make for itself, for how long, and on which domains. */
+function AddressPolicyDialog({
+	agent,
+	domains,
+	onClose,
+}: {
+	agent: AgentInfo;
+	domains: string[];
+	onClose: () => void;
+}) {
+	const router = useRouter();
+	const [maxLive, setMaxLive] = useState(String(agent.addressPolicy.maxLive));
+	const [maxDays, setMaxDays] = useState(String(agent.addressPolicy.maxDays));
+	// A domain no longer proved can't be chosen again, so it drops out when this is saved.
+	const [chosen, setChosen] = useState(
+		() => new Set(agent.addressPolicy.domains.filter((name) => domains.includes(name))),
+	);
+	const [pending, setPending] = useState(false);
+	const [error, setError] = useState<string | null>(null);
+
+	function toggle(name: string, on: boolean) {
+		setChosen((before) => {
+			const after = new Set(before);
+			if (on) after.add(name);
+			else after.delete(name);
+			return after;
+		});
+	}
+
+	async function onSubmit(event: FormEvent) {
+		event.preventDefault();
+		const live = Number(maxLive);
+		if (!Number.isInteger(live) || live < 0 || live > MAX_AGENT_LIVE_ADDRESSES) {
+			setError(`How many at once is a whole number from 0 to ${MAX_AGENT_LIVE_ADDRESSES}.`);
+			return;
+		}
+		const days = Number(maxDays);
+		if (!Number.isInteger(days) || days < 1 || days > MAX_AGENT_ADDRESS_DAYS) {
+			setError(
+				`How long each lasts is a whole number of days from 1 to ${MAX_AGENT_ADDRESS_DAYS}.`,
+			);
+			return;
+		}
+		setPending(true);
+		setError(null);
+		const result = await authClient.agents.setAddressPolicy({
+			agentId: agent.id,
+			maxLive: live,
+			maxDays: days,
+			domains: [...chosen],
+		});
+		setPending(false);
+		if (result.error) {
+			setError(failure(result.error, "Those weren't saved. Try again."));
+			return;
+		}
+		onClose();
+		await router.invalidate();
+	}
+
+	return (
+		<Dialog open onOpenChange={(open) => !open && !pending && onClose()}>
+			<DialogContent className="max-w-md">
+				<DialogHeader>
+					<DialogTitle className="wrap-anywhere">Addresses {agent.name} can make</DialogTitle>
+					<DialogDescription>
+						It makes them through the API, such as one for each sign-up, for a mailbox it may send
+						from. Each one ends, and mail to it is refused from then on. You can remove any of them
+						on the workspace's home.
+					</DialogDescription>
+				</DialogHeader>
+				<form onSubmit={onSubmit} className="space-y-4">
+					<div className="space-y-2">
+						<Label htmlFor="agent-max-live">How many at once</Label>
+						<Input
+							id="agent-max-live"
+							type="number"
+							inputMode="numeric"
+							min={0}
+							max={MAX_AGENT_LIVE_ADDRESSES}
+							step={1}
+							value={maxLive}
+							onChange={(event) => setMaxLive(event.target.value)}
+							aria-describedby="agent-max-live-help"
+							required
+						/>
+						<p id="agent-max-live-help" className="text-xs text-muted-foreground">
+							It can make as many in a day. 0 stops it making more; those it holds keep working.
+						</p>
+					</div>
+					<div className="space-y-2">
+						<Label htmlFor="agent-max-days">Each lasts at most, in days</Label>
+						<Input
+							id="agent-max-days"
+							type="number"
+							inputMode="numeric"
+							min={1}
+							max={MAX_AGENT_ADDRESS_DAYS}
+							step={1}
+							value={maxDays}
+							onChange={(event) => setMaxDays(event.target.value)}
+							required
+						/>
+					</div>
+					<fieldset className="space-y-2">
+						<legend className="text-sm font-medium">On these domains</legend>
+						{domains.length === 0 ? (
+							<p className="text-xs text-muted-foreground">
+								Prove a domain on the workspace's home first.
+							</p>
+						) : (
+							<ul className="space-y-2">
+								{domains.map((name) => {
+									const id = `agent-domain-${name}`;
+									return (
+										<li key={name} className="flex items-center gap-2">
+											<Checkbox
+												id={id}
+												checked={chosen.has(name)}
+												onCheckedChange={(checked) => toggle(name, checked === true)}
+											/>
+											<Label htmlFor={id} className="min-w-0 break-all font-normal">
+												{name}
+											</Label>
+										</li>
+									);
+								})}
+							</ul>
+						)}
+						<p className="text-xs text-muted-foreground">
+							It can't take names such as admin@ or postmaster@, which can prove who runs a domain.
+							A domain of its own, such as agents.example.com, keeps its addresses apart from
+							people's.
+						</p>
+					</fieldset>
 					{error && (
 						<p role="alert" className="text-sm text-destructive">
 							{error}

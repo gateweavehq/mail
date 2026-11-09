@@ -49,7 +49,8 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
   Triggers refuse an address whose domain and mailbox are in different workspaces, whatever a bug
   above them does. An address that ends by itself keeps its name for 30 days, refusing mail, so
   it doesn't pass to someone else while what it signed up for still writes to it. Removing one by
-  hand, after a confirmation, frees the name at once, since a person chose that. Pages read the
+  hand, after a confirmation, frees the name for people at once, since a person chose that, but
+  not for agents (below). Pages read the
   directory through a server function, and changes go through `/api/directory/<workspace>`; both
   answer a non-member as a missing workspace, and only an owner or admin can change anything.
 - **The `email()` handler** (`apps/web/src/server/inbound.ts`) looks up each message's address on
@@ -162,7 +163,8 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     instead. Another scheme, such as Basic auth from a proxy in front of the app, carries no key,
     so the session decides. Reading takes a caller (`openMailbox`, and listing the directory,
     which shows an agent the mailboxes it was given), and so does sending, where a key may only
-    send, as below; every other change takes `currentMember`, a person signed in. Making an agent
+    send, as below, and so do the addresses an agent makes for itself; every other change takes
+    `currentMember`, a person signed in. Making an agent
     or a key, or changing its sending policy, takes a sign-in from the last day, since each
     outlives the session that made it. Letting it send from a mailbox is a change to the mailbox's
     access, as giving it the mailbox to read is. The plugin manages only accounts it made, under `agents.invalid`:
@@ -170,6 +172,43 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     Agents are kept off the members page and out of Better Auth's role and removal endpoints;
     deleting one, from its own page, takes its keys and grants, and a deleted workspace takes its
     agents.
+  - **Addresses an agent makes** (`server/directory/agent-addresses.ts`), such as one for each
+    sign-up or task. An owner or admin sets how many it may hold at once, how long each may last
+    and on which proved domains (`agent_address_policy`, keyed by membership, set on the Agents
+    page with a recent sign-in). Without a policy it makes none. With its key, the agent makes one at
+    `/api/mail/<workspace>/<mailbox>/addresses` (`make`), lists those it made there (`GET`) and
+    ends one of its own early (`end`). The address goes to a mailbox whose grant lets the agent
+    send, never further than its policy says, and always ends: an agent never makes a permanent
+    one. It may make in a day as many as it may hold, so it can't end and make addresses in a
+    loop. Ended addresses keep their names for 30 days, so the workspace's agents together may
+    have made at most half of its 5,000 addresses, ended ones included, and people always have
+    room for theirs. One `INSERT … SELECT … WHERE` checks all of it in the statement that adds
+    the row: the policy, the grant, the proved domain and every count. Neither calls at once nor
+    an admin's change in the meantime can pass it, and only when it adds nothing is the reason
+    looked for.
+    Without a name of its own, Mail picks 12 random letters and digits. An agent can't take the
+    names that prove who runs a domain: a certificate authority writes to `admin`,
+    `administrator`, `webmaster`, `hostmaster` and `postmaster` before it issues a certificate
+    (CA/Browser Forum Baseline Requirements 3.2.2.4.4). Nor can it take RFC 2142's role names, or
+    `root` and `mailer-daemon` (`RESERVED_LOCAL_PARTS`). An admin can still add any of them.
+    Nor can it take a name that was removed from an address while it still took mail, or within
+    30 days of its end, until 30 days have passed since it stopped taking mail
+    (`removed_address`, written by a trigger however the row goes, and cleared by the daily run).
+    Whatever wrote to the old address may still, password resets say, and an agent mustn't be the
+    one to catch it.
+    `mail_address.agent_member_id` names the agent. Triggers stand in for a reference
+    (`0016_agent_address_triggers.sql`), as Drizzle Kit's `ADD COLUMN` drops `ON DELETE`:
+    - the agent must be an agent of the mailbox's workspace;
+    - when its membership goes, however that comes about, its addresses end at once and no longer
+      name it;
+    - when it may no longer send from a mailbox, its addresses there end at once, since it could
+      neither make them now nor see or end them there.
+
+    Lowering its limits, or taking a domain from them, leaves the addresses it has until they
+    end.
+
+    Owners and admins see on the workspace's page which agent made each address, and can remove
+    it.
   - **HTML.** A message's HTML is a page of its own, at `…/<message>/html`, which the message's
     page shows in a frame; its text, or the text made from its HTML, is a click away. What makes
     it safe is the policy it is served with (`framePolicy` in `html.ts`): `sandbox` without
@@ -536,7 +575,7 @@ Not built. This is where it is going, and it may change.
   as above.
 - **Remote images per sender**, remembered for those the reader trusts, where now they are asked
   for each time.
-- **Addresses and aliases an agent can make for itself.**
+- **Aliases that point at a mailbox.**
 - **Writing more than plain text**: formatting, attachments, forwarding and replying to all.
 
 ## What Cloudflare does with mail

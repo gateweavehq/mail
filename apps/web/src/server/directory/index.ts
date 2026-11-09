@@ -9,8 +9,16 @@ import { schema } from "../db";
 import { toRole } from "../workspaces";
 import { type LookUpDomain, proofName } from "./dns";
 
-const { mailAddress, mailDomain, mailbox, mailboxAccess, member, providerKey, resendInbound } =
-	schema;
+const {
+	mailAddress,
+	mailDomain,
+	mailbox,
+	mailboxAccess,
+	member,
+	providerKey,
+	resendInbound,
+	user,
+} = schema;
 
 // Caps, so a stranger signing up can't fill the database. Two requests at once can pass one by a
 // little, which does no harm.
@@ -145,9 +153,13 @@ export async function listDirectory(
 				domainVerifiedAt: mailDomain.verifiedAt,
 				mailboxId: mailAddress.mailboxId,
 				expiresAt: mailAddress.expiresAt,
+				// Under a name of its own: D1 gives rows keyed by column name, and the domain's is `name` too.
+				madeBy: sql<string | null>`${user.name}`.as("made_by"),
 			})
 			.from(mailAddress)
 			.innerJoin(mailDomain, eq(mailAddress.domainId, mailDomain.id))
+			.leftJoin(member, eq(member.id, mailAddress.agentMemberId))
+			.leftJoin(user, eq(user.id, member.userId))
 			.where(eq(mailDomain.organizationId, workspaceId))
 			.orderBy(asc(mailDomain.name), asc(mailAddress.localPart)),
 	]);
@@ -194,6 +206,7 @@ export async function listDirectory(
 				address: `${address.localPart}@${address.domain}`,
 				expiresAt: address.expiresAt?.getTime() ?? null,
 				domainProved: address.domainVerifiedAt !== null,
+				madeBy: admin ? address.madeBy : null,
 			})),
 			access: admin ? accessOf(box.everyone, readers.get(box.id) ?? []) : null,
 		})),

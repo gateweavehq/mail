@@ -215,6 +215,11 @@ function MailboxCard({
 						<li key={address.id} className="flex flex-wrap items-center justify-between gap-2">
 							<span className="min-w-0 break-all font-mono text-xs">{address.address}</span>
 							<span className="flex items-center gap-2 text-sm text-muted-foreground">
+								{address.madeBy && (
+									<span className="max-w-48 truncate" title={`Made by ${address.madeBy}`}>
+										Made by {address.madeBy}
+									</span>
+								)}
 								{address.domainProved ? (
 									address.expiresAt && <AddressEnd time={address.expiresAt} />
 								) : (
@@ -274,7 +279,8 @@ function MailboxCard({
 					}}
 					onClose={() => setRemovingAddress(null)}
 				>
-					Mail to it is refused from then on, and the name can be used again straight away.
+					Mail to it is refused from then on. People can use the name again straight away, agents
+					only after 30 days, as whatever wrote to it may still.
 				</ConfirmDialog>
 			)}
 		</li>
