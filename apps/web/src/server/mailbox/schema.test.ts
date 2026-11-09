@@ -19,6 +19,7 @@ describe("migrate", () => {
 		migrate(store);
 		expect(names(db, "table")).toEqual([
 			"delivery",
+			"event",
 			"held",
 			"message",
 			"message_reference",
@@ -29,6 +30,7 @@ describe("migrate", () => {
 			"message_search_docsize",
 			"message_search_idx",
 			"outgoing",
+			"place",
 			"schema_migration",
 			"thread",
 		]);
@@ -40,6 +42,7 @@ describe("migrate", () => {
 			{ version: 5 },
 			{ version: 6 },
 			{ version: 7 },
+			{ version: 8 },
 		]);
 	});
 

@@ -5,7 +5,10 @@
 	"name": "gateweave-mail",
 	"main": "apps/web/src/server.ts",
 	"compatibility_date": "2026-10-01",
-	"compatibility_flags": ["nodejs_compat"],
+	// `global_fetch_strictly_public`: a request Mail makes, such as a webhook's, to a host on its own
+	// zone goes in through Cloudflare like anyone's, past its security settings and to the Worker
+	// that serves it, never straight to the origin behind them.
+	"compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
 	// Settings made in the dashboard stay through a deploy. Wrangler otherwise removes a plain-text
 	// variable it does not find here, so the next push would quietly take away a setting.
 	"keep_vars": true,
@@ -29,16 +32,19 @@
 	// provisioned on first deploy, like the database.
 	"r2_buckets": [{ "binding": "RAW_MAIL", "bucket_name": "gateweave-mail" }],
 	// Rate limits on sign-in, password reset and email are counted in one Durable Object per client
-	// address or recipient. Each mailbox has one too, which holds the index of its messages.
+	// address or recipient. Each mailbox has one too, which holds the index of its messages, and each
+	// workspace one for its webhooks.
 	"durable_objects": {
 		"bindings": [
 			{ "name": "RATE_LIMITER", "class_name": "RateLimiter" },
-			{ "name": "MAILBOX", "class_name": "Mailbox" }
+			{ "name": "MAILBOX", "class_name": "Mailbox" },
+			{ "name": "WEBHOOKS", "class_name": "Webhooks" }
 		]
 	},
 	"exports": {
 		"RateLimiter": { "type": "durable-object", "storage": "sqlite" },
-		"Mailbox": { "type": "durable-object", "storage": "sqlite" }
+		"Mailbox": { "type": "durable-object", "storage": "sqlite" },
+		"Webhooks": { "type": "durable-object", "storage": "sqlite" }
 	},
 	// Email through Cloudflare Email Service. Nothing is sent until EMAIL_FROM names a sender on a
 	// domain onboarded to Email Sending; without it, Mail runs with email off.
@@ -77,7 +83,8 @@
 			"durable_objects": {
 				"bindings": [
 					{ "name": "RATE_LIMITER", "class_name": "RateLimiter" },
-					{ "name": "MAILBOX", "class_name": "Mailbox" }
+					{ "name": "MAILBOX", "class_name": "Mailbox" },
+					{ "name": "WEBHOOKS", "class_name": "Webhooks" }
 				]
 			},
 			"send_email": [{ "name": "EMAIL" }],

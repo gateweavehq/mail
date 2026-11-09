@@ -195,6 +195,7 @@ export async function startMail(
 					durableObjects: {
 						RATE_LIMITER: { className: "RateLimiter", useSQLite: true, scriptName: names[0] },
 						MAILBOX: { className: "Mailbox", useSQLite: true, scriptName: names[0] },
+						WEBHOOKS: { className: "Webhooks", useSQLite: true, scriptName: names[0] },
 					},
 					outboundService: (request: Request) => {
 						outbound.push(request.url);

@@ -24,11 +24,13 @@ import { Route as WorkspaceSettingsAgentsRouteImport } from './routes/$workspace
 import { Route as WorkspaceSettingsDomainsRouteImport } from './routes/$workspace/settings.domains'
 import { Route as WorkspaceSettingsMembersRouteImport } from './routes/$workspace/settings.members'
 import { Route as WorkspaceSettingsSuppressionsRouteImport } from './routes/$workspace/settings.suppressions'
+import { Route as WorkspaceSettingsWebhooksRouteImport } from './routes/$workspace/settings.webhooks'
 import { Route as WorkspaceSettingsWorkspaceRouteImport } from './routes/$workspace/settings.workspace'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 import { Route as ApiDirectoryWorkspaceRouteImport } from './routes/api/directory/$workspace'
 import { Route as ApiSuppressionsWorkspaceRouteImport } from './routes/api/suppressions/$workspace'
 import { Route as ApiV1SplatRouteImport } from './routes/api/v1/$'
+import { Route as ApiWebhooksWorkspaceRouteImport } from './routes/api/webhooks/$workspace'
 import { Route as WorkspaceMailboxesMailboxIndexRouteImport } from './routes/$workspace/mailboxes.$mailbox.index'
 import { Route as WorkspaceMailboxesMailboxMessageRouteImport } from './routes/$workspace/mailboxes.$mailbox.$message'
 import { Route as ApiInboundResendChannelRouteImport } from './routes/api/inbound/resend.$channel'
@@ -120,6 +122,12 @@ const WorkspaceSettingsSuppressionsRoute =
     path: '/suppressions',
     getParentRoute: () => WorkspaceSettingsRoute,
   } as any)
+const WorkspaceSettingsWebhooksRoute =
+  WorkspaceSettingsWebhooksRouteImport.update({
+    id: '/webhooks',
+    path: '/webhooks',
+    getParentRoute: () => WorkspaceSettingsRoute,
+  } as any)
 const WorkspaceSettingsWorkspaceRoute =
   WorkspaceSettingsWorkspaceRouteImport.update({
     id: '/workspace',
@@ -145,6 +153,11 @@ const ApiSuppressionsWorkspaceRoute =
 const ApiV1SplatRoute = ApiV1SplatRouteImport.update({
   id: '/api/v1/$',
   path: '/api/v1/$',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiWebhooksWorkspaceRoute = ApiWebhooksWorkspaceRouteImport.update({
+  id: '/api/webhooks/$workspace',
+  path: '/api/webhooks/$workspace',
   getParentRoute: () => rootRouteImport,
 } as any)
 const WorkspaceMailboxesMailboxIndexRoute =
@@ -234,11 +247,13 @@ export interface FileRoutesByFullPath {
   '/$workspace/settings/domains': typeof WorkspaceSettingsDomainsRoute
   '/$workspace/settings/members': typeof WorkspaceSettingsMembersRoute
   '/$workspace/settings/suppressions': typeof WorkspaceSettingsSuppressionsRoute
+  '/$workspace/settings/webhooks': typeof WorkspaceSettingsWebhooksRoute
   '/$workspace/settings/workspace': typeof WorkspaceSettingsWorkspaceRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/directory/$workspace': typeof ApiDirectoryWorkspaceRoute
   '/api/suppressions/$workspace': typeof ApiSuppressionsWorkspaceRoute
   '/api/v1/$': typeof ApiV1SplatRoute
+  '/api/webhooks/$workspace': typeof ApiWebhooksWorkspaceRoute
   '/$workspace/settings/': typeof WorkspaceSettingsIndexRoute
   '/$workspace/mailboxes/$mailbox/$message': typeof WorkspaceMailboxesMailboxMessageRoute
   '/api/inbound/resend/$channel': typeof ApiInboundResendChannelRoute
@@ -266,11 +281,13 @@ export interface FileRoutesByTo {
   '/$workspace/settings/domains': typeof WorkspaceSettingsDomainsRoute
   '/$workspace/settings/members': typeof WorkspaceSettingsMembersRoute
   '/$workspace/settings/suppressions': typeof WorkspaceSettingsSuppressionsRoute
+  '/$workspace/settings/webhooks': typeof WorkspaceSettingsWebhooksRoute
   '/$workspace/settings/workspace': typeof WorkspaceSettingsWorkspaceRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/directory/$workspace': typeof ApiDirectoryWorkspaceRoute
   '/api/suppressions/$workspace': typeof ApiSuppressionsWorkspaceRoute
   '/api/v1/$': typeof ApiV1SplatRoute
+  '/api/webhooks/$workspace': typeof ApiWebhooksWorkspaceRoute
   '/$workspace/settings': typeof WorkspaceSettingsIndexRoute
   '/$workspace/mailboxes/$mailbox/$message': typeof WorkspaceMailboxesMailboxMessageRoute
   '/api/inbound/resend/$channel': typeof ApiInboundResendChannelRoute
@@ -301,11 +318,13 @@ export interface FileRoutesById {
   '/$workspace/settings/domains': typeof WorkspaceSettingsDomainsRoute
   '/$workspace/settings/members': typeof WorkspaceSettingsMembersRoute
   '/$workspace/settings/suppressions': typeof WorkspaceSettingsSuppressionsRoute
+  '/$workspace/settings/webhooks': typeof WorkspaceSettingsWebhooksRoute
   '/$workspace/settings/workspace': typeof WorkspaceSettingsWorkspaceRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/directory/$workspace': typeof ApiDirectoryWorkspaceRoute
   '/api/suppressions/$workspace': typeof ApiSuppressionsWorkspaceRoute
   '/api/v1/$': typeof ApiV1SplatRoute
+  '/api/webhooks/$workspace': typeof ApiWebhooksWorkspaceRoute
   '/$workspace/settings/': typeof WorkspaceSettingsIndexRoute
   '/$workspace/mailboxes/$mailbox/$message': typeof WorkspaceMailboxesMailboxMessageRoute
   '/api/inbound/resend/$channel': typeof ApiInboundResendChannelRoute
@@ -337,11 +356,13 @@ export interface FileRouteTypes {
     | '/$workspace/settings/domains'
     | '/$workspace/settings/members'
     | '/$workspace/settings/suppressions'
+    | '/$workspace/settings/webhooks'
     | '/$workspace/settings/workspace'
     | '/api/auth/$'
     | '/api/directory/$workspace'
     | '/api/suppressions/$workspace'
     | '/api/v1/$'
+    | '/api/webhooks/$workspace'
     | '/$workspace/settings/'
     | '/$workspace/mailboxes/$mailbox/$message'
     | '/api/inbound/resend/$channel'
@@ -369,11 +390,13 @@ export interface FileRouteTypes {
     | '/$workspace/settings/domains'
     | '/$workspace/settings/members'
     | '/$workspace/settings/suppressions'
+    | '/$workspace/settings/webhooks'
     | '/$workspace/settings/workspace'
     | '/api/auth/$'
     | '/api/directory/$workspace'
     | '/api/suppressions/$workspace'
     | '/api/v1/$'
+    | '/api/webhooks/$workspace'
     | '/$workspace/settings'
     | '/$workspace/mailboxes/$mailbox/$message'
     | '/api/inbound/resend/$channel'
@@ -403,11 +426,13 @@ export interface FileRouteTypes {
     | '/$workspace/settings/domains'
     | '/$workspace/settings/members'
     | '/$workspace/settings/suppressions'
+    | '/$workspace/settings/webhooks'
     | '/$workspace/settings/workspace'
     | '/api/auth/$'
     | '/api/directory/$workspace'
     | '/api/suppressions/$workspace'
     | '/api/v1/$'
+    | '/api/webhooks/$workspace'
     | '/$workspace/settings/'
     | '/$workspace/mailboxes/$mailbox/$message'
     | '/api/inbound/resend/$channel'
@@ -436,6 +461,7 @@ export interface RootRouteChildren {
   ApiDirectoryWorkspaceRoute: typeof ApiDirectoryWorkspaceRoute
   ApiSuppressionsWorkspaceRoute: typeof ApiSuppressionsWorkspaceRoute
   ApiV1SplatRoute: typeof ApiV1SplatRoute
+  ApiWebhooksWorkspaceRoute: typeof ApiWebhooksWorkspaceRoute
   ApiInboundResendChannelRoute: typeof ApiInboundResendChannelRoute
   ApiMailWorkspaceMailboxAddressesRoute: typeof ApiMailWorkspaceMailboxAddressesRoute
   ApiMailWorkspaceMailboxOutboxRoute: typeof ApiMailWorkspaceMailboxOutboxRoute
@@ -554,6 +580,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof WorkspaceSettingsSuppressionsRouteImport
       parentRoute: typeof WorkspaceSettingsRoute
     }
+    '/$workspace/settings/webhooks': {
+      id: '/$workspace/settings/webhooks'
+      path: '/webhooks'
+      fullPath: '/$workspace/settings/webhooks'
+      preLoaderRoute: typeof WorkspaceSettingsWebhooksRouteImport
+      parentRoute: typeof WorkspaceSettingsRoute
+    }
     '/$workspace/settings/workspace': {
       id: '/$workspace/settings/workspace'
       path: '/workspace'
@@ -587,6 +620,13 @@ declare module '@tanstack/react-router' {
       path: '/api/v1/$'
       fullPath: '/api/v1/$'
       preLoaderRoute: typeof ApiV1SplatRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/webhooks/$workspace': {
+      id: '/api/webhooks/$workspace'
+      path: '/api/webhooks/$workspace'
+      fullPath: '/api/webhooks/$workspace'
+      preLoaderRoute: typeof ApiWebhooksWorkspaceRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/$workspace/mailboxes/$mailbox/': {
@@ -681,6 +721,7 @@ interface WorkspaceSettingsRouteChildren {
   WorkspaceSettingsDomainsRoute: typeof WorkspaceSettingsDomainsRoute
   WorkspaceSettingsMembersRoute: typeof WorkspaceSettingsMembersRoute
   WorkspaceSettingsSuppressionsRoute: typeof WorkspaceSettingsSuppressionsRoute
+  WorkspaceSettingsWebhooksRoute: typeof WorkspaceSettingsWebhooksRoute
   WorkspaceSettingsWorkspaceRoute: typeof WorkspaceSettingsWorkspaceRoute
   WorkspaceSettingsIndexRoute: typeof WorkspaceSettingsIndexRoute
 }
@@ -690,6 +731,7 @@ const WorkspaceSettingsRouteChildren: WorkspaceSettingsRouteChildren = {
   WorkspaceSettingsDomainsRoute: WorkspaceSettingsDomainsRoute,
   WorkspaceSettingsMembersRoute: WorkspaceSettingsMembersRoute,
   WorkspaceSettingsSuppressionsRoute: WorkspaceSettingsSuppressionsRoute,
+  WorkspaceSettingsWebhooksRoute: WorkspaceSettingsWebhooksRoute,
   WorkspaceSettingsWorkspaceRoute: WorkspaceSettingsWorkspaceRoute,
   WorkspaceSettingsIndexRoute: WorkspaceSettingsIndexRoute,
 }
@@ -731,6 +773,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiDirectoryWorkspaceRoute: ApiDirectoryWorkspaceRoute,
   ApiSuppressionsWorkspaceRoute: ApiSuppressionsWorkspaceRoute,
   ApiV1SplatRoute: ApiV1SplatRoute,
+  ApiWebhooksWorkspaceRoute: ApiWebhooksWorkspaceRoute,
   ApiInboundResendChannelRoute: ApiInboundResendChannelRoute,
   ApiMailWorkspaceMailboxAddressesRoute: ApiMailWorkspaceMailboxAddressesRoute,
   ApiMailWorkspaceMailboxOutboxRoute: ApiMailWorkspaceMailboxOutboxRoute,

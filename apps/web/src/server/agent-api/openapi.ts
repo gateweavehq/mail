@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { FailureStatus } from "./mail-access";
-import { OPERATIONS, type Operation, type Route, UNTRUSTED } from "./operations";
+import { OPERATIONS, type Operation, type Route } from "./operations";
+import { UNTRUSTED } from "./untrusted";
 
 /** Where the agent API's routes are. */
 export const API_PATH = "/api/v1";

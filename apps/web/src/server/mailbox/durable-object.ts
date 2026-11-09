@@ -5,6 +5,7 @@ import { createDb } from "../db";
 import { openProviderKey } from "../providers/keys";
 import { RESEND_API, type ResendFailure, sendWithResend } from "../providers/resend";
 import { suppressedAmong } from "../suppressions";
+import type { MailEvent } from "../webhooks/durable-object";
 import { bodyHash } from "./body";
 import { DELIVERIES_JSON, type DeliveryEvent, RECIPIENT_COUNT, recordDelivery } from "./deliveries";
 import { type Outcome, outcomeOf, resendOutcome, STALE_SENDING_MS, WAITS_MS } from "./delivery";
@@ -39,6 +40,12 @@ const INDEX_DELAY_MS = 1000;
 
 /** How long indexing waits after R2 failed to give it a message's mail. */
 const INDEX_RETRY_MS = 60_000;
+
+/** How many events one round hands to the workspace's webhooks. */
+const EVENT_BATCH = 100;
+
+/** How long the outbox waits after the workspace's webhooks couldn't take its events. */
+const EVENT_RETRY_MS = 60_000;
 
 /** What `email()` knows of a message before storing it. */
 export interface Arrival {
@@ -113,6 +120,23 @@ export type Awaiting = {
 	subject: string | null;
 	sentBy: string | null;
 	arrivedAt: number;
+};
+
+/** An event in the outbox, with what its message is now; the message's fields are null once it's gone. */
+type EventRow = {
+	id: string;
+	type: string;
+	messageId: string | null;
+	threadId: string | null;
+	arrivedAt: number | null;
+	fromHeader: string | null;
+	subject: string | null;
+	date: string | null;
+	envelopeTo: string | null;
+	size: number | null;
+	dmarc: string | null;
+	verifiedDomain: string | null;
+	state: string | null;
 };
 
 /** A message as a try finds it. */
@@ -281,6 +305,7 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			.exec<{ bytes: number; latest: number }>("SELECT bytes, latest FROM held")
 			.one();
 		if (held.bytes + arrival.size > mailboxLimit(this.env)) return { ok: false, reason: "full" };
+		this.#place(arrival.workspaceId, arrival.mailboxId);
 		const id = crypto.randomUUID();
 		const object = `${arrival.workspaceId}/${arrival.mailboxId}/${id}.eml`;
 		// Later than everything before it, so the order of arrival is the order shown even when two
@@ -397,8 +422,14 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 		const sql = this.ctx.storage.sql;
 		return this.ctx.storage.transactionSync(() => {
 			const me = sql
-				.exec<{ ownId: string | null; subjectKey: string; arrivedAt: number }>(
-					`SELECT own_id AS ownId, subject_key AS subjectKey, arrived_at AS arrivedAt
+				.exec<{
+					ownId: string | null;
+					subjectKey: string;
+					arrivedAt: number;
+					sentBy: string | null;
+				}>(
+					`SELECT own_id AS ownId, subject_key AS subjectKey, arrived_at AS arrivedAt,
+						sent_by AS sentBy
 					FROM message WHERE id = ? AND state = 'pending'`,
 					id,
 				)
@@ -430,6 +461,16 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			}
 			sql.exec("UPDATE message SET state = 'stored', thread_id = ? WHERE id = ?", threadId, id);
 			this.#refreshThread(threadId);
+			// Told to the workspace's webhooks from the outbox, so mail that is kept is always told
+			// of, and mail that isn't never is.
+			if (me.sentBy === null) {
+				sql.exec(
+					"INSERT INTO event (id, type, message, at) VALUES (?, 'message.received', ?, ?)",
+					crypto.randomUUID(),
+					id,
+					Date.now(),
+				);
+			}
 			return "stored";
 		});
 	}
@@ -450,6 +491,7 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			.exec<{ bytes: number; latest: number }>("SELECT bytes, latest FROM held")
 			.one();
 		if (held.bytes + size > mailboxLimit(this.env)) return { ok: false, reason: "full" };
+		this.#place(sending.workspaceId, sending.mailboxId);
 		const id = crypto.randomUUID();
 		const object = `${sending.workspaceId}/${sending.mailboxId}/${id}.eml`;
 		const arrivedAt = Math.max(Date.now(), held.latest + 1);
@@ -1015,6 +1057,82 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 		await deletePrefix(this.env.RAW_MAIL, prefix);
 	}
 
+	/** Keeps which workspace and mailbox this object is, for the events it tells of. */
+	#place(workspaceId: string, mailboxId: string): void {
+		this.ctx.storage.sql.exec(
+			"INSERT OR IGNORE INTO place (only, workspace_id, mailbox_id) VALUES (1, ?, ?)",
+			workspaceId,
+			mailboxId,
+		);
+	}
+
+	/**
+	 * Hands the outbox's events to the workspace's webhook object, oldest first, and drops them
+	 * once it has them. One whose message is gone by then, as when someone removed it, is dropped
+	 * untold. When the object can't take them, they wait for the alarm to try again.
+	 */
+	async #tellWebhooks(): Promise<"done" | "more" | "failed"> {
+		const sql = this.ctx.storage.sql;
+		const rows = sql
+			.exec<EventRow>(
+				`SELECT event.id AS id, event.type AS type, message.id AS messageId,
+					message.thread_id AS threadId, message.arrived_at AS arrivedAt,
+					message.from_header AS fromHeader, message.subject AS subject,
+					message.date_header AS date, message.envelope_to AS envelopeTo, message.size AS size,
+					message.dmarc AS dmarc, message.verified_domain AS verifiedDomain,
+					message.state AS state
+				FROM event LEFT JOIN message ON message.id = event.message
+				ORDER BY event.at, event.id LIMIT ?`,
+				EVENT_BATCH + 1,
+			)
+			.toArray();
+		if (rows.length === 0) return "done";
+		const batch = rows.slice(0, EVENT_BATCH);
+		const place = sql
+			.exec<{ workspaceId: string; mailboxId: string }>(
+				"SELECT workspace_id AS workspaceId, mailbox_id AS mailboxId FROM place",
+			)
+			.toArray()[0];
+		const events = batch.flatMap((row): MailEvent[] =>
+			row.state === "stored" && row.messageId && row.threadId && row.arrivedAt !== null
+				? [
+						{
+							id: row.id,
+							type: "message.received",
+							message: {
+								id: row.messageId,
+								threadId: row.threadId,
+								arrivedAt: row.arrivedAt,
+								from: row.fromHeader,
+								subject: row.subject,
+								date: row.date,
+								envelopeTo: row.envelopeTo ?? "",
+								size: row.size ?? 0,
+								dmarc: row.dmarc,
+								verifiedDomain: row.verifiedDomain,
+							},
+						},
+					]
+				: [],
+		);
+		if (place && events.length > 0) {
+			try {
+				await this.env.WEBHOOKS.getByName(place.workspaceId).accept(
+					place.workspaceId,
+					place.mailboxId,
+					events,
+				);
+			} catch (error) {
+				console.error("mailbox: telling webhooks of mail failed; the alarm tries again", {
+					name: error instanceof Error ? error.name : "unknown",
+				});
+				return "failed";
+			}
+		}
+		for (const row of batch) sql.exec("DELETE FROM event WHERE id = ?", row.id);
+		return rows.length > EVENT_BATCH ? "more" : "done";
+	}
+
 	/** Has the alarm run soon to index what waits, unless it runs sooner anyway. */
 	async #indexSoon(): Promise<void> {
 		const at = Date.now() + INDEX_DELAY_MS;
@@ -1046,6 +1164,7 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			await this.env.RAW_MAIL.delete(chunk.map((row) => row.object));
 			for (const row of chunk) sql.exec("DELETE FROM message WHERE id = ?", row.id);
 		}
+		const told = await this.#tellWebhooks();
 		const stale = Date.now() - STALE_SENDING_MS;
 		// A stored message whose first try never began, as when this object stopped just before it,
 		// sent nothing, so it waits to be tried.
@@ -1104,6 +1223,7 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			sends.waiting,
 			sends.sending === null ? null : sends.sending + STALE_SENDING_MS,
 			indexed === "more" ? Date.now() : indexed === "failed" ? Date.now() + INDEX_RETRY_MS : null,
+			told === "more" ? Date.now() : told === "failed" ? Date.now() + EVENT_RETRY_MS : null,
 			await this.ctx.storage.getAlarm(),
 		].filter((at): at is number => at !== null);
 		if (times.length > 0) await this.ctx.storage.setAlarm(Math.min(...times));
