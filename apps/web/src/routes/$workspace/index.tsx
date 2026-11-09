@@ -214,7 +214,7 @@ function MailboxCard({
 					{box.addresses.map((address) => (
 						<li key={address.id} className="flex flex-wrap items-center justify-between gap-2">
 							<span className="min-w-0 break-all font-mono text-xs">{address.address}</span>
-							<span className="flex items-center gap-2 text-sm text-muted-foreground">
+							<span className="flex min-w-0 items-center gap-2 text-sm text-muted-foreground">
 								{address.madeBy && (
 									<span className="max-w-48 truncate" title={`Made by ${address.madeBy}`}>
 										Made by {address.madeBy}
@@ -288,7 +288,11 @@ function MailboxCard({
 }
 
 function AddressEnd({ time }: { time: number }) {
-	return <span>{time > Date.now() ? `Ends ${formatShortDate(time)}` : "Ended"}</span>;
+	return (
+		<span className="shrink-0 whitespace-nowrap">
+			{time > Date.now() ? `Ends ${formatShortDate(time)}` : "Ended"}
+		</span>
+	);
 }
 
 const LIFETIMES = [
