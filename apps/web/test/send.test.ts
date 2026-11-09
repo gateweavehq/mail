@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { isOwnId } from "../src/server/mailbox/own-id";
 import { createWorkspace, signUp } from "./accounts";
 import { type SentEmail, startMail } from "./mail-worker";
 
@@ -329,7 +330,9 @@ describe("a reply", () => {
 		});
 		expect(email?.headers?.["In-Reply-To"]).toBe("<first@example.org>");
 		expect(email?.headers?.References).toMatch(
-			new RegExp(`^<zero@example\\.org> <first@example\\.org> <[0-9a-f-]{36}@${box.domain}>$`),
+			new RegExp(
+				`^<zero@example\\.org> <first@example\\.org> <[0-9a-f-]{36}[.][A-Za-z0-9_-]{22}@${box.domain}>$`,
+			),
 		);
 
 		const after = await thread(box, first.threadId);
@@ -370,7 +373,7 @@ describe("a reply", () => {
 		expect(email?.headers?.["In-Reply-To"]).toBe("<locked@example.org>");
 		// Without the ids before it, which only its mail holds.
 		expect(email?.headers?.References).toMatch(
-			new RegExp(`^<locked@example\\.org> <[0-9a-f-]{36}@${box.domain}>$`),
+			new RegExp(`^<locked@example\\.org> <[0-9a-f-]{36}[.][A-Za-z0-9_-]{22}@${box.domain}>$`),
 		);
 	});
 
@@ -390,7 +393,7 @@ describe("a reply", () => {
 		const [email] = await sentTo(`ada.${box.slug}@example.org`);
 		expect(email?.headers?.["In-Reply-To"]).toBeUndefined();
 		expect(email?.headers?.References).toMatch(
-			new RegExp(`^<ok@example\\.org> <[0-9a-f-]{36}@${box.domain}>$`),
+			new RegExp(`^<ok@example\\.org> <[0-9a-f-]{36}[.][A-Za-z0-9_-]{22}@${box.domain}>$`),
 		);
 
 		// With nothing to thread it by in what is sent, its copy still is, by the ids it answers.
@@ -402,7 +405,9 @@ describe("a reply", () => {
 		});
 		expect(answer.threadId).toBe(alone.threadId);
 		const [plain] = await sentTo(`grace.${box.slug}@example.org`);
-		expect(plain?.headers?.References).toMatch(new RegExp(`^<[0-9a-f-]{36}@${box.domain}>$`));
+		expect(plain?.headers?.References).toMatch(
+			new RegExp(`^<[0-9a-f-]{36}[.][A-Za-z0-9_-]{22}@${box.domain}>$`),
+		);
 	});
 
 	it("to a message the mailbox wrote finds its thread, whatever Email Service called it", async () => {
@@ -410,7 +415,10 @@ describe("a reply", () => {
 		const sent = await send(box, { to: ["ada@example.org"], subject: "Your order" });
 		const [email] = await sentTo("ada@example.org");
 		const ours = email?.headers?.References;
-		expect(ours).toMatch(new RegExp(`^<[0-9a-f-]{36}@${box.domain}>$`));
+		expect(ours).toMatch(new RegExp(`^<[0-9a-f-]{36}[.][A-Za-z0-9_-]{22}@${box.domain}>$`));
+		// Signed for the mailbox that sent it, under the deployment's secret.
+		expect(await isOwnId(mail.secret, box.mailboxId, ours ?? "")).toBe(true);
+		expect(await isOwnId(mail.secret, crypto.randomUUID(), ours ?? "")).toBe(false);
 		// Email Service's own Message-ID is one Mail never saw; Mail's id comes back in References.
 		const answer = await arrive(box, [
 			"Subject: Re: Your order",

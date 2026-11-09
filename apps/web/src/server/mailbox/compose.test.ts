@@ -5,7 +5,6 @@ import {
 	headerText,
 	inCopyOrder,
 	MAX_HEADER_VALUE,
-	newOwnId,
 	type Outgoing,
 	rawCopy,
 	referencesValue,
@@ -310,11 +309,6 @@ describe("sendRequest", () => {
 		expect(fresh).not.toHaveProperty("cc");
 		expect(fresh.headers).toEqual({ References: "<mine@acme.test>" });
 	});
-});
-
-it("gives a new message an id of its own on the domain it is sent from", () => {
-	expect(newOwnId("support@acme.test")).toMatch(/^[0-9a-f-]{36}@acme\.test$/);
-	expect(newOwnId("support@acme.test")).not.toBe(newOwnId("support@acme.test"));
 });
 
 it("puts Re: before a subject once", () => {

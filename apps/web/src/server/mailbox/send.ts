@@ -29,7 +29,6 @@ import {
 	dateHeader,
 	headerText,
 	inCopyOrder,
-	newOwnId,
 	type Outgoing,
 	plainName,
 	rawCopy,
@@ -40,6 +39,7 @@ import { checkFiles } from "./files";
 import { firstHeader, type Header, parseHeaders, readHeaderBlock } from "./headers";
 import { sendableHtml } from "./html";
 import type { mailboxStub } from "./index";
+import { newOwnId } from "./own-id";
 import { decoded } from "./people";
 import { openMailbox } from "./read";
 import { rawMail, SealError } from "./sealed";
@@ -328,7 +328,7 @@ export async function outboxAnswer(
 		files: files.files,
 		inReplyTo: headerSafe(answering.inReplyTo),
 		references: answering.references.filter(isHeaderSafe),
-		ownId: newOwnId(sender),
+		ownId: await newOwnId(env.BETTER_AUTH_SECRET, box.id, sender),
 	};
 	const date = new Date();
 	// Headers as the copy has them, unfolded, which is how arriving mail's are kept.
