@@ -19,6 +19,8 @@ export async function currentMember(slug: string) {
 export interface Caller {
 	userId: string;
 	membership: Membership;
+	/** Whether it asks with an agent's key, rather than as someone signed in. */
+	keyed: boolean;
 }
 
 /**
@@ -43,12 +45,12 @@ export async function currentCaller(slug: string): Promise<Caller | null> {
 	const headers = getRequestHeaders();
 	if (!bearsKey(headers)) {
 		const member = await currentMember(slug);
-		return member && { userId: member.user.id, membership: member.membership };
+		return member && { userId: member.user.id, membership: member.membership, keyed: false };
 	}
 	const key = /^bearer\s+(\S+)$/i.exec(headers.get("authorization")?.trim() ?? "")?.[1];
 	const agent = key ? await findAgentByKey(db, key) : null;
 	// A paused agent's key reaches nothing, as a revoked one doesn't; the gateways say why.
 	if (!agent || "paused" in agent || agent.slug !== slug) return null;
 	const membership = await findMembership(db, slug, agent.userId);
-	return membership && { userId: agent.userId, membership };
+	return membership && { userId: agent.userId, membership, keyed: true };
 }

@@ -3,6 +3,7 @@ import { parseDomainName, parseLocalPart, splitRecipient } from "../../lib/addre
 import type { Directory, MailRoute, ResendReceiving } from "../../lib/directory";
 import type { SendsWith } from "../../lib/providers";
 import { canReadMailbox, isAdminRole, type MemberRole } from "../../lib/roles";
+import { type AgentLogNote, noteAgent } from "../agent-log";
 import { AGENT_ROLE, isAgentMembership } from "../auth/agents";
 import type { Database } from "../db";
 import { schema } from "../db";
@@ -441,6 +442,22 @@ export async function setMailboxAccess(
 	if ((members?.total ?? 0) !== ids.length) {
 		return refuse("Someone you chose isn't in this workspace any more. Reload and try again.", 409);
 	}
+	// The agents given it before or now, as they had it, for their logs.
+	const agents = await db
+		.select({ id: member.id, granted: mailboxAccess.memberId, send: mailboxAccess.send })
+		.from(member)
+		.leftJoin(
+			mailboxAccess,
+			and(eq(mailboxAccess.mailboxId, box.id), eq(mailboxAccess.memberId, member.id)),
+		)
+		.where(
+			and(
+				eq(member.organizationId, workspaceId),
+				eq(member.role, AGENT_ROLE),
+				or(sql`${member.id} IN ${chosen}`, isNotNull(mailboxAccess.memberId)),
+			),
+		)
+		.all();
 	await db.batch([
 		db.update(mailbox).set({ everyone: change.everyone }).where(eq(mailbox.id, box.id)),
 		db
@@ -467,6 +484,24 @@ export async function setMailboxAccess(
 			})
 			.where(eq(mailboxAccess.mailboxId, box.id)),
 	]);
+	const notes = agents.flatMap((agent): AgentLogNote[] => {
+		const before = agent.granted === null ? "none" : agent.send ? "send" : "read";
+		const after = !ids.includes(agent.id) ? "none" : senders.includes(agent.id) ? "send" : "read";
+		if (before === after) return [];
+		const detail = { none: "can't read it", read: "may read it", send: "may read and send" }[after];
+		return [
+			{
+				workspaceId,
+				agentMemberId: agent.id,
+				by: { userId: grantedBy },
+				action: "access.changed",
+				mailboxId: box.id,
+				detail,
+			},
+		];
+	});
+	const [first, ...rest] = notes;
+	if (first) await noteAgent(db, first, ...rest);
 	return { ok: true };
 }
 

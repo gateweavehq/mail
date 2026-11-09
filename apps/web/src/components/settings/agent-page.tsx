@@ -3,9 +3,11 @@ import { ArrowLeft, Bot, Clock, ShieldCheck } from "lucide-react";
 import type { ReactNode } from "react";
 import { senderName } from "#/components/mail/message-view";
 import { sentLabel } from "#/components/mail/sent-status";
+import { AgentLog } from "#/components/settings/agent-log";
 import { PauseButton, PausedNote } from "#/components/settings/agents-settings";
 import { useWorkspace } from "#/components/workspace/context";
 import { addressPolicySummary } from "#/lib/agent-addresses";
+import type { AgentLogPage } from "#/lib/agent-log";
 import { policySummary } from "#/lib/agent-policy";
 import { AGENT_PAGE_LISTED, type AgentActivity, type AgentMessage } from "#/lib/agents";
 import { formatDateTime, formatRelative, formatShortDate } from "#/lib/dates";
@@ -15,9 +17,9 @@ const NAMED_RECIPIENTS = 2;
 
 /**
  * One agent, for an owner or admin: what it may do and holds, what it wrote, what of that waits
- * for a person, and what came to its addresses. Each message opens its thread.
+ * for a person, what came to its addresses, and its log. Each message opens its thread.
  */
-export function AgentPage({ activity }: { activity: AgentActivity }) {
+export function AgentPage({ activity, log }: { activity: AgentActivity; log: AgentLogPage }) {
 	const { slug } = useWorkspace();
 	const { agent, mailboxes, addresses, held, wrote, received, unread } = activity;
 	const lastUsed = Math.max(0, ...agent.keys.map((key) => key.lastUsedAt ?? 0));
@@ -154,6 +156,14 @@ export function AgentPage({ activity }: { activity: AgentActivity }) {
 				) : (
 					<Messages messages={received} kind="received" />
 				)}
+			</Section>
+
+			<Section title="Activity" id="agent-activity">
+				<p className="text-sm text-muted-foreground">
+					What it did with its keys, such as each message it read, and what people changed about it.
+					A message's subject is kept here, never what it says.
+				</p>
+				<AgentLog agent={agent} newest={log} />
 			</Section>
 		</div>
 	);

@@ -27,7 +27,8 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
   `wrangler.jsonc` (`apps/web/src/server/db/prune.ts`). Better Auth removes a session or a
   verification only when something looks it up, so those nobody comes back for would otherwise
   stay, with the address and browser a session holds, and invitations with the address they were
-  sent to. Suppressions that have ended go then too, and removed ones after 15 days.
+  sent to. Suppressions that have ended go then too, and removed ones after 15 days, and an
+  agent's log after 90 days.
 - **Headers** go on every answer (`apps/web/src/server/security-headers.ts`): `nosniff`, a referrer
   rule and, over HTTPS, `Strict-Transport-Security`. A page also gets `X-Frame-Options`,
   `Cache-Control: private, no-store` and a Content-Security-Policy with a nonce made for that
@@ -212,6 +213,20 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     failing. A request with a key, the agent's own included, and anyone but an owner or admin get
     the same 404 as for an agent that doesn't exist. While it is open and in sight, it looks again
     every 15 seconds.
+  - **An agent's log** (`server/agent-log.ts`, D1 `agent_log`) is on its page, under Activity, and
+    at `/api/agents/<workspace>/<agent>/log`, for owners and admins as the page is, a page of 50 at
+    a time, of one kind or all. It notes what the agent did with its key: each message it opened
+    (`message.read`, by `readMessage` and the raw and HTML routes) or took only a code from
+    (`code.read`), what it sent or wrote to wait (`outboxAnswer`), the addresses it made and
+    ended, and its webhooks. Those are the routes the MCP tools and the REST API go through, so
+    one note covers all three. It notes too what people did to it: making it, renaming it, its
+    keys, its policies, pausing and resuming it, its mailboxes (`setMailboxAccess`, by the change
+    for each agent), approving or rejecting what it wrote, and an admin's pause, test or deletion
+    of its webhook. An entry keeps who did it, the mailbox, the message's id, thread and subject,
+    and a few words, such as the address made or what a policy became, never what a message says
+    or a webhook URL's path. A note is written after what it tells of and can't undo it: when D1
+    refuses it, the Worker's log says so, by action. The daily run lets entries go after 90 days,
+    and an agent's goes with it.
   - **Addresses an agent makes** (`server/directory/agent-addresses.ts`), such as one for each
     sign-up or task. An owner or admin sets how many it may hold at once, how long each may last
     and on which proved domains (`agent_address_policy`, keyed by membership, set on the Agents

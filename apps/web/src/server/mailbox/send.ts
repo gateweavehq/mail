@@ -16,6 +16,7 @@ import {
 import { isAdminRole } from "../../lib/roles";
 import { type Suppression, suppressedRefusal } from "../../lib/suppressions";
 import { bearsKey } from "../access";
+import { type AgentLogNote, noteAgent } from "../agent-log";
 import { db } from "../auth";
 import { AGENT_PAUSED, agentPolicyOf, pausedAmong } from "../auth/agents";
 import { appOrigin } from "../origin";
@@ -39,6 +40,7 @@ import { checkFiles } from "./files";
 import { firstHeader, parseHeaders, readHeaderBlock } from "./headers";
 import { sendableHtml } from "./html";
 import type { mailboxStub } from "./index";
+import { decoded } from "./people";
 import { openMailbox } from "./read";
 import { envelopeAddresses, replySender, senderAddresses } from "./senders";
 import { textOfHtml } from "./text";
@@ -180,9 +182,14 @@ export async function outboxAnswer(
 		if (!writerOrAdmin && !isHeld(row)) {
 			return refuse("Only who wrote it, or an owner or admin, can discard it.", 403);
 		}
-		return (await box.stub.discard(action.message, !writerOrAdmin, memberId))
-			? answer({ ok: true })
-			: refuse("Only a message that isn't sent can be discarded.", 409);
+		if (!(await box.stub.discard(action.message, !writerOrAdmin, memberId))) {
+			return refuse("Only a message that isn't sent can be discarded.", 409);
+		}
+		// Only an agent's mail waits for approval, so discarding it is rejecting what it wrote.
+		if (row?.sentBy && isHeld(row)) {
+			await noteAgent(db, heldNote(row.sentBy, row, "message.rejected", box, workspaceId));
+		}
+		return answer({ ok: true });
 	}
 
 	if (action.action === "approve") {
@@ -196,9 +203,11 @@ export async function outboxAnswer(
 		const allowed = await allowSend(workspaceId);
 		if (!allowed.allowed) return tooMany(allowed.retryAfter);
 		const status = await box.stub.approve(action.message, memberId);
-		return status
-			? answer({ ok: true, ...status })
-			: refuse("It isn't waiting for approval any more.", 409);
+		if (!status) return refuse("It isn't waiting for approval any more.", 409);
+		if (row.sentBy) {
+			await noteAgent(db, heldNote(row.sentBy, row, "message.approved", box, workspaceId));
+		}
+		return answer({ ok: true, ...status });
 	}
 
 	if (action.action === "send-again") {
@@ -341,7 +350,40 @@ export async function outboxAnswer(
 		draft: action.draft,
 		hold,
 	});
+	if (agent && sent.ok) {
+		await noteAgent(db, {
+			workspaceId,
+			agentMemberId: memberId,
+			by: "agent",
+			action: sent.state === "held" ? "message.held" : "message.sent",
+			mailboxId: box.id,
+			targetId: sent.id,
+			threadId: sent.threadId,
+			subject: message.subject,
+			detail: recipients.join(", "),
+		});
+	}
 	return sentAnswer(sent);
+}
+
+/** An entry, for the log of the agent that wrote it, of what a person did to a held message. */
+function heldNote(
+	writer: string,
+	row: { id: string; threadId: string; subject: string | null },
+	action: "message.approved" | "message.rejected",
+	box: { id: string; member: { userId: string } },
+	workspaceId: string,
+): AgentLogNote {
+	return {
+		workspaceId,
+		agentMemberId: writer,
+		by: { userId: box.member.userId },
+		action,
+		mailboxId: box.id,
+		targetId: row.id,
+		threadId: row.threadId,
+		subject: decoded(row.subject),
+	};
 }
 
 const TOO_LARGE =

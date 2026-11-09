@@ -66,7 +66,15 @@ export interface MailAccess {
 		threadId: string,
 		before: MessageCursor | null,
 	): Promise<ThreadPage | null>;
-	message(mailboxId: string, messageId: string): Promise<OpenedMessage | null>;
+	/**
+	 * Opens a message, and notes in the agent's log that it read it, or only a code in it, or with
+	 * null nothing, as when Mail opens it only to address a reply.
+	 */
+	message(
+		mailboxId: string,
+		messageId: string,
+		reading?: "message.read" | "code.read" | null,
+	): Promise<OpenedMessage | null>;
 	/** Lists the addresses it made in a mailbox, with `null`, or makes or ends one. */
 	addresses(mailboxId: string, action: AgentAddressAction | null): Promise<Answer>;
 	outbox(mailboxId: string, action: OutboxAction): Promise<Answer>;

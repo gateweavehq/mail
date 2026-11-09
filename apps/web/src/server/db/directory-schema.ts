@@ -248,6 +248,37 @@ export const agentMailbox = sqliteTable(
 );
 
 /**
+ * What an agent did with its key, and what people did to it (`lib/agent-log.ts`), for its page.
+ * Never what a message says: ids, a subject at most. The agent is named by membership without a
+ * reference, so its log outlives it until the daily run lets entries older than
+ * `AGENT_LOG_DAYS` go; the workspace's going takes it at once.
+ */
+export const agentLog = sqliteTable(
+	"agent_log",
+	{
+		id: text("id").primaryKey(),
+		organizationId: text("organization_id")
+			.notNull()
+			.references(() => organization.id, { onDelete: "cascade" }),
+		agentMemberId: text("agent_member_id").notNull(),
+		/** Whether the agent did it with its key; otherwise a person did, `actor_user_id`. */
+		byAgent: integer("by_agent", { mode: "boolean" }).notNull(),
+		actorUserId: text("actor_user_id").references(() => user.id, { onDelete: "set null" }),
+		action: text("action").notNull(),
+		mailboxId: text("mailbox_id"),
+		targetId: text("target_id"),
+		threadId: text("thread_id"),
+		subject: text("subject"),
+		detail: text("detail"),
+		at: integer("at", { mode: "timestamp_ms" }).notNull(),
+	},
+	(table) => [
+		index("agent_log_agent_idx").on(table.agentMemberId, table.at, table.id),
+		index("agent_log_at_idx").on(table.at),
+	],
+);
+
+/**
  * A workspace's key for a mail provider, sealed with the deployment's `SECRETS_KEY` and the
  * workspace's id (`server/secrets.ts`). It is never sent to a browser: pages see its last four
  * characters. It goes with the workspace.

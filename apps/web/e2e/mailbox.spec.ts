@@ -809,6 +809,18 @@ test("an agent's mail to someone its settings don't name waits until a person ap
 		page.getByRole("region", { name: "What it wrote" }).getByRole("link", { name: /^Your parcel/ }),
 	).toContainText("Sent");
 	await expect(page.getByRole("region", { name: "Waiting for approval" })).toHaveCount(0);
+
+	// Its log says what it wrote and who approved it, and, of one kind, what people changed.
+	const activity = page.getByRole("region", { name: "Activity" });
+	await expect(activity.getByRole("listitem").first()).toContainText(
+		`${person.name} approved its message`,
+	);
+	await expect(activity.getByText("Sorter wrote a message that waits for approval")).toBeVisible();
+	const byPeople = activity.getByRole("button", { name: "Changes by people" });
+	await byPeople.click();
+	await expect(byPeople).toHaveAttribute("aria-pressed", "true");
+	await expect(activity.getByText(`${person.name} changed what it may send`)).toBeVisible();
+	await expect(activity.getByText(/wrote a message/)).toHaveCount(0);
 });
 
 /** Long enough that, on a phone, it has to give way to the rest of an address's row. */

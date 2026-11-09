@@ -3,6 +3,7 @@ import { z } from "zod";
 import { parseDomainName } from "../../lib/addresses";
 import { agentLocalPart, MAX_AGENT_ADDRESS_DAYS, randomLocalPart } from "../../lib/agent-addresses";
 import { bearsKey } from "../access";
+import { noteAgent } from "../agent-log";
 import { db } from "../auth";
 import type { Database } from "../db";
 import { schema } from "../db";
@@ -272,8 +273,8 @@ async function whyNot(
 }
 
 /**
- * Ends one of the live addresses this agent made in this mailbox, now. Its name is kept a while,
- * refusing mail, as any address that ends is.
+ * Ends one of the live addresses this agent made in this mailbox, now, and gives it, or null when
+ * there was none. Its name is kept a while, refusing mail, as any address that ends is.
  */
 export async function endAgentAddress(
 	db: Database,
@@ -281,8 +282,8 @@ export async function endAgentAddress(
 	mailboxId: string,
 	id: string,
 	now: Date,
-): Promise<boolean> {
-	const { meta } = await db
+): Promise<string | null> {
+	const [ended] = await db
 		.update(mailAddress)
 		.set({ expiresAt: now })
 		.where(
@@ -293,8 +294,15 @@ export async function endAgentAddress(
 				liveAt(now),
 			),
 		)
-		.run();
-	return meta.changes > 0;
+		.returning({ localPart: mailAddress.localPart, domainId: mailAddress.domainId })
+		.all();
+	if (!ended) return null;
+	const domain = await db
+		.select({ name: mailDomain.name })
+		.from(mailDomain)
+		.where(eq(mailDomain.id, ended.domainId))
+		.get();
+	return `${ended.localPart}@${domain?.name ?? ""}`;
 }
 
 const Id = z.string().min(1).max(64);
@@ -353,10 +361,12 @@ export async function agentAddressesAnswer(
 	const parsed = Action.safeParse(await request.json().catch(() => null));
 	if (!parsed.success) return answer({ ok: false, error: "That isn't a change we know." }, 400);
 	const action = parsed.data;
+	const note = { workspaceId, agentMemberId: memberId, by: "agent" as const, mailboxId: box.id };
 	if (action.action === "end") {
-		return (await endAgentAddress(db, memberId, box.id, action.id, now))
-			? answer({ ok: true })
-			: answer({ ok: false, error: "Not found" }, 404);
+		const ended = await endAgentAddress(db, memberId, box.id, action.id, now);
+		if (ended === null) return answer({ ok: false, error: "Not found" }, 404);
+		await noteAgent(db, { ...note, action: "address.ended", targetId: action.id, detail: ended });
+		return answer({ ok: true });
 	}
 	// An address takes mail for the mailbox, so the agent must be let send from it, which the
 	// statement that adds it checks with the rest.
@@ -366,7 +376,12 @@ export async function agentAddressesAnswer(
 		{ domain: action.domain, localPart: action.localPart, days: action.days },
 		now,
 	);
-	return made.ok
-		? answer({ ok: true, address: made.address })
-		: answer({ ok: false, error: made.error }, made.status);
+	if (!made.ok) return answer({ ok: false, error: made.error }, made.status);
+	await noteAgent(db, {
+		...note,
+		action: "address.made",
+		targetId: made.address.id,
+		detail: made.address.address,
+	});
+	return answer({ ok: true, address: made.address });
 }

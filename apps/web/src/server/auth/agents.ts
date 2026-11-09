@@ -13,6 +13,7 @@ import * as z from "zod";
 import {
 	type AgentAddressPolicy,
 	AgentAddressPolicyInput,
+	addressPolicySummary,
 	DEFAULT_AGENT_ADDRESS_POLICY,
 	readDomains,
 } from "../../lib/agent-addresses";
@@ -20,9 +21,11 @@ import {
 	type AgentPolicy,
 	AgentPolicyInput,
 	DEFAULT_AGENT_POLICY,
+	policySummary,
 	readAllowed,
 } from "../../lib/agent-policy";
 import { isAdminRole } from "../../lib/roles";
+import { type AgentLogNote, dropAgentLog, noteAgent } from "../agent-log";
 import type { Database } from "../db";
 import { schema } from "../db";
 import { liveAddressCounts } from "../directory/agent-address-store";
@@ -299,6 +302,22 @@ export function agentMembers({ db }: { db: Database }) {
 		return agent;
 	}
 
+	/** Notes in an agent's log what the person signed in did to it. */
+	async function noteChange(
+		agent: { memberId: string; organizationId: string },
+		userId: string,
+		action: AgentLogNote["action"],
+		more: Pick<AgentLogNote, "targetId" | "detail"> = {},
+	) {
+		await noteAgent(db, {
+			workspaceId: agent.organizationId,
+			agentMemberId: agent.memberId,
+			by: { userId },
+			action,
+			...more,
+		});
+	}
+
 	async function insertKey(agentId: string, organizationId: string) {
 		const key = await newKey();
 		const createdAt = new Date();
@@ -476,6 +495,14 @@ export function agentMembers({ db }: { db: Database }) {
 						}),
 					]);
 					const key = await insertKey(agentId, organizationId);
+					// Together, so the log keeps them in this order.
+					const by = { userId: ctx.context.session.user.id };
+					const note = { workspaceId: organizationId, agentMemberId: memberId, by };
+					await noteAgent(
+						db,
+						{ ...note, action: "agent.made", detail: name },
+						{ ...note, action: "key.made", targetId: key.info.id, detail: key.info.start },
+					);
 					const agent: AgentInfo = {
 						id: agentId,
 						memberId,
@@ -505,6 +532,11 @@ export function agentMembers({ db }: { db: Database }) {
 						.set({ name: ctx.body.name, updatedAt: new Date() })
 						.where(eq(user.id, agent.id))
 						.run();
+					if (ctx.body.name !== agent.name) {
+						await noteChange(agent, ctx.context.session.user.id, "agent.renamed", {
+							detail: ctx.body.name,
+						});
+					}
 					return ctx.json({ id: agent.id, name: ctx.body.name });
 				},
 			),
@@ -536,6 +568,9 @@ export function agentMembers({ db }: { db: Database }) {
 						sendPerDay: ctx.body.sendPerDay,
 						allowed: readAllowed(allowed),
 					};
+					await noteChange(agent, ctx.context.session.user.id, "policy.changed", {
+						detail: policySummary(policy),
+					});
 					return ctx.json({ id: agent.id, policy });
 				},
 			),
@@ -588,6 +623,9 @@ export function agentMembers({ db }: { db: Database }) {
 						maxDays: ctx.body.maxDays,
 						domains,
 					};
+					await noteChange(agent, ctx.context.session.user.id, "address-policy.changed", {
+						detail: addressPolicySummary(addressPolicy),
+					});
 					return ctx.json({ id: agent.id, addressPolicy });
 				},
 			),
@@ -604,7 +642,7 @@ export function agentMembers({ db }: { db: Database }) {
 				async (ctx) => {
 					const agent = await agentForAdmin(ctx.body.agentId, ctx.context.session.user.id);
 					// Paused again, it stays paused as it first was.
-					await db
+					const { meta } = await db
 						.insert(agentPause)
 						.values({
 							memberId: agent.memberId,
@@ -613,6 +651,9 @@ export function agentMembers({ db }: { db: Database }) {
 						})
 						.onConflictDoNothing()
 						.run();
+					if (meta.changes > 0) {
+						await noteChange(agent, ctx.context.session.user.id, "agent.paused");
+					}
 					return ctx.json({ id: agent.id, paused: await pauseOf(agent.memberId) });
 				},
 			),
@@ -627,7 +668,13 @@ export function agentMembers({ db }: { db: Database }) {
 				},
 				async (ctx) => {
 					const agent = await agentForAdmin(ctx.body.agentId, ctx.context.session.user.id);
-					await db.delete(agentPause).where(eq(agentPause.memberId, agent.memberId)).run();
+					const { meta } = await db
+						.delete(agentPause)
+						.where(eq(agentPause.memberId, agent.memberId))
+						.run();
+					if (meta.changes > 0) {
+						await noteChange(agent, ctx.context.session.user.id, "agent.resumed");
+					}
 					return ctx.json({ id: agent.id, paused: null });
 				},
 			),
@@ -652,6 +699,10 @@ export function agentMembers({ db }: { db: Database }) {
 						});
 					}
 					const key = await insertKey(agent.id, agent.organizationId);
+					await noteChange(agent, ctx.context.session.user.id, "key.made", {
+						targetId: key.info.id,
+						detail: key.info.start,
+					});
 					return ctx.json({ key: key.info, secret: key.secret });
 				},
 			),
@@ -665,13 +716,32 @@ export function agentMembers({ db }: { db: Database }) {
 				},
 				async (ctx) => {
 					const key = await db
-						.select({ id: agentKey.id, organizationId: agentKey.organizationId })
+						.select({
+							id: agentKey.id,
+							organizationId: agentKey.organizationId,
+							start: agentKey.start,
+							memberId: member.id,
+						})
 						.from(agentKey)
+						.leftJoin(
+							member,
+							and(
+								eq(member.userId, agentKey.userId),
+								eq(member.organizationId, agentKey.organizationId),
+							),
+						)
 						.where(eq(agentKey.id, ctx.body.keyId))
 						.get();
 					if (!key) throw new APIError("NOT_FOUND", { message: "That key was revoked" });
 					await requireAdmin(key.organizationId, ctx.context.session.user.id);
 					await db.delete(agentKey).where(eq(agentKey.id, key.id)).run();
+					if (key.memberId) {
+						const agent = { memberId: key.memberId, organizationId: key.organizationId };
+						await noteChange(agent, ctx.context.session.user.id, "key.revoked", {
+							targetId: key.id,
+							detail: key.start,
+						});
+					}
 					// The webhooks made with it go with it, as whoever held it may have made them.
 					const { removeKeyWebhooks } = await import("../webhooks");
 					await removeKeyWebhooks(key.organizationId, key.id);
@@ -698,6 +768,8 @@ export function agentMembers({ db }: { db: Database }) {
 					// this module.
 					const { removeAgentWebhooks } = await import("../webhooks");
 					await removeAgentWebhooks(agent.organizationId, agent.memberId);
+					// Its log too, as no page shows it once the agent is gone.
+					await dropAgentLog(db, agent.organizationId, agent.memberId);
 					return ctx.json({ id: agent.id });
 				},
 			),
