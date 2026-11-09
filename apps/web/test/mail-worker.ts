@@ -332,6 +332,8 @@ export async function startMail(
 		db,
 		/** The bucket raw mail goes to, to see what is kept. */
 		bucket,
+		/** The Worker's `BETTER_AUTH_SECRET`, to check what it signs. */
+		secret,
 		/** Runs the Worker's Cron Trigger once, as Cloudflare would. */
 		async runScheduled() {
 			// Miniflare's Fetcher type leaves out the scheduled() workerd adds to every Worker stub.

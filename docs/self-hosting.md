@@ -61,7 +61,8 @@ Workers Builds, so every push to its main branch deploys. On the form:
 - **Queue**: the form creates `gateweave-mail-events`, which brings Email Service's delivery
   events (see [Email](#email)). Let it make a new one.
 - **BETTER_AUTH_SECRET** signs sessions. Use a long random string, for example from
-  `openssl rand -base64 32`, and keep it secret. Changing it later signs everyone out.
+  `openssl rand -base64 32`, and keep it secret. Changing it later signs everyone out, and Mail
+  no longer knows the ids of mail sent before as its own, though their threads stay whole.
 - Leave the build and deploy commands as they are. The deploy command applies the database
   migrations before the new code goes live.
 
@@ -173,7 +174,7 @@ because `wrangler.jsonc` sets `keep_vars`.
 
 | Name                       | What it does                                                                                                       |
 | -------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `BETTER_AUTH_SECRET`       | Signs sessions. Required.                                                                                          |
+| `BETTER_AUTH_SECRET`       | Signs sessions and the ids of the mail Mail sends. Required.                                                       |
 | `BETTER_AUTH_URL`          | The address people use, such as `https://mail.example.com`. Inferred from each request when unset.                 |
 | `GITHUB_CLIENT_ID`         | Turns on "Sign in with GitHub", with `GITHUB_CLIENT_SECRET`.                                                       |
 | `GITHUB_CLIENT_SECRET`     | The client secret of the same GitHub OAuth app.                                                                    |

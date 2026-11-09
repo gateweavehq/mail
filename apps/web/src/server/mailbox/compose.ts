@@ -54,14 +54,8 @@ export interface Outgoing {
 	inReplyTo: string | null;
 	/** The ids it follows, oldest first, ending with the one it answers. Mail's own id isn't here. */
 	references: string[];
-	/** Mail's id for it, without angle brackets: its `Message-ID` in the copy. */
+	/** Mail's id for it (`own-id.ts`), without angle brackets: its `Message-ID` in the copy. */
 	ownId: string;
-}
-
-/** A new id for a message the mailbox sends, on the domain it is sent from. */
-export function newOwnId(fromEmail: string): string {
-	const domain = fromEmail.slice(fromEmail.lastIndexOf("@") + 1);
-	return `${crypto.randomUUID()}@${domain}`;
 }
 
 /**
