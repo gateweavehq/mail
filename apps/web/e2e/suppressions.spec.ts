@@ -71,7 +71,7 @@ test("an owner sees which addresses mailboxes won't send to, and removes one", a
 	// The server says it isn't on the list (it never was, here), which the page takes as removed.
 	await grace.getByRole("button", { name: "Remove grace@example.org" }).click();
 	const dialog = page.getByRole("dialog", { name: "Remove grace@example.org?" });
-	await expect(dialog).toContainText("Email Service keeps a list of its own");
+	await expect(dialog).toContainText("keep lists of their own");
 	const posted = page.waitForRequest(
 		(request) =>
 			request.method() === "POST" &&
@@ -82,6 +82,57 @@ test("an owner sees which addresses mailboxes won't send to, and removes one", a
 	await expect(dialog).toBeHidden();
 	await expect(page.getByText("No suppressed address matches.")).toBeVisible();
 	await expect(page.getByLabel("Address")).toBeFocused();
+	await expect(page.getByRole("status").filter({ hasText: "grace@example.org" })).toHaveText(
+		"grace@example.org isn't on the list any more.",
+	);
+});
+
+test("says what the providers' own lists did once an address is removed", async ({ page }) => {
+	const { slug } = await startWorkspace(page);
+	const id = crypto.randomUUID();
+	await page.route(
+		(url) => url.pathname === `/api/suppressions/${slug}`,
+		(route) =>
+			route.request().method() === "GET"
+				? route.fulfill({
+						json: {
+							suppressions: [
+								{
+									id,
+									address: "ada@example.org",
+									reason: "complained",
+									provider: "resend",
+									detail: null,
+									firstAt: Date.now() - HOUR,
+									lastAt: Date.now() - HOUR,
+									expiresAt: null,
+								},
+							],
+							next: null,
+						},
+					})
+				: route.fulfill({
+						json: {
+							ok: true,
+							address: "ada@example.org",
+							providers: [
+								{ provider: "resend", outcome: "removed" },
+								{ provider: "cloudflare", outcome: "notSetUp" },
+							],
+						},
+					}),
+	);
+	await page.goto(`/${slug}/settings/suppressions`);
+	await waitForHydration(page);
+	await page.getByRole("button", { name: "Remove ada@example.org" }).click();
+	await page
+		.getByRole("dialog", { name: "Remove ada@example.org?" })
+		.getByRole("button", { name: "Remove" })
+		.click();
+	await expect(page.getByRole("listitem").filter({ hasText: "ada@example.org" })).toBeHidden();
+	await expect(page.getByRole("status").filter({ hasText: "ada@example.org" })).toHaveText(
+		"Removed ada@example.org. Resend's own list no longer has it either. Email Service's own list may still have it, which only whoever runs this deployment can change.",
+	);
 });
 
 test("the list fits a phone", async ({ page }) => {

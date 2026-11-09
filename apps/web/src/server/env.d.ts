@@ -43,6 +43,13 @@ declare namespace Cloudflare {
 		/** Resend's API. `https://api.resend.com` when unset. The browser tests point it at a stand-in. */
 		RESEND_API_URL?: string;
 		/**
+		 * The account whose Email Service sends this deployment's mail, and an API token for it with
+		 * Email Sending: Edit. With both, removing an address from a workspace's list also takes it
+		 * off Email Service's own, for that workspace's domains. Without them it stays there.
+		 */
+		EMAIL_SENDING_ACCOUNT_ID?: string;
+		EMAIL_SENDING_API_TOKEN?: string;
+		/**
 		 * The addresses of this deployment's legal pages, linked from the sign-in pages and the
 		 * workspace menu. Each is left out when unset, or when it is not an http(s) address.
 		 */

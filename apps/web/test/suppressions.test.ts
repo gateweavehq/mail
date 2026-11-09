@@ -3,11 +3,77 @@ import { createWorkspace, signUp } from "./accounts";
 import { type QueuedMessage, type SentEmail, startMail } from "./mail-worker";
 
 // Each workspace's suppression list: what Email Service's delivery events add to it through the
-// queue, sending refusing what it holds, and owners and admins listing and removing entries.
+// queue, sending refusing what it holds, and owners and admins listing and removing entries. The
+// first copy of the Worker may change Email Service's own list, through a stand-in for Cloudflare's
+// API; the second was given nothing to change it with.
 
 const origin = "https://mail.test";
 const QUEUE = "gateweave-mail-events";
 const DAY = 24 * 60 * 60 * 1000;
+const ACCOUNT = "0123456789abcdef0123456789abcdef";
+const TOKEN = "email-sending-test-token";
+const LIST_PATH = `/client/v4/accounts/${ACCOUNT}/email/sending/suppressions`;
+
+interface CloudflareEntry {
+	id: string;
+	email: string;
+	reason: string;
+	read_only: boolean;
+	scope: { type: "account" } | { type: "sending_domain"; value: string };
+}
+
+/** Email Service's own list, by id. */
+const cloudflareListed = new Map<string, CloudflareEntry>();
+/** Each request for the list: `GET`, or `DELETE` and the entry's id. */
+const cloudflareAsked: string[] = [];
+/** Addresses whose listing fails, as when Cloudflare's API is down. */
+const cloudflareDown = new Set<string>();
+
+function cloudflare(request: Request): Response {
+	const url = new URL(request.url);
+	const failed = (status: number) => Response.json({ success: false, errors: [] }, { status });
+	if (request.headers.get("authorization") !== `Bearer ${TOKEN}`) return failed(403);
+	if (!url.pathname.startsWith(LIST_PATH)) return failed(404);
+	const rest = url.pathname.slice(LIST_PATH.length);
+	if (request.method === "GET" && rest === "") {
+		cloudflareAsked.push("GET");
+		const email = url.searchParams.get("email") ?? "";
+		if (cloudflareDown.has(email)) return failed(500);
+		// Matching as a search would, which Mail narrows to the address itself, two to a page, as a
+		// large account's scan may give short pages.
+		const found = [...cloudflareListed.values()].filter((entry) => entry.email.includes(email));
+		const start = Number(url.searchParams.get("cursor") ?? 0);
+		const result = found.slice(start, start + 2);
+		const next = start + 2 < found.length ? String(start + 2) : null;
+		return Response.json({
+			success: true,
+			errors: [],
+			messages: [],
+			result,
+			result_info: { count: result.length, per_page: 100, next_cursor: next },
+		});
+	}
+	const id = decodeURIComponent(/^\/([^/]+)$/.exec(rest)?.[1] ?? "");
+	if (request.method !== "DELETE" || !id) return failed(405);
+	cloudflareAsked.push(`DELETE ${id}`);
+	const entry = cloudflareListed.get(id);
+	if (!entry) return failed(404);
+	if (entry.read_only) return failed(409);
+	cloudflareListed.delete(id);
+	return Response.json({ success: true, errors: [], messages: [], result: { id } });
+}
+
+/** Puts an entry on Email Service's own list, and gives its id. */
+function onCloudflareList(
+	email: string,
+	reason: string,
+	scope: CloudflareEntry["scope"],
+	readOnly = false,
+) {
+	const id = crypto.randomUUID();
+	cloudflareListed.set(id, { id, email, reason, read_only: readOnly, scope });
+	return id;
+}
 
 const proofs = new Map<string, string>();
 
@@ -179,12 +245,25 @@ async function entries(slug: string, q = "") {
 	return body.suppressions ?? [];
 }
 
-function remove(slug: string, id: string, headers: Record<string, string> = owner.headers) {
-	return mail.fetch(`${origin}/api/suppressions/${slug}`, {
+function remove(
+	slug: string,
+	id: string,
+	headers: Record<string, string> = owner.headers,
+	isolate = 0,
+) {
+	return mail.fetchIn(isolate, `${origin}/api/suppressions/${slug}`, {
 		method: "POST",
 		headers: { ...headers, origin, "content-type": "application/json" },
 		body: JSON.stringify({ action: "remove", id }),
 	});
+}
+
+/** Puts the address on the workspace's list, as Email Service's own list refusing it does. */
+async function listedByEmailService(box: Box, address: string) {
+	await mail.runQueue(QUEUE, [event(box, "rejected", address, { payload: listRefusal() })]);
+	const entry = (await entries(box.slug)).find((one) => one.address === address);
+	if (!entry) throw new Error(`expected ${address} on the list`);
+	return entry;
 }
 
 /** Someone new in the workspace, with this role. */
@@ -246,8 +325,10 @@ async function rows(workspaceId: string) {
 
 beforeAll(async () => {
 	mail = await startMail(origin, {
-		hosts: { "dns.test": dns },
+		isolates: 2,
+		hosts: { "dns.test": dns, "api.cloudflare.com": cloudflare },
 		settings: { DNS_RESOLVER_URL: "https://dns.test/dns-query" },
+		isolateSettings: [{ EMAIL_SENDING_ACCOUNT_ID: ACCOUNT, EMAIL_SENDING_API_TOKEN: TOKEN }, {}],
 	});
 	owner = await signUp(mail, origin, "Owner");
 });
@@ -465,6 +546,75 @@ describe("removing from the list", () => {
 			["bob@example.org", "rejected"],
 		]);
 		for (const entry of found) expect(entry.expiresAt).not.toBeNull();
+	});
+
+	it("takes it off Email Service's own list for the workspace's domains, keeping what only the deployment may change", async () => {
+		const box = await mailboxWithAddress();
+		const address = "listed@example.org";
+		const entry = await listedByEmailService(box, address);
+		const here = { type: "sending_domain", value: box.domain } as const;
+		const ours = onCloudflareList(address, "hard_bounce", here);
+		const kept = [
+			onCloudflareList(address, "manual", { type: "account" }),
+			onCloudflareList(address, "complaint", { type: "account" }),
+			onCloudflareList(address, "hard_bounce", here, true),
+			onCloudflareList(address, "manual", here),
+		];
+		const ignored = [
+			onCloudflareList(address, "complaint", { type: "sending_domain", value: "other.example" }),
+			onCloudflareList(`not-${address}`, "hard_bounce", here),
+		];
+		cloudflareAsked.length = 0;
+		const removed = await remove(box.slug, entry.id);
+		expect(removed.status).toBe(200);
+		expect(await removed.json()).toEqual({
+			ok: true,
+			address,
+			providers: [{ provider: "cloudflare", outcome: "done", removed: 1, kept: 4 }],
+		});
+		// Eight entries hold the address, two to a page.
+		expect(cloudflareAsked).toEqual(["GET", "GET", "GET", "GET", `DELETE ${ours}`]);
+		expect(cloudflareListed.has(ours)).toBe(false);
+		for (const id of [...kept, ...ignored]) expect(cloudflareListed.has(id)).toBe(true);
+		expect(await entries(box.slug)).toEqual([]);
+	});
+
+	it("still comes off when Email Service's own list can't be read, saying so, never naming it in the log", async () => {
+		const box = await mailboxWithAddress();
+		const address = "unreadable@example.org";
+		const entry = await listedByEmailService(box, address);
+		cloudflareDown.add(address);
+		const logged = mail.logs.length;
+		const removed = await remove(box.slug, entry.id);
+		expect(await removed.json()).toEqual({
+			ok: true,
+			address,
+			providers: [{ provider: "cloudflare", outcome: "failed" }],
+		});
+		expect(await entries(box.slug)).toEqual([]);
+		const said = mail.logs.slice(logged).map(({ message }) => message);
+		expect(said.some((message) => message.includes("Email Service's list not changed"))).toBe(true);
+		expect(said.some((message) => message.includes(address))).toBe(false);
+	});
+
+	it("says only whoever runs the deployment can change Email Service's list when it gave Mail no token", async () => {
+		const box = await mailboxWithAddress();
+		const address = "untouched@example.org";
+		const entry = await listedByEmailService(box, address);
+		const theirs = onCloudflareList(address, "hard_bounce", {
+			type: "sending_domain",
+			value: box.domain,
+		});
+		cloudflareAsked.length = 0;
+		const removed = await remove(box.slug, entry.id, owner.headers, 1);
+		expect(removed.status).toBe(200);
+		expect(await removed.json()).toEqual({
+			ok: true,
+			address,
+			providers: [{ provider: "cloudflare", outcome: "notSetUp" }],
+		});
+		expect(cloudflareAsked).toEqual([]);
+		expect(cloudflareListed.has(theirs)).toBe(true);
 	});
 });
 

@@ -150,23 +150,25 @@ pnpm wrangler secret put BETTER_AUTH_URL
 Keep tokens, keys and email addresses as secrets. Plain variables stay through a deploy too,
 because `wrangler.jsonc` sets `keep_vars`.
 
-| Name                   | What it does                                                                                                       |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `BETTER_AUTH_SECRET`   | Signs sessions. Required.                                                                                          |
-| `BETTER_AUTH_URL`      | The address people use, such as `https://mail.example.com`. Inferred from each request when unset.                 |
-| `GITHUB_CLIENT_ID`     | Turns on "Sign in with GitHub", with `GITHUB_CLIENT_SECRET`.                                                       |
-| `GITHUB_CLIENT_SECRET` | The client secret of the same GitHub OAuth app.                                                                    |
-| `OIDC_ISSUER`          | Turns on an OpenID Connect provider, with the two below. See [below](#sign-in-through-an-openid-connect-provider). |
-| `OIDC_CLIENT_ID`       | This deployment's client ID at the provider.                                                                       |
-| `OIDC_CLIENT_SECRET`   | Its client secret there.                                                                                           |
-| `OIDC_PROVIDER_NAME`   | What the sign-in button calls it. Unset: "single sign-on".                                                         |
-| `EMAIL_FROM`           | Turns on email (invitations, password reset), such as `Gateweave Mail <mail@example.com>`.                         |
-| `MAILBOX_BYTES`        | How many bytes one mailbox may hold, as a whole number. Unset: 1 GiB.                                              |
-| `SEND_PER_DAY`         | How many messages one workspace may send from its mailboxes a day, as a whole number. Unset: 200.                  |
-| `SECRETS_KEY`          | Encrypts workspaces' keys, such as a Resend key: 32 random bytes, base64. None can be added without it.            |
-| `LEGAL_NOTICE_URL`     | The address of your legal notice. See [below](#your-legal-pages).                                                  |
-| `PRIVACY_POLICY_URL`   | The address of your privacy policy.                                                                                |
-| `TERMS_URL`            | The address of your terms.                                                                                         |
+| Name                       | What it does                                                                                                       |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `BETTER_AUTH_SECRET`       | Signs sessions. Required.                                                                                          |
+| `BETTER_AUTH_URL`          | The address people use, such as `https://mail.example.com`. Inferred from each request when unset.                 |
+| `GITHUB_CLIENT_ID`         | Turns on "Sign in with GitHub", with `GITHUB_CLIENT_SECRET`.                                                       |
+| `GITHUB_CLIENT_SECRET`     | The client secret of the same GitHub OAuth app.                                                                    |
+| `OIDC_ISSUER`              | Turns on an OpenID Connect provider, with the two below. See [below](#sign-in-through-an-openid-connect-provider). |
+| `OIDC_CLIENT_ID`           | This deployment's client ID at the provider.                                                                       |
+| `OIDC_CLIENT_SECRET`       | Its client secret there.                                                                                           |
+| `OIDC_PROVIDER_NAME`       | What the sign-in button calls it. Unset: "single sign-on".                                                         |
+| `EMAIL_FROM`               | Turns on email (invitations, password reset), such as `Gateweave Mail <mail@example.com>`.                         |
+| `MAILBOX_BYTES`            | How many bytes one mailbox may hold, as a whole number. Unset: 1 GiB.                                              |
+| `SEND_PER_DAY`             | How many messages one workspace may send from its mailboxes a day, as a whole number. Unset: 200.                  |
+| `SECRETS_KEY`              | Encrypts workspaces' keys, such as a Resend key: 32 random bytes, base64. None can be added without it.            |
+| `EMAIL_SENDING_ACCOUNT_ID` | Your account ID, with the token below, so that removing a suppression also clears Email Service's own list.        |
+| `EMAIL_SENDING_API_TOKEN`  | An API token for that account with Email Sending: Edit. See [Email](#email), under Suppressions.                   |
+| `LEGAL_NOTICE_URL`         | The address of your legal notice. See [below](#your-legal-pages).                                                  |
+| `PRIVACY_POLICY_URL`       | The address of your privacy policy.                                                                                |
+| `TERMS_URL`                | The address of your terms.                                                                                         |
 
 ### Your own domain
 
@@ -227,9 +229,16 @@ to it: a send to it is refused, naming it. A complaint stays until someone remov
 or a send Email Service refused for its own list, ends after a week, except a bounce for a
 mailbox or domain that doesn't exist. Owners and admins see the list in Settings › Suppressions
 and can remove an address there. Email Service keeps a list of its own for the account, which
-that doesn't change: see it in the dashboard under **Compute** > **Email Service** >
-**Email Sending** > **Suppressions**, where an entry that isn't read-only can be deleted. Without
-the subscription, Mail's list stays empty and only Email Service's applies.
+can still refuse the address: see it in the dashboard under **Compute** > **Email Service** >
+**Email Sending** > **Suppressions**. With `EMAIL_SENDING_ACCOUNT_ID` and `EMAIL_SENDING_API_TOKEN`
+set, removing an address in Mail also deletes what Email Service listed after a bounce or a
+complaint for that workspace's own domains, and the page says what stays there: an entry for the
+whole account, one added by hand, and one marked read-only, which only you can change. Every
+workspace's domains share that list, so Mail never touches another domain's entries. Make the
+token under **My Profile** > **API Tokens**, as a custom token with the account permission
+**Email Sending: Edit** for this account only. Leave both unset to keep that list yours alone: the
+page then tells admins that it may still have the address. Without the subscription, Mail's list
+stays empty and only Email Service's applies.
 
 A domain whose DNS isn't on the Cloudflare account that runs Mail can't be onboarded there, so it
 can send through [Resend](https://resend.com) instead, with each workspace's own key. Set
@@ -242,8 +251,11 @@ openssl rand -base64 32 | pnpm wrangler secret put SECRETS_KEY
 Then, in the workspace, an owner or admin verifies the domain at Resend, adds a Resend key under
 Settings › Domains, and sets the domain to send with Resend. With a key that has full access,
 Mail makes a webhook in that Resend account, which tells it what became of each message and keeps
-the workspace's suppression list (see below for the address it needs). A key that may only send
-still sends, but Mail then learns nothing of bounces or complaints.
+the workspace's suppression list (see below for the address it needs). Removing an address in
+Mail then takes it off that Resend account's own list too, which holds for all its domains, and
+removing it in Resend's dashboard takes it off Mail's, unless Resend said it again since. A key
+that may only send still sends, but Mail then learns nothing of bounces or complaints, and can't
+take an address off Resend's list: the page says to do that in Resend.
 Keep `SECRETS_KEY` as it is: the keys sealed with it can't be opened with another, and would have
 to be added again. Resend's own limits and quotas apply to that account.
 

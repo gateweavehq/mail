@@ -163,7 +163,12 @@ These are load-bearing. Breaking one breaks users' data or security, usually sil
     ends or is removed, and an event from before a removal never brings it back. Every path that
     hands a mailbox's mail to a provider checks that list first: send, approve and Send again in
     the gateway, a try that waited in the object. It names people, so only owners and admins see
-    it, or are told why an address is on it.
+    it, or are told why an address is on it. Removing an entry clears a provider's own list only
+    as far as that workspace may decide (`apps/web/src/server/suppressions/providers.ts`):
+    Resend's with the workspace's own key, and Email Service's, which the deployment's account
+    shares, only for that workspace's proved domains, and never an entry for the whole account,
+    one added by hand or one marked read-only. Resend's word that it took an address off its own
+    list takes off only an entry Resend's events made, and not one said again since.
 
 ## Code style
 

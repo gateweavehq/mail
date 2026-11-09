@@ -18,12 +18,14 @@ import {
 	type ReceivedEmail,
 	type ResendCallFailure,
 	repairWebhook,
+	SUPPRESSION_REMOVED_EVENT,
 	webhookState,
 } from "./providers/resend";
 import { svixHeaders, verifySvix } from "./providers/svix";
 import { bareAddress, isDeliveryEvent, readResendEvent, recordResendEvent } from "./resend-events";
 import { isSealer, sealerFor } from "./secrets";
 import { readUpTo, streamOf, textOf } from "./streams";
+import { removeProviderListed } from "./suppressions";
 
 /**
  * The workspace's webhook in the Resend account of its key, made once and shared by its domains:
@@ -376,7 +378,41 @@ const Received = z.object({
 	data: z.object({ email_id: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/) }),
 });
 
+const SuppressionRemoved = z.object({
+	created_at: z.string().max(64).optional().catch(undefined),
+	data: z.object({ email: z.string().max(1_000) }),
+});
+
 const answer = (status: number) => new Response(null, { status });
+
+/**
+ * Takes an address off the workspace's list once someone took it off Resend's own, as in Resend's
+ * dashboard: an entry Resend's events made, unless an event said so again since. One Mail can't
+ * read is acknowledged, as it would only come again the same. The log never names the address.
+ */
+async function unlistRemoved(
+	db: Database,
+	workspaceId: string,
+	json: unknown,
+	now: number,
+): Promise<Response> {
+	const parsed = SuppressionRemoved.safeParse(json);
+	const address = parsed.success ? bareAddress(parsed.data.data.email) : null;
+	if (!parsed.success || address === null) {
+		console.warn("resend-events: unreadable");
+		return answer(204);
+	}
+	const time = Date.parse(parsed.data.created_at ?? "");
+	// Never after now, so that an event that comes meanwhile still counts as newer.
+	const at = Number.isFinite(time) ? Math.min(time, now) : now;
+	try {
+		await removeProviderListed(db, workspaceId, address, "resend", at);
+	} catch {
+		console.error("resend-events: suppression not removed");
+		return answer(503);
+	}
+	return answer(204);
+}
 
 /**
  * A delivery of Resend's webhook, at `INBOUND_PATH` and the workspace's channel. A channel nobody
@@ -417,6 +453,7 @@ export async function receiveFromResend(
 		return answer(400);
 	}
 	if (isDeliveryEvent(type)) return recordDelivery(db, row.organizationId, json, now);
+	if (type === SUPPRESSION_REMOVED_EVENT) return unlistRemoved(db, row.organizationId, json, now);
 	// Anything else Mail didn't ask for is acknowledged, so it isn't sent again.
 	if (type !== RECEIVED_EVENT) return answer(204);
 	const received = Received.safeParse(json);

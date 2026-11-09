@@ -301,8 +301,18 @@ export const DELIVERY_EVENTS = {
 
 export type DeliveryEventType = keyof typeof DELIVERY_EVENTS;
 
-/** Every event the workspace's webhook asks for: received mail, and what became of sent mail. */
-export const WEBHOOK_EVENTS: readonly string[] = [RECEIVED_EVENT, ...Object.keys(DELIVERY_EVENTS)];
+/** The event Resend sends when someone took an address off the account's suppression list. */
+export const SUPPRESSION_REMOVED_EVENT = "suppression.removed";
+
+/**
+ * Every event the workspace's webhook asks for: received mail, what became of sent mail, and
+ * removals from the account's suppression list.
+ */
+export const WEBHOOK_EVENTS: readonly string[] = [
+	RECEIVED_EVENT,
+	...Object.keys(DELIVERY_EVENTS),
+	SUPPRESSION_REMOVED_EVENT,
+];
 
 /**
  * Makes a webhook in the key's Resend account that tells `endpoint` of each mail Resend receives,
@@ -389,6 +399,32 @@ export async function deleteWebhook(api: string, key: string, id: string) {
 	);
 	if (!done.ok && done.failure.code === `${RESEND_CODE}not_found`) return { ok: true } as const;
 	return done;
+}
+
+/** What became of taking an address off the Resend account's list. */
+export type ResendUnlisting = "removed" | "notListed" | "sendingOnly" | "failed";
+
+/**
+ * Takes an address off the key's Resend account's suppression list, which holds for every domain of
+ * that account. Measured 2026-11-09: 200 when it was there, 404 `not_found` when it wasn't, and 401
+ * `restricted_api_key` for a key that can only send, whether or not it was there.
+ */
+export async function removeResendSuppression(
+	api: string,
+	key: string,
+	address: string,
+): Promise<ResendUnlisting> {
+	const done = await call(
+		api,
+		key,
+		`/suppressions/${encodeURIComponent(address)}`,
+		{ method: "DELETE" },
+		() => true,
+	);
+	if (done.ok) return "removed";
+	if (done.failure.code === `${RESEND_CODE}not_found`) return "notListed";
+	if (done.failure.code === `${RESEND_CODE}restricted_api_key`) return "sendingOnly";
+	return "failed";
 }
 
 /** A list of addresses, keeping only what can be one: an odd entry doesn't lose the others. */

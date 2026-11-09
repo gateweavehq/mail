@@ -26,6 +26,8 @@ const webhooks = new Map<string, Webhook>();
 const asked: string[] = [];
 /** What Resend was asked to send, with the id it gave. */
 const emails: { id: string; subject: string; to: string[]; cc: string[] }[] = [];
+/** The addresses on the Resend account's own suppression list. */
+const resendListed = new Set<string>();
 
 const restricted = () =>
 	Response.json(
@@ -48,6 +50,16 @@ async function resend(request: Request): Promise<Response> {
 	}
 	if (key === SENDING_KEY) return restricted();
 	if (url.pathname === "/domains") return Response.json({ data: [] });
+	const unlisted = /^\/suppressions\/([^/]+)$/.exec(url.pathname)?.[1];
+	if (unlisted && request.method === "DELETE") {
+		if (!resendListed.delete(decodeURIComponent(unlisted))) {
+			return Response.json(
+				{ name: "not_found", message: "Suppression not found" },
+				{ status: 404 },
+			);
+		}
+		return Response.json({ object: "suppression", id: crypto.randomUUID(), deleted: true });
+	}
 	if (url.pathname === "/webhooks" && request.method === "POST") {
 		const body = (await request.json()) as { endpoint: string; events: string[] };
 		const id = crypto.randomUUID();
@@ -248,6 +260,7 @@ async function suppressions(box: Box) {
 	expect(response.status).toBe(200);
 	const body = (await response.json()) as {
 		suppressions: {
+			id: string;
 			address: string;
 			reason: string;
 			provider: string;
@@ -256,6 +269,34 @@ async function suppressions(box: Box) {
 		}[];
 	};
 	return body.suppressions.sort((a, b) => a.address.localeCompare(b.address));
+}
+
+/** Removes the address from the workspace's list as its owner, and gives the answer. */
+async function unlist(box: Box, address: string) {
+	const entry = (await suppressions(box)).find((one) => one.address === address);
+	if (!entry) throw new Error(`expected ${address} on the list`);
+	const response = await mail.fetch(`${origin}/api/suppressions/${box.slug}`, {
+		method: "POST",
+		headers: { ...owner.headers, origin, "content-type": "application/json" },
+		body: JSON.stringify({ action: "remove", id: entry.id }),
+	});
+	expect(response.status).toBe(200);
+	return response.json();
+}
+
+/** Resend's event saying someone took the address off its own list, as its dashboard does. */
+function unlisted(address: string, at = Date.now(), why = "bounce") {
+	return JSON.stringify({
+		type: "suppression.removed",
+		created_at: new Date(at).toISOString(),
+		data: {
+			id: crypto.randomUUID(),
+			email: address,
+			origin: why,
+			source_id: crypto.randomUUID(),
+			created_at: new Date(at - DAY).toISOString(),
+		},
+	});
 }
 
 /** Resend's event about one recipient of a message it sent. */
@@ -334,6 +375,7 @@ describe("Resend's delivery events", () => {
 				"email.failed",
 				"email.received",
 				"email.suppressed",
+				"suppression.removed",
 			].sort(),
 		);
 		expect((await directory(box.slug)).body.resendReceiving?.ready).toBe(true);
@@ -651,5 +693,152 @@ describe("a new Resend key", () => {
 		const sent = await send(box, ["ada@example.org"]);
 		expect(await deliver(webhook, event("email.delivered", sent, "ada@example.org"))).toBe(204);
 		expect((await deliveries(box, sent))?.[0]?.state).toBe("delivered");
+	});
+});
+
+describe("removing an address from the workspace's list", () => {
+	it("takes it off the Resend account's own list too, which would still stop it", async () => {
+		const box = await workspace();
+		await sendingWithResend(box);
+		const webhook = hookOf(box);
+		const sent = await send(box, ["ada@example.org", "bob@example.org"]);
+		for (const to of ["ada@example.org", "bob@example.org"]) {
+			const bounced = event("email.bounced", sent, to, bounce("550 5.1.1 User unknown"));
+			expect(await deliver(webhook, bounced)).toBe(204);
+		}
+		resendListed.add("ada@example.org");
+		asked.length = 0;
+		expect(await unlist(box, "ada@example.org")).toEqual({
+			ok: true,
+			address: "ada@example.org",
+			providers: [{ provider: "resend", outcome: "removed" }],
+		});
+		expect(asked).toEqual(["DELETE /suppressions/ada%40example.org"]);
+		expect(resendListed.has("ada@example.org")).toBe(false);
+		// Resend's list may not have it, which says nothing more.
+		expect(await unlist(box, "bob@example.org")).toEqual({
+			ok: true,
+			address: "bob@example.org",
+			providers: [{ provider: "resend", outcome: "notListed" }],
+		});
+		expect(await suppressions(box)).toEqual([]);
+	});
+
+	it("says when the key can only send, and asks nothing of Resend once no domain sends with it", async () => {
+		const box = await workspace();
+		await sendingWithResend(box);
+		const webhook = hookOf(box);
+		const sent = await send(box, ["ada@example.org", "bob@example.org"]);
+		for (const to of ["ada@example.org", "bob@example.org"]) {
+			expect(await deliver(webhook, event("email.complained", sent, to))).toBe(204);
+		}
+		resendListed.add("ada@example.org");
+		resendListed.add("bob@example.org");
+		await setKey(box.workspaceId, SENDING_KEY);
+		expect(await unlist(box, "ada@example.org")).toEqual({
+			ok: true,
+			address: "ada@example.org",
+			providers: [{ provider: "resend", outcome: "sendingOnly" }],
+		});
+		expect(resendListed.has("ada@example.org")).toBe(true);
+
+		await directory(box.slug, {
+			action: "set-domain-sending",
+			id: box.domainId,
+			sendsWith: "cloudflare",
+		});
+		asked.length = 0;
+		// This deployment gave Mail nothing to change Email Service's list with.
+		expect(await unlist(box, "bob@example.org")).toEqual({
+			ok: true,
+			address: "bob@example.org",
+			providers: [{ provider: "cloudflare", outcome: "notSetUp" }],
+		});
+		expect(asked).toEqual([]);
+		expect(resendListed.has("bob@example.org")).toBe(true);
+	});
+});
+
+describe("Resend's word that an address came off its own list", () => {
+	it("takes it off the workspace's list, unless Resend said it again since", async () => {
+		const box = await workspace();
+		await sendingWithResend(box);
+		const webhook = hookOf(box);
+		const sent = await send(box, ["ada@example.org", "bob@example.org"]);
+		const at = Date.now() - 60_000;
+		const bounced = bounce("550 5.1.1 User unknown");
+		expect(
+			await deliver(webhook, event("email.bounced", sent, "ada@example.org", bounced, at)),
+		).toBe(204);
+		expect(
+			await deliver(webhook, event("email.bounced", sent, "bob@example.org", bounced, at)),
+		).toBe(204);
+		// Taken off in Resend's dashboard since; bob's removal is older than the bounce.
+		expect(await deliver(webhook, unlisted("ADA@example.org", at + 1_000))).toBe(204);
+		expect(await deliver(webhook, unlisted("bob@example.org", at - 1_000))).toBe(204);
+		expect((await suppressions(box)).map(({ address }) => address)).toEqual(["bob@example.org"]);
+		// A complaint from before bob's removal, coming late, was taken off with it.
+		expect(
+			await deliver(webhook, event("email.complained", sent, "bob@example.org", {}, at - 2_000)),
+		).toBe(204);
+		expect((await suppressions(box)).map(({ reason }) => reason)).toEqual(["bounced"]);
+
+		// It stays off when the event comes again, and a bounce after it puts it back.
+		expect(await deliver(webhook, unlisted("ada@example.org", at + 1_000))).toBe(204);
+		expect(await deliver(webhook, event("email.bounced", sent, "ada@example.org", bounced))).toBe(
+			204,
+		);
+		expect((await suppressions(box)).map(({ address }) => address)).toEqual([
+			"ada@example.org",
+			"bob@example.org",
+		]);
+
+		// A removal dated ahead of the clock counts as now, so a bounce that comes next is newer.
+		expect(await deliver(webhook, unlisted("ada@example.org", Date.now() + 60 * MINUTE))).toBe(204);
+		expect((await suppressions(box)).map(({ address }) => address)).toEqual(["bob@example.org"]);
+		await new Promise((done) => setTimeout(done, 5));
+		expect(await deliver(webhook, event("email.bounced", sent, "ada@example.org", bounced))).toBe(
+			204,
+		);
+		expect((await suppressions(box)).map(({ address }) => address)).toEqual([
+			"ada@example.org",
+			"bob@example.org",
+		]);
+
+		// An older removal that comes late doesn't make events from between the two count again.
+		expect(await deliver(webhook, unlisted("ada@example.org", at + 2_000))).toBe(204);
+		expect(
+			await deliver(webhook, event("email.complained", sent, "ada@example.org", {}, at + 3_000)),
+		).toBe(204);
+		expect((await suppressions(box)).map(({ reason }) => reason)).toEqual(["bounced", "bounced"]);
+	});
+
+	it("leaves what Email Service said, another workspace's list, and an event Mail can't read", async () => {
+		const box = await workspace();
+		const other = await workspace();
+		await sendingWithResend(box);
+		await sendingWithResend(other);
+		const theirs = await send(other, ["ada@example.org"]);
+		expect(await deliver(hookOf(other), event("email.complained", theirs, "ada@example.org"))).toBe(
+			204,
+		);
+		const at = Date.now() - 60_000;
+		await mail.db
+			.prepare(
+				`INSERT INTO mail_suppression (id, organization_id, address, reason, provider, first_at, last_at)
+				VALUES (?, ?, 'cy@example.org', 'complained', 'cloudflare', ?, ?)`,
+			)
+			.bind(crypto.randomUUID(), box.workspaceId, at, at)
+			.run();
+		const logged = mail.logs.length;
+		const webhook = hookOf(box);
+		expect(await deliver(webhook, unlisted("cy@example.org"))).toBe(204);
+		expect(await deliver(webhook, unlisted("ada@example.org"))).toBe(204);
+		const odd = JSON.stringify({ type: "suppression.removed", data: { email: "not an address" } });
+		expect(await deliver(webhook, odd)).toBe(204);
+		expect((await suppressions(box)).map(({ address }) => address)).toEqual(["cy@example.org"]);
+		expect((await suppressions(other)).map(({ address }) => address)).toEqual(["ada@example.org"]);
+		const said = mail.logs.slice(logged).map(({ message }) => message);
+		expect(said.some((message) => message.includes("@example.org"))).toBe(false);
 	});
 });
