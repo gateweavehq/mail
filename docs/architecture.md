@@ -288,8 +288,14 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
       access. The sender's words come marked as such (`untrusted`), as over the agent API.
       `webhook.test`, sent when an admin asks, one at a time, carries the workspace and the
       webhook's id.
-    - **Pausing** a webhook drops what it hadn't delivered; deleting it drops that too. A deleted
-      workspace's object is cleared with it, and clears itself should it find the workspace gone.
+    - **Pausing** a webhook drops what it hadn't delivered; deleting it drops that too. Taking a
+      mailbox or an event off it drops what was waiting for those, and a new URL gets the rest. A
+      deleted workspace's object is cleared with it, and clears itself should it find the workspace
+      gone. When D1 doesn't answer its alarm, the alarm sets itself a minute on rather than throw,
+      since Cloudflare stops retrying one that keeps throwing.
+    - **Its own zone.** The Worker runs with `global_fetch_strictly_public`, so a webhook to a host
+      on Mail's own zone goes in through Cloudflare, past that host's security settings and to
+      whatever Worker serves it, as anyone's request would, never straight to the origin.
   - **HTML.** A message's HTML is a page of its own, at `…/<message>/html`, which the message's
     page shows in a frame; its text, or the text made from its HTML, is a click away. What makes
     it safe is the policy it is served with (`framePolicy` in `html.ts`): `sandbox` without

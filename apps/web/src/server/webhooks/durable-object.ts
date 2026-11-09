@@ -64,6 +64,8 @@ const BATCH_SIZE = 50;
 const CONCURRENCY = 10;
 /** How long a claimed delivery is left alone while it is sent, should this object stop meanwhile. */
 const CLAIM_MS = DELIVERY_TIMEOUT_MS + 60_000;
+/** How soon the alarm runs again when D1 didn't answer it. */
+const D1_RETRY_MS = 60_000;
 
 // Types, not interfaces, so that SQLite's rows can be read as them.
 type WebhookRow = {
@@ -170,7 +172,11 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 		});
 	}
 
-	/** Changes a webhook. Pausing it drops what it had not delivered. */
+	/**
+	 * Changes a webhook. Of what it had yet to deliver, it drops what it no longer wants: everything
+	 * once it is paused, and what tells of a mailbox or an event it no longer hears. A new URL takes
+	 * the rest.
+	 */
 	update(link: WebhookLink, id: string, patch: Patch): { ok: true; webhook: Webhook } | Refused {
 		if (patch.url !== undefined) {
 			const refusal = urlRefusal(patch.url, link.origin);
@@ -198,7 +204,7 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 				now,
 				id,
 			);
-			if (patch.active === false) this.#failPending(id, "The webhook was paused.", now);
+			this.#dropUnwanted(id, now);
 			const changed = this.#row(id);
 			if (!changed) throw new Error("The webhook just changed isn't there");
 			return { ok: true as const, webhook: toWebhook(changed) };
@@ -254,7 +260,7 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 				timestamp: new Date(now).toISOString(),
 				data: { workspace: { id: link.workspaceId, slug: link.slug }, webhookId: id },
 			};
-			this.#queue(id, WEBHOOK_TEST_EVENT, JSON.stringify(payload), now);
+			this.#queue(id, WEBHOOK_TEST_EVENT, null, JSON.stringify(payload), now);
 			return { ok: true as const };
 		});
 		if (queued.ok) await this.#alarmBy(now);
@@ -312,12 +318,19 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 						origin,
 					),
 				);
-				for (const hook of hooks) this.#queue(hook.id, event.type, body, now);
+				for (const hook of hooks) this.#queue(hook.id, event.type, mailboxId, body, now);
 				any = true;
 			}
 			return any;
 		});
-		if (queued) await this.#alarmBy(now);
+		if (queued) {
+			await this.#alarmBy(now);
+			return;
+		}
+		// All handed over before, perhaps by a call that ended before it set the alarm: what waits is
+		// sent all the same.
+		const due = this.#soonestDue();
+		if (due !== null) await this.#alarmBy(due);
 	}
 
 	/** Removes every webhook and delivery, as when the workspace is deleted. */
@@ -332,11 +345,22 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 	override async alarm(): Promise<void> {
 		const workspaceId = this.#meta("workspace");
 		if (workspaceId) {
-			const there = await createDb(this.env.DB)
-				.select({ id: schema.organization.id })
-				.from(schema.organization)
-				.where(eq(schema.organization.id, workspaceId))
-				.get();
+			let there: { id: string } | undefined;
+			try {
+				there = await createDb(this.env.DB)
+					.select({ id: schema.organization.id })
+					.from(schema.organization)
+					.where(eq(schema.organization.id, workspaceId))
+					.get();
+			} catch (error) {
+				// Cloudflare stops retrying an alarm that keeps throwing after a few minutes, and nothing
+				// else may set it again, so this one sets its next round itself.
+				console.error("webhooks: D1 didn't answer; trying again in a minute", {
+					name: error instanceof Error ? error.name : "unknown",
+				});
+				await this.#alarmBy(Date.now() + D1_RETRY_MS);
+				return;
+			}
 			if (!there) {
 				await this.destroy();
 				return;
@@ -398,12 +422,13 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 			while (next < claims.length) {
 				const claim = claims[next++];
 				if (!claim) break;
-				// It may have waited behind slow receivers, and its webhook may have been paused or
-				// deleted, or its secret replaced, since.
+				// It may have waited behind slow receivers, and its webhook may have been paused, changed
+				// or deleted, or its secret replaced, since.
 				const sending = this.#stillToSend(claim.id);
-				if (!sending) {
-					// Its webhook stopped listening: it goes no further, rather than being claimed again.
-					this.#failOne(claim.id, "The webhook was paused.", Date.now());
+				if (!sending) continue;
+				if ("unwanted" in sending) {
+					// It goes no further, rather than being claimed again.
+					this.#failOne(claim.id, sending.unwanted, Date.now());
 					continue;
 				}
 				const outcome = await attempt({ id: claim.id, ...sending });
@@ -414,18 +439,26 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 		return claims.length === BATCH_SIZE;
 	}
 
-	/** The body and secret a claimed delivery goes out with now, or null if it no longer goes. */
-	#stillToSend(id: string): { payload: string; secret: string; url: string } | null {
-		return (
-			this.ctx.storage.sql
-				.exec<{ payload: string; secret: string; url: string }>(
-					`SELECT delivery.payload AS payload, webhook.secret AS secret, webhook.url AS url
-					FROM delivery JOIN webhook ON webhook.id = delivery.webhook_id
-					WHERE delivery.id = ? AND delivery.status = 'pending' AND webhook.active = 1`,
-					id,
-				)
-				.toArray()[0] ?? null
-		);
+	/**
+	 * The body, secret and URL a claimed delivery goes out with now; why its webhook, as it is now,
+	 * no longer wants it; or null when it is no longer waiting at all.
+	 */
+	#stillToSend(
+		id: string,
+	): { payload: string; secret: string; url: string } | { unwanted: string } | null {
+		const delivery = this.ctx.storage.sql
+			.exec<{ payload: string; event: string; mailboxId: string | null; webhookId: string }>(
+				`SELECT payload, event, mailbox_id AS mailboxId, webhook_id AS webhookId FROM delivery
+				WHERE id = ? AND status = 'pending'`,
+				id,
+			)
+			.toArray()[0];
+		if (!delivery) return null;
+		const webhook = this.#row(delivery.webhookId);
+		if (!webhook) return { unwanted: "The webhook was deleted." };
+		const reason = unwanted(webhook, delivery);
+		if (reason) return { unwanted: reason };
+		return { payload: delivery.payload, secret: webhook.secret, url: webhook.url };
 	}
 
 	#record(claim: Claim, outcome: Outcome, now: number): void {
@@ -460,14 +493,21 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 			.map((row) => ({ id: row.id, events: JSON.parse(row.events) as WebhookEventType[] }));
 	}
 
-	#queue(webhookId: string, event: string, payload: string, now: number): void {
+	#queue(
+		webhookId: string,
+		event: string,
+		mailboxId: string | null,
+		payload: string,
+		now: number,
+	): void {
 		this.ctx.storage.sql.exec(
-			`INSERT INTO delivery (id, webhook_id, event, payload, status, attempts, next_attempt_at,
-				created_at, updated_at)
-			VALUES (?, ?, ?, ?, 'pending', 0, ?, ?, ?)`,
+			`INSERT INTO delivery (id, webhook_id, event, mailbox_id, payload, status, attempts,
+				next_attempt_at, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)`,
 			crypto.randomUUID(),
 			webhookId,
 			event,
+			mailboxId,
 			payload,
 			now,
 			now,
@@ -475,14 +515,21 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 		);
 	}
 
-	#failPending(webhookId: string, error: string, now: number): void {
-		this.ctx.storage.sql.exec(
-			`UPDATE delivery SET status = 'failed', error = ?, next_attempt_at = NULL, updated_at = ?
-			WHERE webhook_id = ? AND status = 'pending'`,
-			error,
-			now,
-			webhookId,
-		);
+	/** Fails what a webhook had yet to deliver and, as it is now, no longer wants. */
+	#dropUnwanted(webhookId: string, now: number): void {
+		const webhook = this.#row(webhookId);
+		if (!webhook) return;
+		const waiting = this.ctx.storage.sql
+			.exec<{ id: string; event: string; mailboxId: string | null }>(
+				`SELECT id, event, mailbox_id AS mailboxId FROM delivery
+				WHERE webhook_id = ? AND status = 'pending'`,
+				webhookId,
+			)
+			.toArray();
+		for (const delivery of waiting) {
+			const reason = unwanted(webhook, delivery);
+			if (reason) this.#failOne(delivery.id, reason, now);
+		}
 	}
 
 	#failOne(id: string, error: string, now: number): void {
@@ -519,6 +566,15 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 				.exec<{ value: string }>("SELECT value FROM meta WHERE key = ?", key)
 				.toArray()[0]?.value ?? null
 		);
+	}
+
+	/** When the soonest delivery still waiting is due, or null when none waits. */
+	#soonestDue(): number | null {
+		return this.ctx.storage.sql
+			.exec<{ due: number | null }>(
+				"SELECT min(next_attempt_at) AS due FROM delivery WHERE status = 'pending'",
+			)
+			.one().due;
 	}
 
 	/** Has the alarm run by then, unless it runs sooner anyway. */
@@ -566,6 +622,27 @@ function received(
 			untrusted: UNTRUSTED,
 		},
 	};
+}
+
+/** Why a webhook, as it is now, no longer wants a delivery it had yet to send; null when it does. */
+function unwanted(
+	webhook: Pick<WebhookRow, "active" | "events" | "mailboxIds">,
+	delivery: { event: string; mailboxId: string | null },
+): string | null {
+	if (webhook.active !== 1) return "The webhook was paused.";
+	// A test goes whatever the webhook listens to.
+	if (delivery.event === WEBHOOK_TEST_EVENT) return null;
+	if (!(JSON.parse(webhook.events) as string[]).includes(delivery.event)) {
+		return "The webhook no longer listens to that event.";
+	}
+	if (
+		delivery.mailboxId !== null &&
+		webhook.mailboxIds !== null &&
+		!(JSON.parse(webhook.mailboxIds) as string[]).includes(delivery.mailboxId)
+	) {
+		return "The webhook no longer hears that mailbox.";
+	}
+	return null;
 }
 
 function toWebhook(row: WebhookRow): Webhook {

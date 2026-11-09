@@ -38,6 +38,7 @@ describe("urlRefusal", () => {
 	it("refuses Mail's own host, and a user name or password", () => {
 		expect(urlRefusal("https://mail.example.com/api/v1/mailboxes", app)).toMatch(/Mail itself/);
 		expect(urlRefusal("https://MAIL.example.com:443/", app)).toMatch(/Mail itself/);
+		expect(urlRefusal("https://mail.example.com./api/v1/mailboxes", app)).toMatch(/Mail itself/);
 		expect(urlRefusal("https://user:secret@hooks.example.org/", app)).toMatch(/user name/);
 	});
 });

@@ -193,6 +193,31 @@ describe("webhooks", () => {
 		expect(after.map((one) => JSON.parse(one.body).data.message.subject)).toContain("Heard again");
 	});
 
+	it("drop what waits for a mailbox they no longer hear, and send the rest to a new URL", async () => {
+		const space = await workspace();
+		const before = newPath();
+		const after = newPath();
+		// Both first tries fail, so both deliveries wait to be tried again when the webhook changes.
+		answers.set(before, [500, 500]);
+		const webhook = await hook(space.slug, before);
+		await arrive(space.signUps.address, { subject: "No longer heard" });
+		await arrive(space.billing.address, { subject: "Still heard" });
+		expect(await deliveredTo(before, 2)).toHaveLength(2);
+
+		await changed(space.slug, {
+			action: "update",
+			id: webhook.id,
+			patch: { url: `https://${RECEIVER}${after}`, mailboxIds: [space.billing.id] },
+		});
+		await deliveredTo(after, 1, 20_000);
+		await pause(2000);
+		const retried = await deliveredTo(after, 2, 0);
+		expect(retried.map((one) => JSON.parse(one.body).data.message.subject)).toEqual([
+			"Still heard",
+		]);
+		expect(await deliveredTo(before, 3, 0)).toHaveLength(2);
+	});
+
 	it("tell of a message once, even when it is delivered twice, and not of mail the mailbox sends", async () => {
 		const space = await workspace();
 		const path = newPath();

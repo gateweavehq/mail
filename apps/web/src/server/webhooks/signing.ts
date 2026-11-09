@@ -100,11 +100,17 @@ export function urlRefusal(url: string, origin: string): string | null {
 	const target = new URL(url);
 	const app = new URL(origin);
 	if (target.protocol !== "https:" && app.protocol === "https:") return "Use an https URL.";
-	if (target.host === app.host) return "A webhook can't point at Mail itself.";
+	if (sameHost(target, app)) return "A webhook can't point at Mail itself.";
 	if (target.username || target.password) {
 		return "Leave the user name and password out of the URL.";
 	}
 	return null;
+}
+
+/** Whether two URLs name one host and port, as `mail.example.com.` and `mail.example.com` do. */
+function sameHost(one: URL, other: URL): boolean {
+	const host = (url: URL) => `${url.hostname.replace(/\.$/, "")}:${url.port}`;
+	return host(one) === host(other);
 }
 
 function toBase64(bytes: Uint8Array): string {

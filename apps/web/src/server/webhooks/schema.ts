@@ -5,8 +5,10 @@
 
 // `meta` holds the workspace's id and the app's origin, as the gateway last gave them. A webhook's
 // events and mailboxes are JSON arrays; no mailboxes means every mailbox. A delivery keeps the body
-// it was queued with, so each retry sends the same bytes under the same `webhook-id`. `seen_event`
-// is what mailboxes handed over, so that an event handed over twice is queued once.
+// it was queued with, so each retry sends the same bytes under the same `webhook-id`, and the
+// mailbox it tells of (none for a test), so that it is dropped should the webhook stop hearing that
+// mailbox. `seen_event` is what mailboxes handed over, so that an event handed over twice is queued
+// once.
 const VERSION_1 = `
 CREATE TABLE meta (
 	key TEXT PRIMARY KEY,
@@ -26,6 +28,7 @@ CREATE TABLE delivery (
 	id TEXT PRIMARY KEY,
 	webhook_id TEXT NOT NULL,
 	event TEXT NOT NULL,
+	mailbox_id TEXT,
 	payload TEXT NOT NULL,
 	status TEXT NOT NULL CHECK (status IN ('pending', 'delivered', 'failed')),
 	attempts INTEGER NOT NULL DEFAULT 0,
