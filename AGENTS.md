@@ -152,7 +152,13 @@ These are load-bearing. Breaking one breaks users' data or security, usually sil
     address on a proved domain that is also the domain the event came from, and only for a message
     that mailbox sent under that provider's id. Remote text is cut short and shown as text. A
     record only moves forward (`DELIVERY_RANK`), so a repeated or late event can't undo a bounce.
-    Log counts, never addresses.
+    Log counts, never addresses. The same events fill the sending workspace's suppression list
+    (`apps/web/src/server/suppressions/`), only as `suppressionOf` reads them, and a bounce or a
+    complaint only for a message that mailbox sent. An entry only gets stronger or longer until it
+    ends or is removed, and an event from before a removal never brings it back. Every path that
+    hands a mailbox's mail to a provider checks that list first: send, approve and Send again in
+    the gateway, a try that waited in the object. It names people, so only owners and admins see
+    it, or are told why an address is on it.
 
 ## Code style
 

@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { z } from "zod";
 import { goesWithoutApproval } from "../../lib/agent-policy";
 import {
+	canSendAgain,
 	isAddress,
 	MAX_RECIPIENTS,
 	MAX_SUBJECT,
@@ -9,12 +10,14 @@ import {
 	type SendStatus,
 } from "../../lib/outbox";
 import { isAdminRole } from "../../lib/roles";
+import { type Suppression, suppressedRefusal } from "../../lib/suppressions";
 import { bearsKey } from "../access";
 import { db } from "../auth";
 import { agentPolicyOf } from "../auth/agents";
 import { appOrigin } from "../origin";
 import { sendingWith } from "../providers/keys";
 import { allowAgentSend, allowSend } from "../rate-limit";
+import { suppressedAmong } from "../suppressions";
 import {
 	addressHeader,
 	dateHeader,
@@ -81,6 +84,27 @@ function answer(body: unknown, status = 200): Response {
 const refuse = (error: string, status: number) => answer({ ok: false, error }, status);
 
 /**
+ * A send refused for addresses on the workspace's suppression list, which it names, saying why only
+ * to owners and admins, who may see the list.
+ */
+const refuseSuppressed = (found: Suppression[], withReasons: boolean) =>
+	answer(
+		{
+			ok: false,
+			error: suppressedRefusal(found, withReasons),
+			suppressed: found.map(({ address }) => address),
+		},
+		409,
+	);
+
+/** Who a message the mailbox keeps went to, as its envelope has them. */
+const recipientsOf = (row: { envelopeTo: string }) =>
+	row.envelopeTo
+		.split(",")
+		.map((address) => address.trim())
+		.filter(Boolean);
+
+/**
  * Sends from a mailbox, tries again, approves or discards, for
  * `POST /api/mail/<workspace>/<mailbox>/outbox`. A person who may read the mailbox may, signed in.
  * An agent may only send, with its key, from a mailbox it was let send from, as its policy allows:
@@ -129,9 +153,11 @@ export async function outboxAnswer(
 	if (action.action === "approve") {
 		// Counted as it goes, as what a person sends is, so only once it is known to wait. The object
 		// still sends it only from `held`, should two people approve it at once.
-		if (!isHeld(await box.stub.get(action.message))) {
-			return refuse("It isn't waiting for approval any more.", 409);
-		}
+		const row = await box.stub.get(action.message);
+		if (!row || !isHeld(row)) return refuse("It isn't waiting for approval any more.", 409);
+		// An address may have come onto the list while it waited.
+		const suppressed = await suppressedAmong(db, workspaceId, recipientsOf(row), Date.now());
+		if (suppressed.length > 0) return refuseSuppressed(suppressed, isAdminRole(role));
 		const allowed = await allowSend(workspaceId);
 		if (!allowed.allowed) return tooMany(allowed.retryAfter);
 		const status = await box.stub.approve(action.message, memberId);
@@ -141,6 +167,11 @@ export async function outboxAnswer(
 	}
 
 	if (action.action === "send-again") {
+		const row = await box.stub.get(action.message);
+		if (row && canSendAgain(statusOf(row))) {
+			const suppressed = await suppressedAmong(db, workspaceId, recipientsOf(row), Date.now());
+			if (suppressed.length > 0) return refuseSuppressed(suppressed, isAdminRole(role));
+		}
 		// Counted before it is known to go, as only the object can say, at once.
 		const allowed = await allowSend(workspaceId);
 		if (!allowed.allowed) return tooMany(allowed.retryAfter);
@@ -173,6 +204,17 @@ export async function outboxAnswer(
 	// A draft sent before, as when its answer was lost, is what became of it, and counts once.
 	const earlier = await box.stub.drafted(action.draft);
 	if (earlier) return sentAnswer(earlier);
+	// Before anything is stored, so the draft stays as it is to be put right. A person's is asked
+	// before anything is counted; an agent's once its own day has counted it, below, so that a key
+	// can't learn who is on the list for free.
+	const checkList = async () => {
+		const suppressed = await suppressedAmong(db, workspaceId, lower, Date.now());
+		return suppressed.length > 0 ? refuseSuppressed(suppressed, isAdminRole(role)) : null;
+	};
+	if (!agent) {
+		const refused = await checkList();
+		if (refused) return refused;
+	}
 	// Its domain says how it goes. Asked before anything is counted, as a mistake shouldn't use up
 	// the day's allowance.
 	const way = await sendingWith(db, workspaceId, sender);
@@ -194,6 +236,8 @@ export async function outboxAnswer(
 		hold = !goesWithoutApproval(recipients, policy.allowed);
 		const counted = await allowAgentSend(memberId, policy.sendPerDay);
 		if (!counted.allowed) return tooMany(counted.retryAfter, "This agent has written");
+		const refused = await checkList();
+		if (refused) return refused;
 	}
 	// Counted once the message could go, so a mistake doesn't use up the day's allowance. One that
 	// waits is counted when it is approved.
@@ -244,9 +288,12 @@ function sentAnswer(sent: Sent): Response {
 		: refuse("It is still being saved. Look in the thread in a moment.", 409);
 }
 
+/** How a message the mailbox keeps is being sent, or null for one that came in. */
+const statusOf = (row: { sending: string | null } | null) =>
+	row?.sending ? (JSON.parse(row.sending) as SendStatus) : null;
+
 /** Whether a message waits for a person to approve it. */
-const isHeld = (row: { sending: string | null } | null) =>
-	row?.sending ? (JSON.parse(row.sending) as SendStatus).state === "held" : false;
+const isHeld = (row: { sending: string | null } | null) => statusOf(row)?.state === "held";
 
 function tooMany(retryAfter: number | null | undefined, who = "This workspace has sent"): Response {
 	const hours = Math.max(1, Math.round((retryAfter ?? 0) / 3600));

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { MAX_DELIVERY_DETAIL } from "../lib/delivery";
+import { SUPPRESSION_DAYS } from "../lib/suppressions";
 import {
 	type EventDirectory,
 	FIND_WINDOW_MS,
@@ -8,7 +9,9 @@ import {
 	RETRY_DELAY_SECONDS,
 	readEvent,
 	receiveDeliveryEvents,
+	type Sender,
 } from "./delivery-events";
+import type { NewSuppression } from "./suppressions";
 
 /** An Email Sending event as the docs and the staging measurement show it. */
 function event(type: string, payload: Record<string, unknown> = {}, extra = {}) {
@@ -55,6 +58,7 @@ describe("reading Email Sending's delivery events", () => {
 				at,
 				detail: null,
 			},
+			suppression: null,
 		});
 	});
 
@@ -154,23 +158,38 @@ function batchOf(...messages: Message<unknown>[]): MessageBatch<unknown> {
 	};
 }
 
-/** A directory where help@ and sales@ example.com are two mailboxes' addresses. */
-function directory(fails?: Error): EventDirectory & { came: string[][] } {
+/**
+ * A directory where help@ and sales@ example.com are two mailboxes' addresses, of two workspaces.
+ * `fails` makes the lookups fail, `suppressFails` adding to a list.
+ */
+function directory(
+	fails?: Error,
+	suppressFails?: Error,
+): EventDirectory & { came: string[][]; suppressed: NewSuppression[] } {
 	const came: string[][] = [];
+	const suppressed: NewSuppression[] = [];
+	const known = new Map<string, Sender>([
+		["help@example.com", { mailboxId: "box-help", workspaceId: "ws-help" }],
+		["sales@example.com", { mailboxId: "box-sales", workspaceId: "ws-sales" }],
+	]);
 	return {
 		came,
+		suppressed,
 		async eventsCame(domains) {
 			if (fails) throw fails;
 			came.push(domains);
 		},
 		async mailboxesOf(senders) {
-			const known = new Map([
-				["help@example.com", "box-help"],
-				["sales@example.com", "box-sales"],
-			]);
 			return new Map(
-				[...senders].flatMap((one) => (known.has(one) ? [[one, known.get(one) ?? ""]] : [])),
+				[...senders].flatMap((one) => {
+					const sender = known.get(one);
+					return sender ? [[one, sender] as const] : [];
+				}),
 			);
+		},
+		async suppress(entries) {
+			if (suppressFails) throw suppressFails;
+			suppressed.push(...entries);
 		},
 	};
 }
@@ -212,6 +231,7 @@ describe("receiving a batch of delivery events", () => {
 			notOurs: 2,
 			notFound: 0,
 			waiting: 0,
+			suppressed: 0,
 			failed: 0,
 			failures: [],
 		});
@@ -309,6 +329,215 @@ describe("receiving a batch of delivery events", () => {
 			recorded: 1,
 			failed: 1,
 			failures: ["mailbox: Error: Durable Object reset because its code was updated."],
+		});
+	});
+});
+
+describe("what an event says about writing to its recipient again", () => {
+	const suppression = (type: string, payload: Record<string, unknown> = {}) =>
+		readEvent(event(type, payload), 0)?.suppression;
+
+	it("stops mail after a complaint until someone removes it", () => {
+		expect(suppression("complained", { complaint: { type: "abuse" } })).toEqual({
+			reason: "complained",
+			forever: true,
+		});
+	});
+
+	it("stops mail after a hard bounce, for good when the mailbox or domain doesn't exist", () => {
+		expect(
+			suppression("bounced", {
+				bounce: {
+					type: "hard",
+					classification: "permanent_failure",
+					reason: "550 5.1.1 User unknown",
+				},
+			}),
+		).toEqual({ reason: "bounced", forever: true });
+		expect(
+			suppression("bounced", {
+				bounce: { type: "hard", reason: "550 no" },
+				delivery: { smtpEnhancedStatusCode: "5.1.10" },
+			}),
+		).toEqual({ reason: "bounced", forever: true });
+		expect(
+			suppression("bounced", {
+				bounce: { type: "hard", reason: "550-5.1.1 The email account that you tried to reach" },
+			}),
+		).toEqual({ reason: "bounced", forever: true });
+		expect(
+			suppression("bounced", { bounce: { type: "hard", reason: "554 5.7.1 Policy rejection" } }),
+		).toEqual({ reason: "bounced", forever: false });
+	});
+
+	it("doesn't take a code about the sender, or one that only looks like it, for good", () => {
+		const hard = (reason: string, delivery: Record<string, unknown> = {}) =>
+			suppression("bounced", { bounce: { type: "hard", reason }, delivery });
+		// About the sender's address, as when its bounce domain stops resolving.
+		expect(hard("553 5.1.8 Sender address rejected: Domain not found")?.forever).toBe(false);
+		// An IP address in a blocklist's words.
+		expect(hard("554 5.7.1 Service unavailable; Client host [5.1.83.12] blocked")?.forever).toBe(
+			false,
+		);
+		expect(hard("Delivery failed: 5.1.1 somewhere in the words")?.forever).toBe(false);
+		// The event's own code comes first.
+		expect(hard("550 5.1.1 User unknown", { smtpEnhancedStatusCode: "5.7.1" })?.forever).toBe(
+			false,
+		);
+		expect(hard("550 rejected", { smtpEnhancedStatusCode: " 5.1.2 " })?.forever).toBe(true);
+	});
+
+	it("doesn't stop mail after a soft bounce, a delay, a failure or a delivery", () => {
+		expect(
+			suppression("bounced", { bounce: { type: "soft", reason: "452 4.2.2 Mailbox full" } }),
+		).toBeNull();
+		expect(suppression("bounced", { bounce: { reason: "550 5.1.1 User unknown" } })).toBeNull();
+		expect(suppression("deferred")).toBeNull();
+		expect(suppression("failed", { failure: { reason: "delivery_failed" } })).toBeNull();
+		expect(suppression("delivered")).toBeNull();
+	});
+
+	it("notes a refusal only when the provider's list is why", () => {
+		expect(
+			suppression("rejected", {
+				rejection: { reason: "suppressed", party: "recipient", detail: "Recipient is suppressed" },
+			}),
+		).toEqual({ reason: "rejected", forever: false });
+		expect(suppression("rejected", { rejection: { reason: "validation" } })).toBeNull();
+	});
+});
+
+describe("adding to suppression lists from a batch", () => {
+	/** A mailbox that has sent the messages of these ids, and only those. */
+	const sent =
+		(...ids: string[]) =>
+		() => ({
+			recordDeliveries: (events: { messageId: string }[]) =>
+				events.map(({ messageId }) => ids.includes(messageId)),
+		});
+
+	it("adds a bounce or a complaint only for mail the mailbox sent, and a refusal for the provider's list either way", async () => {
+		const known = directory();
+		const bounced = queued(
+			event("bounced", {
+				messageId: "<sent@example.com>",
+				bounce: { type: "hard", reason: "550 5.1.1 User unknown" },
+			}),
+		);
+		// About mail this mailbox has no record of sending, such as before its domain was proved here.
+		const complained = queued(
+			event("complained", { messageId: "<earlier@example.com>", complaint: { type: "abuse" } }),
+		);
+		const refused = queued(
+			event("rejected", {
+				messageId: "<never-sent@example.com>",
+				sender: "sales@example.com",
+				rejection: { reason: "suppressed", detail: "Recipient is suppressed" },
+			}),
+		);
+		const otherApp = queued(
+			event("complained", { sender: "notifications@example.com", complaint: { type: "abuse" } }),
+		);
+		const handled = await receiveDeliveryEvents(
+			batchOf(bounced.message, complained.message, refused.message, otherApp.message),
+			known,
+			sent("<sent@example.com>"),
+			at,
+		);
+		expect(known.suppressed).toEqual([
+			{
+				workspaceId: "ws-help",
+				address: "ada@example.org",
+				reason: "bounced",
+				provider: "cloudflare",
+				detail: "550 5.1.1 User unknown",
+				at,
+				expiresAt: null,
+			},
+			{
+				workspaceId: "ws-sales",
+				address: "ada@example.org",
+				reason: "rejected",
+				provider: "cloudflare",
+				detail: "Recipient is suppressed",
+				at,
+				expiresAt: at + SUPPRESSION_DAYS * 24 * 60 * 60 * 1000,
+			},
+		]);
+		expect(bounced.done).toEqual({ acked: true, delay: null });
+		expect(complained.done).toEqual({ acked: false, delay: RETRY_DELAY_SECONDS });
+		expect(handled).toMatchObject({ suppressed: 2, recorded: 1, waiting: 2, notOurs: 1 });
+	});
+
+	it("adds nothing for an event whose mailbox failed, which comes again", async () => {
+		const known = directory();
+		const bounced = queued(
+			event("bounced", {
+				messageId: "<sent@example.com>",
+				bounce: { type: "hard", reason: "550 5.1.1 User unknown" },
+			}),
+		);
+		const handled = await receiveDeliveryEvents(
+			batchOf(bounced.message),
+			known,
+			() => ({
+				recordDeliveries: () => {
+					throw new Error("the object restarted");
+				},
+			}),
+			at,
+		);
+		expect(known.suppressed).toEqual([]);
+		expect(bounced.done).toEqual({ acked: false, delay: 60 });
+		expect(handled).toMatchObject({ suppressed: 0, failed: 1 });
+	});
+
+	it("adds a refusal for the provider's list when it comes after the message would be found", async () => {
+		const known = directory();
+		const late = queued(
+			event("rejected", { rejection: { reason: "suppressed", detail: "Recipient is suppressed" } }),
+		);
+		const handled = await receiveDeliveryEvents(
+			batchOf(late.message),
+			known,
+			sent(),
+			at + FIND_WINDOW_MS + 1,
+		);
+		expect(known.suppressed).toHaveLength(1);
+		expect(late.done).toEqual({ acked: true, delay: null });
+		expect(handled).toMatchObject({ suppressed: 1, notFound: 1 });
+	});
+
+	it("lets the events that add to a list come again when it can't be written, once recorded", async () => {
+		const recorded: string[] = [];
+		const bounced = queued(
+			event("bounced", {
+				messageId: "<sent@example.com>",
+				bounce: { type: "hard", reason: "550" },
+			}),
+			2,
+		);
+		const other = queued(event("delivered", { sender: "sales@example.com" }));
+		const handled = await receiveDeliveryEvents(
+			batchOf(bounced.message, other.message),
+			directory(undefined, new Error("D1_ERROR: database is locked")),
+			(mailboxId) => ({
+				recordDeliveries: (events) => {
+					recorded.push(mailboxId);
+					return events.map(() => true);
+				},
+			}),
+			at,
+		);
+		// Recording only moves forward, so recording it again when it comes back changes nothing.
+		expect(recorded.sort()).toEqual(["box-help", "box-sales"]);
+		expect(bounced.done).toEqual({ acked: false, delay: 120 });
+		expect(other.done).toEqual({ acked: true, delay: null });
+		expect(handled).toMatchObject({
+			suppressed: 0,
+			recorded: 1,
+			failed: 1,
+			failures: ["suppressions: Error: D1_ERROR: database is locked"],
 		});
 	});
 });

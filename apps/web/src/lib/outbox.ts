@@ -19,7 +19,7 @@ export type SendStatus = {
 	state: SendState;
 	/**
 	 * Why it isn't sent: Email Service's code, such as `E_RECIPIENT_SUPPRESSED`, or Mail's for
-	 * Resend's answer, such as `resend:validation_error`.
+	 * Resend's answer, such as `resend:validation_error`, or for its own list (`SUPPRESSED_CODE`).
 	 */
 	code: string | null;
 	/** When it is tried again, while it waits. */
@@ -27,6 +27,12 @@ export type SendStatus = {
 	/** Resend's own words for why, when it gave some. */
 	detail: string | null;
 };
+
+/**
+ * Mail's code for a message that waited to be tried again while an address it goes to came onto the
+ * workspace's suppression list, so the try was stopped before any provider was asked.
+ */
+export const SUPPRESSED_CODE = "mail:suppressed";
 
 /** The most people one message goes to, To and Cc together. Email Service takes up to 50. */
 export const MAX_RECIPIENTS = 20;
@@ -60,6 +66,8 @@ export const isResendCode = (code: string | null) => code?.startsWith(RESEND_COD
 export function refusalReason(code: string | null, detail: string | null = null): string {
 	if (code !== null && isResendCode(code)) return resendReason(code, detail);
 	switch (code) {
+		case SUPPRESSED_CODE:
+			return "An address it goes to came onto this workspace's suppression list while it waited, so Mail didn't send it. An owner or admin can see the list in Settings, under Suppressions.";
 		case "E_RECIPIENT_SUPPRESSED":
 			return "An address it goes to bounced before or asked not to get mail, so Email Service won't send to it.";
 		case "E_SENDER_DOMAIN_NOT_AVAILABLE":
@@ -90,7 +98,7 @@ export type Sent = { id: string; threadId: string } & SendStatus;
  */
 export type OutboxAnswer<T = object> =
 	| ({ ok: true } & T)
-	| { ok: false; error: string; lost?: boolean };
+	| { ok: false; error: string; lost?: boolean; suppressed?: string[] };
 
 /** Where a mailbox sends from, tries again and discards. */
 export const outboxUrl = (workspace: string, mailbox: string) =>

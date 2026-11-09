@@ -1,8 +1,10 @@
 import { and, eq, inArray, isNotNull } from "drizzle-orm";
 import { z } from "zod";
 import { DELIVERY_STATES, type DeliveryState, MAX_DELIVERY_DETAIL } from "../lib/delivery";
+import { SUPPRESSION_DAYS, type SuppressionReason } from "../lib/suppressions";
 import { type Database, schema } from "./db";
 import type { DeliveryEvent } from "./mailbox/deliveries";
+import { type NewSuppression, suppress } from "./suppressions";
 
 /**
  * Email Service's delivery events, which reach Mail through a Queue: each domain that sends has an
@@ -52,6 +54,13 @@ const EmailSendingEvent = z.object({
 
 type Payload = z.infer<typeof EmailSendingEvent>["payload"];
 
+/** What an event says about writing to its recipient again. */
+export interface SuppressionSaid {
+	reason: SuppressionReason;
+	/** Until someone removes it, rather than for `SUPPRESSION_DAYS`. */
+	forever: boolean;
+}
+
 /** An event Mail can act on: the record, and where it came from. */
 export interface ReadEvent {
 	/** The sending domain its subscription is for, in lower case. */
@@ -59,6 +68,8 @@ export interface ReadEvent {
 	/** The address the message was sent from, in lower case. */
 	sender: string;
 	event: DeliveryEvent;
+	/** Null when the event doesn't stop mail to the recipient. */
+	suppression: SuppressionSaid | null;
 }
 
 const isState = (value: string): value is DeliveryState =>
@@ -93,6 +104,51 @@ function detailOf(state: DeliveryState, payload: Payload): string | null {
 }
 
 /**
+ * Enhanced status codes for a mailbox or domain that doesn't exist (RFC 3463): bad mailbox
+ * (`5.1.1`), bad system (`5.1.2`), bad address syntax (`5.1.3`) and a null MX (`5.1.10`). Not the
+ * rest of `5.1.x`, such as `5.1.8`, which is about the sender's address and says nothing of the
+ * recipient's.
+ */
+const NO_SUCH_MAILBOX = new Set(["5.1.1", "5.1.2", "5.1.3", "5.1.10"]);
+
+/** An enhanced status code as an SMTP reply starts with it: `550 5.1.1 User unknown`. */
+const REPLY_CODE = /^\s*5\d\d[\s-]+(5\.\d{1,3}\.\d{1,3})(?![\d.])/;
+
+/** The enhanced status code of a bounce: the one the event gives, or the one its reply starts with. */
+function enhancedCode(payload: Payload): string | null {
+	const given = payload.delivery?.smtpEnhancedStatusCode;
+	if (typeof given === "string" && given.trim()) return given.trim();
+	for (const reply of [payload.bounce?.reason, payload.delivery?.smtpResponse]) {
+		const match = typeof reply === "string" ? REPLY_CODE.exec(reply) : null;
+		if (match?.[1]) return match[1];
+	}
+	return null;
+}
+
+/**
+ * Whether the event stops mail to its recipient, by Email Service's own rules: every complaint, a
+ * bounce only when it is hard, as a soft one that ran out of tries may pass, and a refusal because
+ * Email Service's list has the address. A hard bounce for a mailbox or domain that doesn't exist
+ * lasts until removed, as Email Service's own does; another may come right, so it lasts a week.
+ */
+function suppressionOf(state: DeliveryState, payload: Payload): SuppressionSaid | null {
+	switch (state) {
+		case "complained":
+			return { reason: "complained", forever: true };
+		case "bounced": {
+			if (payload.bounce?.type !== "hard") return null;
+			return { reason: "bounced", forever: NO_SUCH_MAILBOX.has(enhancedCode(payload) ?? "") };
+		}
+		case "rejected":
+			return payload.rejection?.reason === "suppressed"
+				? { reason: "rejected", forever: false }
+				: null;
+		default:
+			return null;
+	}
+}
+
+/**
  * An Email Sending event as Mail records it, or null for anything else: another source, a type Mail
  * doesn't know, or a shape it can't read. `receivedAt` stands in for an event without a time.
  */
@@ -115,6 +171,7 @@ export function readEvent(body: unknown, receivedAt: number): ReadEvent | null {
 			at: Number.isFinite(at) ? at : receivedAt,
 			detail: detailOf(state, payload),
 		},
+		suppression: suppressionOf(state, payload),
 	};
 }
 
@@ -130,10 +187,19 @@ export interface EventDirectory {
 	/** Notes that events came for these domains, where a workspace proved them. */
 	eventsCame(domains: string[], at: number): Promise<void>;
 	/**
-	 * The mailbox of each of these addresses, on domains a workspace proved. A temporary address
-	 * that has ended still counts: it sent the message, and the mailbox still has it.
+	 * The mailbox of each of these addresses, on domains a workspace proved, and that workspace. A
+	 * temporary address that has ended still counts: it sent the message, and the mailbox still has
+	 * it.
 	 */
-	mailboxesOf(senders: Set<string>): Promise<Map<string, string>>;
+	mailboxesOf(senders: Set<string>): Promise<Map<string, Sender>>;
+	/** Adds addresses to their workspaces' suppression lists. */
+	suppress(entries: NewSuppression[], now: number): Promise<void>;
+}
+
+/** Whose address sent a message. */
+export interface Sender {
+	mailboxId: string;
+	workspaceId: string;
 }
 
 /** The directory in D1. */
@@ -153,11 +219,15 @@ export function directoryIn(db: Database): EventDirectory {
 				if (!parts) continue;
 				byDomain.set(parts.domain, [...(byDomain.get(parts.domain) ?? []), parts.local]);
 			}
-			const found = new Map<string, string>();
+			const found = new Map<string, Sender>();
 			for (const [domain, locals] of byDomain) {
 				for (let start = 0; start < locals.length; start += LOOKUP_CHUNK) {
 					const rows = await db
-						.select({ local: mailAddress.localPart, mailboxId: mailAddress.mailboxId })
+						.select({
+							local: mailAddress.localPart,
+							mailboxId: mailAddress.mailboxId,
+							workspaceId: mailDomain.organizationId,
+						})
 						.from(mailAddress)
 						.innerJoin(mailDomain, eq(mailAddress.domainId, mailDomain.id))
 						.where(
@@ -168,11 +238,14 @@ export function directoryIn(db: Database): EventDirectory {
 							),
 						)
 						.all();
-					for (const row of rows) found.set(`${row.local}@${domain}`, row.mailboxId);
+					for (const { local, mailboxId, workspaceId } of rows) {
+						found.set(`${local}@${domain}`, { mailboxId, workspaceId });
+					}
 				}
 			}
 			return found;
 		},
+		suppress: (entries, now) => suppress(db, entries, now),
 	};
 }
 
@@ -192,6 +265,8 @@ export interface EventsHandled {
 	notFound: number;
 	/** For a message not found yet, to be looked for again. */
 	waiting: number;
+	/** Recipients added to a workspace's suppression list, or kept there. */
+	suppressed: number;
 	/** Not handled because D1 or a mailbox failed, to come again later. */
 	failed: number;
 	/** What failed, without addresses. */
@@ -240,6 +315,7 @@ export async function receiveDeliveryEvents(
 		notOurs: 0,
 		notFound: 0,
 		waiting: 0,
+		suppressed: 0,
 		failed: 0,
 		failures: [],
 	};
@@ -260,7 +336,7 @@ export async function receiveDeliveryEvents(
 	}
 	if (read.length === 0) return handled;
 
-	let mailboxes: Map<string, string>;
+	let mailboxes: Map<string, Sender>;
 	try {
 		await directory.eventsCame([...new Set(read.map(({ event }) => event.domain))], now);
 		mailboxes = await directory.mailboxesOf(new Set(read.map(({ event }) => event.sender)));
@@ -272,43 +348,86 @@ export async function receiveDeliveryEvents(
 		return handled;
 	}
 
-	const byMailbox = new Map<string, typeof read>();
+	type Routed = (typeof read)[number] & { sender: Sender };
+	const byMailbox = new Map<string, Routed[]>();
 	for (const one of read) {
-		const mailboxId = mailboxes.get(one.event.sender);
+		const sender = mailboxes.get(one.event.sender);
 		// The address must be on the domain whose subscription sent the event.
-		if (!mailboxId || split(one.event.sender)?.domain !== one.event.domain) {
+		if (!sender || split(one.event.sender)?.domain !== one.event.domain) {
 			one.message.ack();
 			handled.notOurs++;
 			continue;
 		}
-		byMailbox.set(mailboxId, [...(byMailbox.get(mailboxId) ?? []), one]);
+		byMailbox.set(sender.mailboxId, [
+			...(byMailbox.get(sender.mailboxId) ?? []),
+			{ ...one, sender },
+		]);
 	}
 
+	// Recorded in the mailboxes first. Recording only moves forward, so a batch that comes again
+	// after the lists failed records nothing twice.
+	const done: { one: Routed; found: boolean }[] = [];
 	await Promise.all(
 		[...byMailbox].map(async ([mailboxId, events]) => {
-			let found: boolean[];
 			try {
-				found = await mailbox(mailboxId).recordDeliveries(events.map(({ event }) => event.event));
+				const found = await mailbox(mailboxId).recordDeliveries(
+					events.map(({ event }) => event.event),
+				);
+				events.forEach((one, index) => {
+					done.push({ one, found: found[index] === true });
+				});
 			} catch (error) {
 				fail(
 					events.map(({ message }) => message),
 					failureOf("mailbox", error),
 				);
-				return;
 			}
-			events.forEach(({ message, event }, index) => {
-				if (found[index]) {
-					message.ack();
-					handled.recorded++;
-				} else if (now - event.event.at < FIND_WINDOW_MS) {
-					message.retry({ delaySeconds: RETRY_DELAY_SECONDS });
-					handled.waiting++;
-				} else {
-					message.ack();
-					handled.notFound++;
-				}
-			});
 		}),
 	);
+
+	// Then the lists. A bounce or a complaint counts only for a message the mailbox sent, so that one
+	// about mail from before a domain changed hands can't stop its new workspace's. A refusal for
+	// the provider's list counts either way: such a message never got an id to be found by.
+	const suppressions: NewSuppression[] = [];
+	const suppressing = new Set<Message<unknown>>();
+	for (const { one, found } of done) {
+		const said = one.event.suppression;
+		if (!said || !(found || said.reason === "rejected")) continue;
+		const { recipient, provider, detail, at } = one.event.event;
+		suppressions.push({
+			workspaceId: one.sender.workspaceId,
+			address: recipient,
+			reason: said.reason,
+			provider,
+			detail,
+			at,
+			expiresAt: said.forever ? null : at + SUPPRESSION_DAYS * 24 * 60 * 60 * 1000,
+		});
+		suppressing.add(one.message);
+	}
+	let listsFailed = false;
+	if (suppressions.length > 0) {
+		try {
+			await directory.suppress(suppressions, now);
+			handled.suppressed = suppressions.length;
+		} catch (error) {
+			listsFailed = true;
+			fail([...suppressing], failureOf("suppressions", error));
+		}
+	}
+
+	for (const { one, found } of done) {
+		if (listsFailed && suppressing.has(one.message)) continue;
+		if (found) {
+			one.message.ack();
+			handled.recorded++;
+		} else if (now - one.event.event.at < FIND_WINDOW_MS) {
+			one.message.retry({ delaySeconds: RETRY_DELAY_SECONDS });
+			handled.waiting++;
+		} else {
+			one.message.ack();
+			handled.notFound++;
+		}
+	}
 	return handled;
 }

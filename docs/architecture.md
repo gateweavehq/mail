@@ -27,7 +27,7 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
   `wrangler.jsonc` (`apps/web/src/server/db/prune.ts`). Better Auth removes a session or a
   verification only when something looks it up, so those nobody comes back for would otherwise
   stay, with the address and browser a session holds, and invitations with the address they were
-  sent to.
+  sent to. Suppressions that have ended go then too, and removed ones after 15 days.
 - **Headers** go on every answer (`apps/web/src/server/security-headers.ts`): `nosniff`, a referrer
   rule and, over HTTPS, `Strict-Transport-Security`. A page also gets `X-Frame-Options`,
   `Cache-Control: private, no-store` and a Content-Security-Policy with a nonce made for that
@@ -333,6 +333,42 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
       the Domains page shows admins, so a missing subscription shows. The handler logs counts and
       what failed, never addresses. A new subscription took a few minutes to start publishing on
       staging.
+    - **Suppressions** (`apps/web/src/server/suppressions/`). Each workspace keeps the addresses its
+      mailboxes won't send to, in D1 (`mail_suppression`, one row per address), for the workspace
+      of the mailbox that sent. What goes on follows Email Service's rules (`suppressionOf`):
+      - a complaint stays until someone removes it;
+      - a hard bounce stays for good when the server's enhanced code says the mailbox or domain
+        doesn't exist (`5.1.1`, `5.1.2`, `5.1.3` or `5.1.10`, from the event's own code or the
+        start of the reply), otherwise seven days (`SUPPRESSION_DAYS`);
+      - a refusal because Email Service's list has the address stays seven days.
+
+      A soft bounce, a delay or another failure adds nothing. A bounce or a complaint counts only
+      for a message the mailbox has, so one about mail from before a domain changed workspaces
+      can't stop the new one's. So one about a sent message deleted before it came adds nothing;
+      Email Service's own list still refuses the next send, and that refusal puts the address on.
+      A refusal counts either way, as Email Service gives a message it
+      refuses no id; measured on staging (2026-11-09), it publishes one event for a refused
+      message of two recipients. Email Service keeps its entries per sending domain; Mail's apply
+      to every domain of the workspace, as a person who complained about one of its mailboxes wants
+      none of them. A second event keeps the stronger reason (`SUPPRESSION_RANK`), the later end
+      and, for the same reason, the newer words, or starts afresh once the entry has ended, in one
+      upsert, so events in any order end the same. An event whose entry would already have ended
+      adds nothing. The mailboxes record a batch first, then the lists are written; when they
+      can't be, those events come again, and recording them twice changes nothing.
+
+      The outbox checks the list before it stores anything: on a send, after the draft's id is
+      looked up, so a send already made still answers; on an approval; and on Send again. A
+      person's send is checked before anything is counted; an agent's after its own day counts it,
+      so a key can't learn who is on the list for free. It refuses with 409, naming the addresses,
+      with the reasons only for owners and admins, and the page keeps the draft as it was. A
+      message that waits to be tried again (`waiting`) is checked again by its object, which stops
+      it as `refused` with `mail:suppressed`. Only owners and admins see the list, in Settings ›
+      Suppressions, as it names people the workspace wrote to, and they can remove an entry there.
+      A removed entry is kept, hidden, for 15 days (`REMOVED_KEPT_DAYS`, longer than a queue keeps
+      a message), so that an event from before the removal, which a queue may hand over again,
+      doesn't put it back. Removing doesn't change Email Service's list, whose entries end by
+      themselves or come off in the dashboard. Search uses `instr`, as D1 refuses a `LIKE` pattern
+      over 50 bytes.
   - **Removing.** Removing a mailbox, or deleting its workspace, removes its mail and its object's
     data, after the directory has forgotten its addresses, so nothing new arrives. A trigger in D1
     records each mailbox as its row goes, a workspace's by cascade too (`mailbox_removal`). The
