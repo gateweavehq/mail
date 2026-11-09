@@ -203,6 +203,24 @@ CREATE TRIGGER delivery_gone AFTER DELETE ON message BEGIN
 END;
 `;
 
+// Mail that came, told to the workspace's webhooks from here: `event` is the outbox, written in the
+// transaction that stores the message and emptied once the workspace's webhook object has it.
+// `place` is which workspace and mailbox this object is, as the first delivery to it said.
+const VERSION_8 = `
+CREATE TABLE place (
+	only INTEGER PRIMARY KEY CHECK (only = 1),
+	workspace_id TEXT NOT NULL,
+	mailbox_id TEXT NOT NULL
+) STRICT;
+CREATE TABLE event (
+	id TEXT PRIMARY KEY,
+	type TEXT NOT NULL,
+	message TEXT NOT NULL,
+	at INTEGER NOT NULL
+) STRICT;
+CREATE INDEX event_at ON event (at);
+`;
+
 /** Each brings the schema from the version before it. Append only: objects keep what they ran. */
 export const MIGRATIONS: ((sql: SqlStorage) => void)[] = [
 	(sql) => sql.exec(VERSION_1),
@@ -229,6 +247,7 @@ export const MIGRATIONS: ((sql: SqlStorage) => void)[] = [
 	(sql) => sql.exec(VERSION_5),
 	(sql) => sql.exec(VERSION_6),
 	(sql) => sql.exec(VERSION_7),
+	(sql) => sql.exec(VERSION_8),
 ];
 
 /** What migrating needs of a Durable Object's storage. */

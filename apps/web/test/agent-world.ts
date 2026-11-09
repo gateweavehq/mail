@@ -185,8 +185,9 @@ export function agentWorld(origin: string, prefix: string) {
 	}
 
 	return {
-		async start() {
-			mail = await startMail(origin, { hosts: { "cloudflare-dns.com": dns } });
+		/** Starts the Worker, with handlers for more hosts it may reach, such as a webhook's. */
+		async start(hosts: Record<string, (request: Request) => Response | Promise<Response>> = {}) {
+			mail = await startMail(origin, { hosts: { ...hosts, "cloudflare-dns.com": dns } });
 			owner = await signUp(mail, origin, "Owner");
 		},
 		async dispose() {

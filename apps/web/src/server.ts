@@ -11,6 +11,7 @@ import { newNonce, withSecurityHeaders } from "./server/security-headers";
 
 export { Mailbox } from "./server/mailbox";
 export { RateLimiter } from "./server/rate-limit";
+export { Webhooks } from "./server/webhooks";
 
 /**
  * A branch's Preview gets none of the Worker's bindings or secrets, and accounts can't be run safely

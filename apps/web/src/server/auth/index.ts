@@ -3,6 +3,7 @@ import { createDb } from "../db";
 import { mailer } from "../email";
 import { removeMailboxes } from "../mailbox";
 import { allowPasswordTry, allowSpentTriesEmail, authRateLimits } from "../rate-limit";
+import { removeWebhooks } from "../webhooks";
 import { countedByWhoSentIt } from "../workers-address";
 import { createAuth } from "./config";
 
@@ -78,6 +79,7 @@ function buildAuth() {
 		allowPasswordTry,
 		allowSpentTriesEmail,
 		removeMailboxes,
+		removeWebhooks,
 		providers: {
 			secretsKey: env.SECRETS_KEY,
 			resendApi: env.RESEND_API_URL,

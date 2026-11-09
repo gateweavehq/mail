@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { and, eq, inArray } from "drizzle-orm";
-import PostalMime, { type Address, addressParser, decodeWords } from "postal-mime";
+import PostalMime from "postal-mime";
 import type { Delivery } from "../../lib/delivery";
 import type {
 	ListedMessage,
@@ -23,6 +23,7 @@ import { replySubject } from "./compose";
 import type { StoredSummary } from "./durable-object";
 import { cleanHtml, framePolicy, MAX_SHOWN_HTML, mayLoadImages } from "./html";
 import { mailboxStub } from "./index";
+import { decoded, people, sender } from "./people";
 import { envelopeAddresses, replySender, senderAddresses } from "./senders";
 import { textOfHtml } from "./text";
 import { threadSubject } from "./thread";
@@ -123,35 +124,6 @@ function sentOf(row: StoredSummary, names: Map<string, string>, me: string) {
 		deliveries: row.deliveries ? (JSON.parse(row.deliveries) as Delivery[]) : [],
 		recipients: row.recipients ?? 0,
 	};
-}
-
-/** A header as people read it. A word that won't decode is left as sent. */
-function decoded(value: string | null): string {
-	if (!value) return "";
-	try {
-		return decodeWords(value);
-	} catch {
-		return value;
-	}
-}
-
-function people(addresses: Address[] | undefined): Person[] {
-	const found: Person[] = [];
-	for (const address of addresses ?? []) {
-		if (address.group) found.push(...address.group);
-		else found.push({ name: address.name, address: address.address });
-	}
-	return found;
-}
-
-/** The first person a From header names. */
-function sender(value: string | null): Person | null {
-	if (!value) return null;
-	try {
-		return people(addressParser(value))[0] ?? null;
-	} catch {
-		return { name: decoded(value), address: "" };
-	}
 }
 
 export async function listMessages(

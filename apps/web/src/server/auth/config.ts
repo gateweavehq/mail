@@ -41,6 +41,8 @@ export interface AuthConfig {
 	allowSpentTriesEmail?: ((userId: string) => Promise<boolean>) | undefined;
 	/** Removes the mail of a deleted workspace's mailboxes. Left for the daily run without it. */
 	removeMailboxes?: ((workspaceId: string, mailboxIds: string[]) => Promise<void>) | undefined;
+	/** Removes a deleted workspace's webhooks. Each clears itself when it finds the workspace gone. */
+	removeWebhooks?: ((workspaceId: string) => Promise<void>) | undefined;
 	/** What workspaces' provider keys need. Without `secretsKey`, none can be added. */
 	providers?: ProviderSettings | undefined;
 }
@@ -254,7 +256,8 @@ export function createAuth(config: AuthConfig) {
 					},
 					// The plugin deletes the members first, which the owner trigger would refuse. With the
 					// workspace gone they follow by cascade, and the plugin finds nothing left to delete.
-					// So do its mailboxes, whose mail is removed after: no more can arrive by then.
+					// So do its mailboxes, whose mail is removed after: no more can arrive by then. Its
+					// webhooks go too, with their secrets.
 					beforeDeleteOrganization: async ({ organization }) => {
 						const mailboxes = await config.db
 							.select({ id: schema.mailbox.id })
@@ -265,6 +268,11 @@ export function createAuth(config: AuthConfig) {
 							.delete(schema.organization)
 							.where(eq(schema.organization.id, organization.id))
 							.run();
+						if (config.removeWebhooks) {
+							const removing = config.removeWebhooks(organization.id);
+							if (config.runInBackground) config.runInBackground(removing);
+							else await removing;
+						}
 						if (!config.removeMailboxes || mailboxes.length === 0) return;
 						const removing = config.removeMailboxes(
 							organization.id,

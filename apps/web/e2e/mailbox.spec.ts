@@ -1,3 +1,6 @@
+import { createHmac } from "node:crypto";
+import { createServer, type IncomingHttpHeaders } from "node:http";
+import type { AddressInfo } from "node:net";
 import type { APIRequestContext, Page } from "@playwright/test";
 import { expect, newBrowserContext, test } from "./fixtures";
 import { newPerson, signUp, startWorkspace, unique, waitForHydration } from "./helpers";
@@ -820,4 +823,80 @@ test("an admin adds the workspace's Resend key, and a domain set to Resend sends
 			text: "Sent by Resend.",
 		}),
 	]);
+});
+
+test("an admin adds a webhook, which hears of mail as it arrives, signed, and can send a test", async ({
+	page,
+	request,
+	baseURL,
+}) => {
+	const { slug, mailboxId, to, deliver } = await supportMailbox(page, request, baseURL);
+	// The receiver, elsewhere: another host than the app's, as a webhook can't point at Mail.
+	const received: { headers: IncomingHttpHeaders; body: string }[] = [];
+	const receiver = createServer((incoming, answer) => {
+		let body = "";
+		incoming.on("data", (chunk) => {
+			body += chunk;
+		});
+		incoming.on("end", () => {
+			received.push({ headers: incoming.headers, body });
+			answer.end("ok");
+		});
+	});
+	await new Promise<void>((resolve) => receiver.listen(0, "127.0.0.1", resolve));
+	const port = (receiver.address() as AddressInfo).port;
+	const url = `http://127.0.0.1:${port}/mail`;
+	try {
+		await page.goto(`/${slug}/settings/webhooks`);
+		await waitForHydration(page);
+		await page.getByRole("button", { name: "Add webhook" }).click();
+		const dialog = page.getByRole("dialog", { name: "Add webhook" });
+		await dialog.getByLabel("URL").fill(url);
+		await expect(dialog.getByLabel("Mail received")).toBeChecked();
+		await expect(dialog.getByLabel("Every mailbox, those made later too")).toBeChecked();
+		await dialog.getByRole("button", { name: "Add webhook" }).click();
+		const secret = await page.getByLabel("Signing secret").inputValue();
+		expect(secret).toMatch(/^whsec_/);
+		await page.getByRole("button", { name: "Done" }).click();
+		const row = page.getByRole("list", { name: "Webhooks" }).getByRole("listitem").first();
+		await expect(row.getByText(url)).toBeVisible();
+		await expect(row.getByText("Mail received · Every mailbox")).toBeVisible();
+
+		await deliver("customer@example.org", [
+			"From: A Customer <customer@example.org>",
+			`To: ${to}`,
+			"Subject: Tell the hook",
+			"Date: Mon, 09 Nov 2026 09:00:00 +0000",
+			`Message-ID: <${Date.now()}.hook@example.org>`,
+			"",
+			"Not in the webhook.",
+			"",
+		]);
+		await expect.poll(() => received.length, { timeout: 15_000 }).toBe(1);
+		const [delivery] = received;
+		const id = delivery?.headers["webhook-id"];
+		const timestamp = delivery?.headers["webhook-timestamp"];
+		const mac = createHmac("sha256", Buffer.from(secret.slice("whsec_".length), "base64"))
+			.update(`${id}.${timestamp}.${delivery?.body}`)
+			.digest("base64");
+		expect(delivery?.headers["webhook-signature"]).toBe(`v1,${mac}`);
+		const payload = JSON.parse(delivery?.body ?? "{}");
+		expect(payload).toMatchObject({
+			type: "message.received",
+			data: { mailbox: { id: mailboxId, name: "Support" }, message: { subject: "Tell the hook" } },
+		});
+		expect(delivery?.body).not.toContain("Not in the webhook.");
+
+		// The page shows what was delivered, and sends a test.
+		await page.reload();
+		await waitForHydration(page);
+		await row.getByText("Recent deliveries").click();
+		await expect(row.getByRole("list", { name: "Recent deliveries" })).toContainText("Delivered");
+		await row.getByRole("button", { name: "Send test" }).click();
+		await expect(page.getByText("Test event queued")).toBeVisible();
+		await expect.poll(() => received.length, { timeout: 15_000 }).toBe(2);
+		expect(JSON.parse(received[1]?.body ?? "{}").type).toBe("webhook.test");
+	} finally {
+		await new Promise((resolve) => receiver.close(resolve));
+	}
 });

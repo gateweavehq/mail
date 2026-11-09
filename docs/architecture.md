@@ -254,6 +254,42 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     "verify", in the subject or a line of the text, or one set apart in the lines after, or else
     the only line in the message that is a code alone; null rather than a guess. Its patterns run
     in time linear in the text, as a stranger writes the text.
+  - **Webhooks** (`server/webhooks/`, ported from Track). A webhook posts each message a
+    mailbox receives to a URL of the workspace's, such as an agent's trigger, so that an agent
+    hears of mail without waiting for it. Owners and admins manage them on Settings › Webhooks: a
+    URL, its events (`message.received` for now), and every mailbox or the ones chosen. Changes go
+    through `POST /api/webhooks/<workspace>`, which asks where the request is from and that an
+    owner or admin asks, and checks that a chosen mailbox is the workspace's. A webhook points
+    over https (plain http only where the app itself runs on it), never at Mail's own host, and a
+    workspace has at most ten.
+    - **One object per workspace** (`Webhooks`) holds them, their secrets and the deliveries on
+      their way. Nothing but the gateway and the workspace's mailboxes reach it, and secrets never
+      leave it but in the answer that makes one, which the page shows once.
+    - **From an outbox.** A mailbox's object writes an event (`event`, schema version 8) in the
+      transaction that stores a message it received, so mail that is kept is always told of and
+      mail that isn't, such as a second delivery of the same message, never is. What the mailbox
+      sends is kept too, but tells of nothing yet. Its alarm, a second later, hands the events to
+      the workspace's object and drops them once it has them, or tries again a minute later. That
+      object queues one delivery for each webhook that listens, once per event however often it
+      is handed over, and sends them from its own alarm: ten at a time, ten seconds each, claiming
+      them first so that a restart retries them. A receiver that answers anything but a 2xx, a
+      redirect too, is tried again after 5 seconds, 5 minutes, 30 minutes, 2, 5 and 10 hours.
+      Deliveries are kept seven days, for the page to show each webhook's latest. No Queue or
+      other binding is needed.
+    - **Signed per [Standard Webhooks](https://www.standardwebhooks.com)**, as Track's are:
+      `webhook-id` (the delivery's id, the same on every retry), `webhook-timestamp`, and
+      `webhook-signature`, `v1,` and an HMAC-SHA256 of `id.timestamp.body` keyed by the `whsec_`
+      secret. Making a new secret signs what is sent from then on, retries too.
+    - **Bodies are `{ type, timestamp, data }`.** `message.received` carries the workspace (id and
+      slug, looked up when the event is queued), the mailbox (id and name) and the message as the
+      agent API's summaries have it: ids, when it arrived, who it is from, its subject and Date,
+      the address it came to, the proved domain, the DMARC verdict, its size and where people open
+      its thread. Never its text: the receiver reads that with an agent's key, under that agent's
+      access. The sender's words come marked as such (`untrusted`), as over the agent API.
+      `webhook.test`, sent when an admin asks, one at a time, carries the workspace and the
+      webhook's id.
+    - **Pausing** a webhook drops what it hadn't delivered; deleting it drops that too. A deleted
+      workspace's object is cleared with it, and clears itself should it find the workspace gone.
   - **HTML.** A message's HTML is a page of its own, at `…/<message>/html`, which the message's
     page shows in a frame; its text, or the text made from its HTML, is a click away. What makes
     it safe is the policy it is served with (`framePolicy` in `html.ts`): `sandbox` without

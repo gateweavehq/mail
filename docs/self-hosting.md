@@ -8,6 +8,8 @@ reply and write in plain text. It uses:
 - an R2 bucket for mail as it arrived, one object per message;
 - a Durable Object per mailbox, which holds the index of its messages;
 - a Durable Object that counts rate limits, one per client address or recipient;
+- a Durable Object per workspace for its webhooks, which holds their secrets and what they are
+  still to deliver;
 - a queue, `gateweave-mail-events`, for Email Service's delivery events;
 - optionally, Cloudflare Email Service, to send password resets, verification and invitations,
   and the mail people write from mailboxes.
