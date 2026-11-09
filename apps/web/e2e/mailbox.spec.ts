@@ -631,6 +631,9 @@ test("an agent's mail to someone its settings don't name waits until a person ap
 	).toHaveCount(0);
 });
 
+/** Long enough that, on a phone, it has to give way to the rest of an address's row. */
+const SORTER = "Sorter for the shop's sign-ups";
+
 test("an admin lets an agent make addresses, and the workspace's page says which it made", async ({
 	page,
 	request,
@@ -640,16 +643,16 @@ test("an admin lets an agent make addresses, and the workspace's page says which
 
 	await page.goto(`/${slug}/settings/agents`);
 	await waitForHydration(page);
-	await page.getByLabel("Agent name").fill("Sorter");
+	await page.getByLabel("Agent name").fill(SORTER);
 	await page.getByRole("button", { name: "Create agent" }).click();
 	const key = await page.getByLabel("Agent key").inputValue();
 	await page.getByRole("button", { name: "Done" }).click();
 	await expect(page.getByText("Can't make addresses.")).toBeVisible();
 
 	// An admin lets it hold a few, for two weeks each, on the workspace's domain.
-	await page.getByRole("button", { name: "More for Sorter" }).click();
+	await page.getByRole("button", { name: `More for ${SORTER}` }).click();
 	await page.getByRole("menuitem", { name: "Addresses" }).click();
-	const limits = page.getByRole("dialog", { name: "Addresses Sorter can make" });
+	const limits = page.getByRole("dialog", { name: `Addresses ${SORTER} can make` });
 	await limits.getByLabel("How many at once").fill("3");
 	await limits.getByLabel("Each lasts at most, in days").fill("14");
 	await limits.getByLabel(domain).check();
@@ -667,8 +670,8 @@ test("an admin lets an agent make addresses, and the workspace's page says which
 		.filter({ has: page.getByRole("heading", { name: "Support" }) });
 	await card.getByRole("button", { name: "Choose who can read Support" }).click();
 	const access = page.getByRole("dialog", { name: "Who can read Support" });
-	await access.getByLabel("Sorter", { exact: true }).check();
-	await access.getByLabel("Sorter can send").check();
+	await access.getByLabel(SORTER, { exact: true }).check();
+	await access.getByLabel(`${SORTER} can send`).check();
 	await access.getByRole("button", { name: "Save" }).click();
 	await expect(access).toBeHidden();
 
@@ -706,8 +709,16 @@ test("an admin lets an agent make addresses, and the workspace's page says which
 		.filter({
 			hasText: address,
 		});
-	await expect(listed.getByText("Made by Sorter")).toBeVisible();
+	await expect(listed.getByText(`Made by ${SORTER}`)).toBeVisible();
 	await expect(listed.getByRole("button", { name: `Remove ${address}` })).toBeVisible();
+	// On a phone the agent's name gives way, and when it ends stays on one line.
+	await page.setViewportSize({ width: 390, height: 844 });
+	const ends = listed.getByText(/^Ends /);
+	const lineHeight = await ends.evaluate((element) =>
+		Number.parseFloat(getComputedStyle(element).lineHeight),
+	);
+	expect((await ends.boundingBox())?.height).toBeLessThan(lineHeight * 1.5);
+	await page.setViewportSize({ width: 1280, height: 720 });
 	await page.goto(`/${slug}/settings/agents`);
 	await waitForHydration(page);
 	await expect(page.getByText("Holds 1 now.", { exact: false })).toBeVisible();
