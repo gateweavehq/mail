@@ -409,7 +409,15 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
       says who wrote it (`message.sent_by`, a membership), and counts toward the mailbox's size; a
       full mailbox doesn't send.
     - **HTML and files go in the copy, and from it** (`files.ts`). A message carries text, and
-      HTML and files when its writer gives them; the composer writes text alone for now.
+      HTML and files when its writer gives them.
+      - **The composer writes text, and HTML from it.** What a person types is the text, and
+        bold, italic, links, lists and quotes are its marks (`formatting.ts`), the ones mail used
+        before Markdown took them up. When the text uses any, HTML made from it goes beside it, by
+        `marked` with only those rules on: no HTML, headings, code, tables or images in the text are
+        read, and links go to the web and mail only. Lines are kept as typed. The toolbar types the
+        marks into the text, so each change can be undone, and the preview shows the HTML that
+        will go. A reply's quote is a quote in the HTML. Files are attached, dropped or pasted,
+        and checked against the limits below as they are added.
       - **What a person approves is what goes.** The HTML is kept to what the message's page shows
         of mail (`sendableHtml` in `html.ts`, the rules `cleanHtml` uses): no scripts, forms, SVG,
         media or frames, and nothing of what they hold. Text is made from the HTML when none is
@@ -734,8 +742,8 @@ Not built. This is where it is going, and it may change.
 - **Remote images per sender**, remembered for those the reader trusts, where now they are asked
   for each time.
 - **Aliases that point at a mailbox.**
-- **Formatting and files in the composer**, as agents send them already, and forwarding and
-  replying to all.
+- **Images in the composer's HTML**, as agents send them already, forwarding, and replying to
+  all.
 
 ## What Cloudflare does with mail
 
