@@ -386,7 +386,7 @@ const getVerificationCode = operation({
 		const wait = { ...input, provedOnly: input.provedOnly ?? true };
 		const { box, found } = await waitFor(access, wait, signal);
 		if (!found) return { found: false };
-		const message = await access.message(box.id, found.id);
+		const message = await access.message(box.id, found.id, "code.read");
 		if (!message) throw new ApiError("The message was deleted as it was opened.", 404);
 		return {
 			found: true,
@@ -462,7 +462,8 @@ const reply = operation({
 	maxBody: MAX_SEND_BODY,
 	async run(access, { mailbox, messageId, text, html, attachments, draftId }) {
 		const box = await findMailbox(access, mailbox);
-		const message = await access.message(box.id, messageId);
+		// Opened for whom to answer, which the agent isn't given: what it sends is what it did.
+		const message = await access.message(box.id, messageId, null);
 		if (!message) throw new ApiError("No such message in this mailbox.", 404);
 		const { reply } = message;
 		if (reply.to.length === 0) throw new ApiError("The message names nobody to answer.", 409);

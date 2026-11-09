@@ -2,6 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { getRequestHeaders } from "@tanstack/react-start/server";
 import { z } from "zod";
 import type { AgentInfo } from "#/server/auth/agents";
+import { AGENT_LOG_KINDS, type AgentLogKind } from "./agent-log";
 import type { ListedMessage } from "./mailbox";
 import { isAdminRole } from "./roles";
 
@@ -62,6 +63,21 @@ export interface AgentActivity {
 	/** The mailboxes it was given that didn't answer just now, so the lists may lack theirs. */
 	unread: { id: string; name: string }[];
 }
+
+/** A page of one agent's log, for owners and admins. Null as for `getAgentActivity`. */
+export const getAgentLog = createServerFn({ method: "GET" })
+	.validator(
+		z.object({
+			slug: z.string().min(1),
+			agentId: z.string().min(1),
+			kind: z.enum(Object.keys(AGENT_LOG_KINDS) as [AgentLogKind, ...AgentLogKind[]]).nullable(),
+			before: z.object({ at: z.number().int().min(0), id: z.string().min(1).max(100) }).nullable(),
+		}),
+	)
+	.handler(async ({ data }) => {
+		const { agentLog } = await import("#/server/mailbox/agent-activity");
+		return agentLog(data.slug, data.agentId, data.kind, data.before);
+	});
 
 /** One agent's page, for owners and admins. Null for anyone else, or an agent not of the workspace. */
 export const getAgentActivity = createServerFn({ method: "GET" })

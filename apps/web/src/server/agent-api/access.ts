@@ -1,5 +1,7 @@
 import { eq } from "drizzle-orm";
+import type { AgentLogAction } from "../../lib/agent-log";
 import { currentCaller } from "../access";
+import { noteAgent } from "../agent-log";
 import { db } from "../auth";
 import { AGENT_PAUSED, agentPolicyOf, findAgentByKey, isAgentKey } from "../auth/agents";
 import { schema } from "../db";
@@ -12,7 +14,7 @@ import { appOrigin } from "../origin";
 import { allowAgentWait } from "../rate-limit";
 import type { Asker, Refused } from "../webhooks";
 import { webhooksStub } from "../webhooks";
-import { type Answer, ApiError, type MailAccess } from "./mail-access";
+import { type AgentWebhookPatch, type Answer, ApiError, type MailAccess } from "./mail-access";
 
 /** What an agent is told when its key no longer works. */
 const REVOKED = "That agent key doesn't work: it was revoked, or its agent deleted.";
@@ -115,10 +117,21 @@ export function accessFor(slug: string, key: string): MailAccess {
 		// Paused after `caller` looked.
 		if ("paused" in agent) throw new ApiError(AGENT_PAUSED, 403);
 		const asker: Asker = { agent: memberId, key: agent.keyId };
+		/** Notes in the agent's log what it did to one of its webhooks. */
+		const note = (action: AgentLogAction, id: string, detail: string | null = null) =>
+			noteAgent(db, {
+				workspaceId,
+				agentMemberId: memberId,
+				by: "agent",
+				action,
+				targetId: id,
+				detail,
+			});
 		return {
 			stub: webhooksStub(workspaceId),
 			asker,
 			link: { workspaceId, slug, origin: appOrigin() },
+			note,
 		};
 	};
 
@@ -166,8 +179,8 @@ export function accessFor(slug: string, key: string): MailAccess {
 			unlessPaused(await listThreads(slug, mailboxId, before, query)),
 		thread: async (mailboxId, threadId, before) =>
 			unlessPaused(await openThread(slug, mailboxId, threadId, before)),
-		message: async (mailboxId, messageId) =>
-			unlessPaused(await openMessage(slug, mailboxId, messageId)),
+		message: async (mailboxId, messageId, reading) =>
+			unlessPaused(await openMessage(slug, mailboxId, messageId, reading)),
 		addresses: (mailboxId, action: AgentAddressAction | null) =>
 			ask(
 				mailboxPath(mailboxId, "addresses"),
@@ -186,26 +199,44 @@ export function accessFor(slug: string, key: string): MailAccess {
 			return stub.list(asker);
 		},
 		async createWebhook(fields) {
-			const { stub, asker, link } = await hooks();
+			const { stub, asker, link, note } = await hooks();
 			const made = await stub.create(link, fields, asker);
 			if (!made.ok) throw refusal(made);
+			// Its host, as a URL's path or query can hold a token of the receiver's.
+			await note("webhook.made", made.webhook.id, new URL(made.webhook.url).host);
 			return { webhook: made.webhook, secret: made.secret };
 		},
 		async updateWebhook(id, patch, renew) {
-			const { stub, asker, link } = await hooks();
+			const { stub, asker, link, note } = await hooks();
 			const changed = await stub.update(link, id, patch, asker, renew);
 			if (!changed.ok) throw refusal(changed);
+			await note("webhook.changed", id, webhookChange(patch, renew));
 			return { webhook: changed.webhook, secret: changed.secret };
 		},
 		async deleteWebhook(id) {
-			const { stub, asker } = await hooks();
+			const { stub, asker, note } = await hooks();
 			const removed = await stub.remove(id, asker);
 			if (!removed.ok) throw refusal(removed);
+			await note("webhook.deleted", id);
 		},
 		async testWebhook(id) {
-			const { stub, asker, link } = await hooks();
+			const { stub, asker, link, note } = await hooks();
 			const queued = await stub.test(link, id, asker);
 			if (!queued.ok) throw refusal(queued);
+			await note("webhook.tested", id);
 		},
 	};
+}
+
+/** What a change to a webhook was, in a few words, for the agent's log. */
+export function webhookChange(patch: AgentWebhookPatch, renew: boolean): string {
+	const said = [
+		patch.url !== undefined && `where it goes: ${new URL(patch.url).host}`,
+		patch.events !== undefined && "what it hears of",
+		patch.mailboxIds !== undefined && "its mailboxes",
+		patch.active === false && "paused",
+		patch.active === true && "resumed",
+		renew && "a new secret",
+	];
+	return said.filter((part) => part !== false).join(", ");
 }

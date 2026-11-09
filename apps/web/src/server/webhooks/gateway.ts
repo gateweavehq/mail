@@ -8,6 +8,7 @@ import {
 	webhookPatch,
 } from "../../lib/webhooks";
 import { currentMember } from "../access";
+import { noteAgent } from "../agent-log";
 import { db } from "../auth";
 import { schema } from "../db";
 import { appOrigin } from "../origin";
@@ -93,6 +94,18 @@ export async function changeWebhooks(request: Request, slug: string): Promise<Re
 	const link: WebhookLink = { workspaceId, slug, origin: appOrigin() };
 	const hooks = webhooksStub(workspaceId);
 	const change = parsed.data;
+	const userId = member.user.id;
+	/** Notes in an agent's log what this admin did to a webhook it made, when an agent made it. */
+	const noteAgentsHook = async (
+		agentMemberId: string | null,
+		action: "webhook.changed" | "webhook.deleted" | "webhook.tested",
+		targetId: string,
+		detail: string | null = null,
+	) => {
+		if (agentMemberId === null) return;
+		const by = { userId };
+		await noteAgent(db, { workspaceId, agentMemberId, by, action, targetId, detail });
+	};
 	switch (change.action) {
 		case "create": {
 			const unknown = await unknownMailbox(workspaceId, change.input.mailboxIds);
@@ -102,14 +115,28 @@ export async function changeWebhooks(request: Request, slug: string): Promise<Re
 		case "update": {
 			const unknown = await unknownMailbox(workspaceId, change.patch.mailboxIds);
 			if (unknown) return unknown;
-			return reply(await hooks.update(link, change.id, change.patch, ADMIN));
+			const changed = await hooks.update(link, change.id, change.patch, ADMIN);
+			// Of an agent's own, an admin only pauses or resumes it.
+			if (changed.ok && change.patch.active !== undefined) {
+				const detail = change.patch.active ? "resumed" : "paused";
+				await noteAgentsHook(changed.webhook.agentMemberId, "webhook.changed", change.id, detail);
+			}
+			return reply(changed);
 		}
-		case "delete":
-			return reply(await hooks.remove(change.id, ADMIN));
+		case "delete": {
+			const removed = await hooks.remove(change.id, ADMIN);
+			if (!removed.ok) return reply(removed);
+			await noteAgentsHook(removed.agentMemberId, "webhook.deleted", change.id);
+			return reply({ ok: true });
+		}
 		case "rotate":
 			return reply(await hooks.rotate(change.id, ADMIN));
-		case "test":
-			return reply(await hooks.test(link, change.id, ADMIN));
+		case "test": {
+			const queued = await hooks.test(link, change.id, ADMIN);
+			if (!queued.ok) return reply(queued);
+			await noteAgentsHook(queued.agentMemberId, "webhook.tested", change.id);
+			return reply({ ok: true });
+		}
 	}
 }
 

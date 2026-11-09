@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findVerificationCode } from "./verification-code";
+import { findVerificationCode, withoutCode } from "./verification-code";
 
 describe("findVerificationCode", () => {
 	it("finds the code a message names", () => {
@@ -81,5 +81,21 @@ describe("findVerificationCode", () => {
 			findVerificationCode(text, text);
 			expect(performance.now() - started).toBeLessThan(500);
 		}
+	});
+});
+
+describe("withoutCode", () => {
+	it("blanks out the code a subject gives, and what else could be one", () => {
+		expect(withoutCode("482913 is your GitHub code")).toBe("••• is your GitHub code");
+		expect(withoutCode("Your sign-in code: XKD-4PQ")).toBe("Your sign-in code: •••");
+		expect(withoutCode("Your code is 482 913")).toBe("Your code is •••");
+		expect(withoutCode("Verify 1234 or 5678")).toBe("Verify ••• or •••");
+	});
+
+	it("leaves a subject that gives no code as it is", () => {
+		expect(withoutCode("Your parcel left on Monday")).toBe("Your parcel left on Monday");
+		expect(withoutCode("Order 48291 has shipped")).toBe("Order 48291 has shipped");
+		expect(withoutCode("Your 2026 sign-in report")).toBe("Your 2026 sign-in report");
+		expect(withoutCode("")).toBe("");
 	});
 });

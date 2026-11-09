@@ -147,3 +147,25 @@ export function findVerificationCode(subject: string, text: string): string | nu
 	const alone = [...new Set(lines.map(codeAlone).filter((code) => code !== null))];
 	return alone.length === 1 ? (alone[0] ?? null) : null;
 }
+
+/**
+ * A line, such as a subject, with the code it gives blanked out, and with it whatever else in it
+ * could be one, as an agent's log keeps a subject but never a code. The line as it is when it
+ * gives none.
+ */
+export function withoutCode(line: string): string {
+	if (!codeInLine(line.slice(0, MAX_LINE))) return line;
+	const clean = withoutNoise(line);
+	const spans = [...clean.matchAll(DIGITS), ...clean.matchAll(MIXED)]
+		.filter((match) => !YEAR.test(match[0].replace(/[ -]/g, "")))
+		.map((match) => ({ start: match.index, end: match.index + match[0].length }))
+		.sort((one, other) => one.start - other.start);
+	let kept = "";
+	let from = 0;
+	for (const { start, end } of spans) {
+		if (start < from) continue;
+		kept += `${line.slice(from, start)}•••`;
+		from = end;
+	}
+	return kept + line.slice(from);
+}

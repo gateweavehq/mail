@@ -1,9 +1,12 @@
 import { getRequestHeaders } from "@tanstack/react-start/server";
 import { and, asc, eq } from "drizzle-orm";
+import { type AgentLogKind, type AgentLogPage, isAgentLogKind } from "../../lib/agent-log";
 import { AGENT_PAGE_LISTED, type AgentActivity, type AgentMessage } from "../../lib/agents";
 import { isAdminRole } from "../../lib/roles";
 import { bearsKey, currentMember } from "../access";
+import { agentLogPage } from "../agent-log";
 import { db, getAuth } from "../auth";
+import { AGENT_ROLE } from "../auth/agents";
 import { schema } from "../db";
 import { liveAt } from "../directory/agent-address-store";
 import type { StoredSummary } from "./durable-object";
@@ -120,4 +123,50 @@ export async function agentActivityAnswer(slug: string, agentId: string): Promis
 		status: activity ? 200 : 404,
 		headers: { "cache-control": "no-store" },
 	});
+}
+
+/**
+ * A page of what an agent of this workspace did and what people did to it, newest first, of one
+ * kind or all, for an owner or admin signed in. Null for anyone else, as for `agentActivity`.
+ */
+export async function agentLog(
+	slug: string,
+	agentId: string,
+	kind: AgentLogKind | null,
+	before: { at: number; id: string } | null,
+): Promise<AgentLogPage | null> {
+	if (bearsKey(getRequestHeaders())) return null;
+	const caller = await currentMember(slug);
+	if (!caller || !isAdminRole(caller.membership.role)) return null;
+	const { workspaceId } = caller.membership;
+	const { member } = schema;
+	const agent = await db
+		.select({ memberId: member.id })
+		.from(member)
+		.where(
+			and(
+				eq(member.userId, agentId),
+				eq(member.organizationId, workspaceId),
+				eq(member.role, AGENT_ROLE),
+			),
+		)
+		.get();
+	return agent ? agentLogPage(db, workspaceId, agent.memberId, kind, before) : null;
+}
+
+/**
+ * The same, as the API's answer, for `GET /api/agents/<workspace>/<agent>/log`, with `kind`, and
+ * `beforeAt` and `beforeId` for an older page: JSON, or 404 for whoever may not see it.
+ */
+export async function agentLogAnswer(slug: string, agentId: string, url: URL): Promise<Response> {
+	const headers = { "cache-control": "no-store" };
+	const asked = url.searchParams.get("kind");
+	if (asked !== null && !isAgentLogKind(asked)) {
+		return Response.json({ error: "No such kind" }, { status: 400, headers });
+	}
+	const at = Number(url.searchParams.get("beforeAt"));
+	const id = url.searchParams.get("beforeId");
+	const before = id && Number.isSafeInteger(at) && at >= 0 && id.length <= 100 ? { at, id } : null;
+	const page = await agentLog(slug, agentId, asked, before);
+	return Response.json(page ?? { error: "Not found" }, { status: page ? 200 : 404, headers });
 }

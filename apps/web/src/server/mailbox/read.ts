@@ -16,6 +16,7 @@ import { MAX_QUERY_SENT } from "../../lib/mailbox";
 import type { SendStatus } from "../../lib/outbox";
 import { canReadMailbox, isAdminRole } from "../../lib/roles";
 import { type Caller, currentCaller, currentMember } from "../access";
+import { noteAgent } from "../agent-log";
 import { db } from "../auth";
 import { schema } from "../db";
 import { appOrigin } from "../origin";
@@ -79,7 +80,7 @@ export async function openMailbox(slug: string, mailboxId: string, { people = fa
 /** The member signed in, as a caller. */
 async function signedIn(slug: string): Promise<Caller | null> {
 	const member = await currentMember(slug);
-	return member && { userId: member.user.id, membership: member.membership };
+	return member && { userId: member.user.id, membership: member.membership, keyed: false };
 }
 
 /** An open mailbox, as `openMailbox` gives it. */
@@ -195,6 +196,18 @@ export async function listThreads(
 ): Promise<ThreadsPage | null> {
 	const box = await openMailbox(slug, mailboxId);
 	if (!box) return null;
+	// A search finds by what messages say, so an agent's is noted, once for its first page, and
+	// without its words, which can be what it looked for in them.
+	if (box.member.keyed && query && before === null) {
+		const { workspaceId, memberId } = box.member.membership;
+		await noteAgent(db, {
+			workspaceId,
+			agentMemberId: memberId,
+			by: "agent",
+			action: "mail.searched",
+			mailboxId: box.id,
+		});
+	}
 	const first = before === null && !query;
 	const [rows, from, held] = await Promise.all([
 		query ? box.stub.search(query, before, PAGE_SIZE + 1) : box.stub.threads(before, PAGE_SIZE + 1),
@@ -276,9 +289,36 @@ export async function openMessage(
 	slug: string,
 	mailboxId: string,
 	messageId: string,
+	reading: MessageReading | null = "message.read",
 ): Promise<OpenedMessage | null> {
 	const box = await openMailbox(slug, mailboxId);
-	return box ? readMessage(box, messageId) : null;
+	return box ? readMessage(box, messageId, undefined, reading) : null;
+}
+
+/**
+ * What an agent opens a message for, as its log says: all of it, or only a code in it. Where null
+ * is taken instead, the agent isn't given it, as when Mail opens it to address a reply.
+ */
+export type MessageReading = "message.read" | "code.read";
+
+/** Notes in the agent's log that it read a message, when the caller is an agent with its key. */
+async function noteRead(
+	box: OpenMailbox,
+	row: { id: string; threadId: string; subject: string | null },
+	reading: MessageReading | null,
+) {
+	if (!box.member.keyed || reading === null) return;
+	const { workspaceId, memberId } = box.member.membership;
+	await noteAgent(db, {
+		workspaceId,
+		agentMemberId: memberId,
+		by: "agent",
+		action: reading,
+		mailboxId: box.id,
+		targetId: row.id,
+		threadId: row.threadId,
+		subject: decoded(row.subject),
+	});
 }
 
 /**
@@ -289,11 +329,13 @@ async function readMessage(
 	box: OpenMailbox,
 	messageId: string,
 	from?: string[],
+	reading: MessageReading | null = "message.read",
 ): Promise<OpenedMessage | null> {
 	const row = await box.stub.get(messageId);
 	if (!row) return null;
 	const object = await env.RAW_MAIL.get(row.object);
 	if (!object) return null;
+	await noteRead(box, row, reading);
 	const email = await PostalMime.parse(object.body);
 	const fromHtml = email.text === undefined && email.html ? await textOfHtml(email.html) : null;
 	const text = fromHtml?.text ?? email.text ?? "";
@@ -356,7 +398,9 @@ async function storedMail(slug: string, mailboxId: string, messageId: string) {
 	if (!box) return null;
 	const row = await box.stub.get(messageId);
 	if (!row) return null;
-	return env.RAW_MAIL.get(row.object);
+	const object = await env.RAW_MAIL.get(row.object);
+	if (object) await noteRead(box, row, "message.read");
+	return object;
 }
 
 /** The raw mail, as a download, or a 404 for anyone who can't see it. */

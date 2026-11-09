@@ -331,14 +331,15 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 		});
 	}
 
-	/** Deletes a webhook and what it had not delivered. */
-	remove(id: string, asker: Asker): { ok: true } | Refused {
+	/** Deletes a webhook and what it had not delivered, and says which agent's it was, if any. */
+	remove(id: string, asker: Asker): { ok: true; agentMemberId: string | null } | Refused {
 		const sql = this.ctx.storage.sql;
 		return this.ctx.storage.transactionSync(() => {
-			if (!this.#row(id, asker)) return refused(404, "No such webhook.");
+			const row = this.#row(id, asker);
+			if (!row) return refused(404, "No such webhook.");
 			sql.exec("DELETE FROM delivery WHERE webhook_id = ?", id);
 			sql.exec("DELETE FROM webhook WHERE id = ?", id);
-			return { ok: true as const };
+			return { ok: true as const, agentMemberId: row.agentMemberId };
 		});
 	}
 
@@ -363,8 +364,15 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 		});
 	}
 
-	/** Queues a `webhook.test` delivery, whatever the webhook listens to, one at a time. */
-	async test(link: WebhookLink, id: string, asker: Asker): Promise<{ ok: true } | Refused> {
+	/**
+	 * Queues a `webhook.test` delivery, whatever the webhook listens to, one at a time, and says
+	 * which agent's webhook it is, if any.
+	 */
+	async test(
+		link: WebhookLink,
+		id: string,
+		asker: Asker,
+	): Promise<{ ok: true; agentMemberId: string | null } | Refused> {
 		const sql = this.ctx.storage.sql;
 		const now = Date.now();
 		const queued = this.ctx.storage.transactionSync(() => {
@@ -386,7 +394,7 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 				data: { workspace: { id: link.workspaceId, slug: link.slug }, webhookId: id },
 			};
 			this.#queue(id, WEBHOOK_TEST_EVENT, null, JSON.stringify(payload), now);
-			return { ok: true as const };
+			return { ok: true as const, agentMemberId: row.agentMemberId };
 		});
 		if (queued.ok) await this.#alarmBy(now);
 		return queued;

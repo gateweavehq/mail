@@ -1,4 +1,5 @@
 import { type Column, inArray, lt, sql } from "drizzle-orm";
+import { AGENT_LOG_DAYS } from "../../lib/agent-log";
 import { ENDED_ADDRESS_KEPT_DAYS } from "../directory";
 import { pruneSuppressions } from "../suppressions";
 import type { Database } from "./index";
@@ -13,7 +14,8 @@ async function pruneOlder(
 		| typeof schema.session
 		| typeof schema.verification
 		| typeof schema.invitation
-		| typeof schema.mailAddress,
+		| typeof schema.mailAddress
+		| typeof schema.agentLog,
 	column: Column,
 	before: Date,
 ) {
@@ -47,7 +49,8 @@ async function pruneRemovedAddresses(db: Database, before: Date) {
  * its name doesn't pass to someone else while what it signed up for still writes to it, and a name
  * removed by hand is kept from agents as long. A
  * suppression that has ended goes at once: it names someone the workspace wrote to, and no longer
- * stops anything. One someone removed goes once no event from before then can still come.
+ * stops anything. One someone removed goes once no event from before then can still come. An
+ * agent's log keeps what it did, and who changed it, for `AGENT_LOG_DAYS`.
  */
 export async function pruneExpired(db: Database): Promise<void> {
 	const now = new Date();
@@ -58,4 +61,6 @@ export async function pruneExpired(db: Database): Promise<void> {
 	await pruneOlder(db, schema.mailAddress, schema.mailAddress.expiresAt, keptSince);
 	await pruneRemovedAddresses(db, keptSince);
 	await pruneSuppressions(db, now.getTime(), BATCH);
+	const logSince = new Date(now.getTime() - AGENT_LOG_DAYS * 24 * 60 * 60 * 1000);
+	await pruneOlder(db, schema.agentLog, schema.agentLog.at, logSince);
 }
