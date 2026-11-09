@@ -386,6 +386,30 @@ describe("an agent's MCP server", () => {
 		expect(readOnly).toMatch(/may read this mailbox but not send/);
 	});
 
+	it("sends files larger than the SDK's own limit on a call", async () => {
+		const space = await workspace();
+		const agent = await agentOf(space);
+		const mcp = await connect(agent.key);
+		// 5 MB of file, past the 4 MiB the MCP handler takes unless told otherwise.
+		const bytes = "0123456789".repeat(500_000);
+		const held = await ok<{ id: string; state: string }>(mcp, "send_email", {
+			mailbox: space.signUps.id,
+			to: ["stranger@example.org"],
+			subject: "Data",
+			text: "The data.",
+			attachments: [{ filename: "data.csv", content: btoa(bytes) }],
+		});
+		expect(held.state).toBe("held");
+		const read = await ok<{ message: { attachments: { name: string; size: number }[] } }>(
+			mcp,
+			"read_email",
+			{ mailbox: space.signUps.id, messageId: held.id },
+		);
+		expect(read.message.attachments).toEqual([
+			{ name: "data.csv", type: "text/csv", size: 5_000_000 },
+		]);
+	});
+
 	it("takes only a working agent key, of the workspace it was made for", async () => {
 		const space = await workspace();
 		const agent = await agentOf(space);

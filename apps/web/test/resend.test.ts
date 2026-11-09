@@ -25,7 +25,14 @@ interface ResendRequest {
 		cc?: string[];
 		subject: string;
 		text: string;
+		html?: string;
 		headers?: Record<string, string>;
+		attachments?: {
+			filename: string;
+			content: string;
+			content_type: string;
+			content_id?: string;
+		}[];
 	};
 }
 
@@ -400,6 +407,36 @@ describe("a domain that sends through Resend", () => {
 			},
 		});
 		expect((await mail.emails()).filter((email) => [email.to].flat().includes(to))).toEqual([]);
+	});
+
+	it("hands Resend the HTML and the files from the mailbox's copy", async () => {
+		const box = await resendBox();
+		const to = `files.${box.slug}@example.org`;
+		const logo = btoa(String.fromCharCode(0x89, 0x50, 0x4e, 0x47, 1, 2, 3));
+		const pdf = btoa("%PDF-1.4 a report");
+		const html = '<p>Attached.</p><img src="cid:logo">';
+		const response = await outbox(box, {
+			action: "send",
+			to: [to],
+			subject: "Files",
+			text: "Attached.",
+			html,
+			attachments: [
+				{ filename: "Rapor — Ekim.pdf", content: pdf },
+				{ filename: "logo.png", content: logo, contentId: "logo" },
+			],
+		});
+		expect(await response.json()).toMatchObject({ ok: true, state: "sent" });
+		const [request] = requestsTo(to);
+		expect(request?.body).toMatchObject({
+			text: "Attached.",
+			html,
+			attachments: [
+				{ filename: "logo.png", content: logo, content_type: "image/png", content_id: "logo" },
+				{ filename: "Rapor — Ekim.pdf", content: pdf, content_type: "application/pdf" },
+			],
+		});
+		expect(request?.body.attachments?.[1]).not.toHaveProperty("content_id");
 	});
 
 	it("is refused when it is written without a key, before anything counts", async () => {

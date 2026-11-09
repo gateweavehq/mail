@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
-import { type SendStatus, SUPPRESSED_CODE } from "../../lib/outbox";
+import PostalMime from "postal-mime";
+import { COPY_UNREAD_CODE, type SendStatus, SUPPRESSED_CODE } from "../../lib/outbox";
 import { KEY_CHANGED, RESEND_CODE, type SendsWith } from "../../lib/providers";
 import type { SentEventType } from "../../lib/webhooks";
 import { createDb } from "../db";
@@ -106,8 +107,13 @@ export interface Sending {
 	ownId: string;
 	/** The ids it follows, which thread it. */
 	references: string[];
-	/** What the `EMAIL` binding's `send()` is given, and what Resend's request is made from. */
+	/**
+	 * What the `EMAIL` binding's `send()` is given, and what Resend's request is made from, but for
+	 * its files, which each try reads from the copy.
+	 */
 	request: EmailMessageBuilder;
+	/** How many files the copy carries. */
+	files: number;
 	/** How it goes: by its domain's setting when it was written. */
 	provider: SendsWith;
 	/** The draft's own id, which makes a second send of it the first one's. */
@@ -162,6 +168,8 @@ type Trying = {
 	maybeSent: number;
 	/** Which saving of the workspace's Resend key the last try used. */
 	keyVersion: string | null;
+	/** How many files its copy carries, which the try reads from there. */
+	files: number;
 };
 
 /** Who a message goes to, To and Cc, as its request names them. */
@@ -533,8 +541,8 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			// for approval is left alone by the alarm.
 			sql.exec(
 				`INSERT INTO outgoing (message, state, request, attempted_at, draft, provider, workspace_id,
-					idempotency_key)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+					idempotency_key, files)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				id,
 				sending.hold ? "held" : "sending",
 				JSON.stringify(sending.request),
@@ -543,6 +551,7 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 				sending.provider,
 				sending.workspaceId,
 				id,
+				sending.files,
 			);
 		});
 		await this.#alarmBy(Date.now() + PENDING_MS);
@@ -665,7 +674,8 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 					key_version = CASE WHEN ? AND code = ? THEN NULL ELSE key_version END
 				WHERE message = ? AND ${found}
 				RETURNING request, attempts, provider, workspace_id AS workspaceId,
-					idempotency_key AS idempotencyKey, maybe_sent AS maybeSent, key_version AS keyVersion`,
+					idempotency_key AS idempotencyKey, maybe_sent AS maybeSent, key_version AS keyVersion,
+					files`,
 				now,
 				from === "again" || from === "approve" ? 1 : 0,
 				approvedBy,
@@ -753,7 +763,19 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 
 	/** Hands a message to Email Service or Resend once, and says how that went. Never throws. */
 	async #deliver(id: string, row: Trying): Promise<Delivered> {
-		const request = JSON.parse(row.request) as EmailMessageBuilder;
+		const written = JSON.parse(row.request) as EmailMessageBuilder;
+		const files = row.files > 0 ? await this.#filesOf(id) : [];
+		if (files === null) {
+			// Nothing was asked of a provider, though an earlier try through Resend may have sent it.
+			return {
+				ok: false,
+				outcome: { state: row.maybeSent === 1 ? "uncertain" : "refused", code: COPY_UNREAD_CODE },
+				detail: null,
+				answered: false,
+				maybeSent: false,
+			};
+		}
+		const request = files.length > 0 ? { ...written, attachments: files } : written;
 		if (row.provider !== "resend") {
 			try {
 				const result = await this.env.EMAIL.send(request);
@@ -816,6 +838,37 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			idempotencyKey: row.idempotencyKey ?? id,
 		});
 		return answer.ok ? { ok: true, providerId: answer.id } : failed(answer.failure);
+	}
+
+	/**
+	 * The files of a message the mailbox sends, read from its copy, in Base64, as both providers take
+	 * them. Null when the copy can't be read, or is gone.
+	 */
+	async #filesOf(id: string): Promise<EmailAttachment[] | null> {
+		const row = this.ctx.storage.sql
+			.exec<{ object: string }>("SELECT object FROM message WHERE id = ?", id)
+			.toArray()[0];
+		if (!row) return null;
+		try {
+			const object = await this.env.RAW_MAIL.get(row.object);
+			if (!object) return null;
+			const email = await PostalMime.parse(await object.arrayBuffer(), {
+				attachmentEncoding: "base64",
+			});
+			return email.attachments.map((file): EmailAttachment => {
+				const contentId = file.contentId?.replace(/^<|>$/g, "") || null;
+				const sent = {
+					content: typeof file.content === "string" ? file.content : "",
+					filename: file.filename ?? "file",
+					type: file.mimeType,
+				};
+				return contentId === null
+					? { ...sent, disposition: "attachment" }
+					: { ...sent, disposition: "inline", contentId };
+			});
+		} catch {
+			return null;
+		}
 	}
 
 	/**

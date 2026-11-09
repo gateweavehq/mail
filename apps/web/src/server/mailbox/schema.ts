@@ -228,6 +228,12 @@ const VERSION_9 = `
 ALTER TABLE event ADD COLUMN data TEXT;
 `;
 
+// How many files a message the mailbox sends carries. Their bytes stay in its copy in R2, which each
+// try reads them from, so none are in the request kept here.
+const VERSION_10 = `
+ALTER TABLE outgoing ADD COLUMN files INTEGER NOT NULL DEFAULT 0;
+`;
+
 /** Each brings the schema from the version before it. Append only: objects keep what they ran. */
 export const MIGRATIONS: ((sql: SqlStorage) => void)[] = [
 	(sql) => sql.exec(VERSION_1),
@@ -256,6 +262,7 @@ export const MIGRATIONS: ((sql: SqlStorage) => void)[] = [
 	(sql) => sql.exec(VERSION_7),
 	(sql) => sql.exec(VERSION_8),
 	(sql) => sql.exec(VERSION_9),
+	(sql) => sql.exec(VERSION_10),
 ];
 
 /** What migrating needs of a Durable Object's storage. */

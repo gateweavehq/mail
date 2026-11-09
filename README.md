@@ -6,8 +6,8 @@
 
 <p align="center">
   <strong>Mailboxes for people and agents, on one Cloudflare Worker.</strong><br>
-  Open source, with no server to run. Early: it receives and keeps mail, and people reply and
-  write from their mailboxes in plain text.
+  Open source, with no server to run. Early: it receives and keeps mail, and people and agents
+  reply and write from their mailboxes.
 </p>
 
 <p align="center">
@@ -24,9 +24,10 @@ tools that run on Cloudflare, next to [Gateweave Track](https://github.com/gatew
 [Gateweave ID](https://github.com/gateweavehq/id) and
 [Gateweave Agents](https://github.com/gateweavehq/agents).
 
-> **Status: early development.** Mail receives and keeps mail, and sends plain text. What exists
-> is sign-in, workspaces, a directory of domains and addresses, and mailboxes whose messages the
-> people given them read and answer. Expect breaking changes until 1.0; see
+> **Status: early development.** Mail receives and keeps mail, and sends it: plain text from
+> people for now, and HTML and files from agents. What exists is sign-in, workspaces, a
+> directory of domains and addresses, and mailboxes whose messages the people given them read and
+> answer. Expect breaking changes until 1.0; see
 > [CHANGELOG.md](CHANGELOG.md).
 
 ## What works today
@@ -52,8 +53,8 @@ tools that run on Cloudflare, next to [Gateweave Track](https://github.com/gatew
 - **Search.** Find a mailbox's threads by the words in their messages: subject, sender, text and
   attachment names.
 - **Replying and writing.** Whoever reads a mailbox replies to its mail and writes new mail from
-  its addresses, in plain text, through Cloudflare Email Service. The copy shows in its thread at
-  once, with who wrote it and whether it went; one that wasn't sent can be sent again or
+  its addresses, in plain text for now, through Cloudflare Email Service. The copy shows in its
+  thread at once, with who wrote it and whether it went; one that wasn't sent can be sent again or
   discarded, and one that may have gone is never sent twice by itself.
 - **Resend for domains elsewhere.** A domain whose DNS isn't on your Cloudflare account can send
   through Resend instead, with the workspace's own key, which Mail keeps encrypted and never shows
@@ -63,8 +64,8 @@ tools that run on Cloudflare, next to [Gateweave Track](https://github.com/gatew
   to agents. Mail's MCP server, at `/mcp`, has tools that wait for mail to come and hand over the
   code in a sign-up or sign-in message without the rest of its text. The same operations are a
   REST API at `/api/v1`, described by an OpenAPI document at `/api/v1/openapi.json`.
-  A mailbox can let an agent send too. Mail to the addresses and domains its settings name goes
-  on its own; the rest waits for someone who reads the mailbox to approve or reject it. Each
+  A mailbox can let an agent send too, in text or HTML and with files. Mail to the addresses and
+  domains its settings name goes on its own; the rest waits for someone who reads the mailbox to approve or reject it. Each
   agent has a daily limit of its own. An agent can also make addresses for itself, such as one
   for each sign-up, on the domains an admin gives it, as many and for as long as the admin
   allows. Each one ends.
@@ -80,7 +81,8 @@ tools that run on Cloudflare, next to [Gateweave Track](https://github.com/gatew
 None of this exists yet; it is the direction, and it may change.
 
 - Agents that act on mail as well as read and send it, such as filing or labelling it.
-- Formatting, attachments, forwarding and replying to all when writing.
+- Formatting and files in the composer, as agents send them already, and forwarding and
+  replying to all.
 - Aliases that point at a mailbox.
 - Transactional sending and templates, through Cloudflare Email Service.
 

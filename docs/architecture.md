@@ -221,7 +221,8 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     `/api/v1/openapi.json` is written from the same schemas (`z.toJSONSchema`), so a tool, its
     route and the document can't say different things. A route takes its inputs from its path,
     then from its query string for a GET or DELETE, reading numbers and booleans as the input
-    has them, or from its JSON body for a POST or PATCH (1 MB at most, however it is sent), and
+    has them, or from its JSON body for a POST or PATCH (1 MB at most, however it is sent, or
+    16 MB for `send_email` and `reply`, whose files come in it), and
     answers
     what the tool would, checked against the same schema, or `{ "error" }` with 400, 401, 403,
     404, 409, 413 or 429 (with `Retry-After` when known). A failure of Mail's own is a 500 over
@@ -399,7 +400,7 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     mailbox's addresses on a proved domain that hasn't run out (`senders.ts`): the one chosen, or
     for a reply the one the answered message came to, or else the oldest. It goes through the
     `EMAIL` binding of Cloudflare Email Service, which sends only from a domain onboarded for
-    Email Sending. It is plain text for now, to at most 20 people, To and Cc together, with a
+    Email Sending. It goes to at most 20 people, To and Cc together, with a
     subject that has no line break. A workspace sends at most 200 messages a day (`SEND_PER_DAY`),
     counted by the rate-limit object, besides Email Service's own limits.
     - **Its copy is in the mailbox before it goes.** The object takes the message as Mail wrote it,
@@ -407,6 +408,21 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
       in one transaction, and only then calls the binding. So the copy is in its thread at once,
       says who wrote it (`message.sent_by`, a membership), and counts toward the mailbox's size; a
       full mailbox doesn't send.
+    - **HTML and files go in the copy, and from it** (`files.ts`). A message carries text, and
+      HTML and files when its writer gives them; the composer writes text alone for now. Text is
+      made from the HTML when none is written, and a message with neither isn't sent. It takes at
+      most 20 files, 10 MB together, in Base64, each named in 200 characters at most without a path.
+      A file's type comes from its name when none is given, and an image the HTML shows by `cid:`
+      has that content id. The kinds of file Resend refuses (`.exe`, `.js`, `.bat`, `.msi` and the
+      rest of `REFUSED_KINDS`) are refused for both providers, as many mail servers refuse them
+      too, when the message is written and before anything counts. The copy in R2 is the whole
+      message in MIME (`multipart/alternative` for the HTML, `related` for the images it shows,
+      `mixed` for files), while the object keeps only the text and HTML in its request and the
+      number of files (`outgoing.files`). Each try reads the files back from the copy, so a held
+      message sends what its approver could open, and a try that can't read it sends nothing:
+      it is refused (`mail:copy_unread`), or `uncertain` after a try that may have gone. Base64
+      makes 10 MB about 13.4, so the API takes a body of 16 MB to send (`MAX_SEND_BODY`), and so
+      does the MCP handler.
     - **Its own id keeps the thread.** Email Service makes the `Message-ID` and refuses one from
       the sender, and nothing says the id it returns is the header's. So Mail gives each message an
       id of its own, `<uuid@domain>`, puts it last in `References`, and keeps it as the copy's own:
@@ -703,7 +719,8 @@ Not built. This is where it is going, and it may change.
 - **Remote images per sender**, remembered for those the reader trusts, where now they are asked
   for each time.
 - **Aliases that point at a mailbox.**
-- **Writing more than plain text**: formatting, attachments, forwarding and replying to all.
+- **Formatting and files in the composer**, as agents send them already, and forwarding and
+  replying to all.
 
 ## What Cloudflare does with mail
 

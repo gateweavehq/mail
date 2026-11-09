@@ -196,6 +196,49 @@ describe("the agent API", () => {
 		).toEqual({ ended: true });
 	});
 
+	it("sends HTML and files with its key, taking a large body only where files go", async () => {
+		const space = await workspace();
+		const agent = await agentOf(space);
+		const bearer = { authorization: `Bearer ${agent.key}` };
+		const messages = `${box(space.signUps.id)}/messages`;
+		// Past the 1 MB every other route takes.
+		const report = btoa("%PDF-1.4 ".repeat(200_000));
+		const held = await done<{ id: string; state: string }>(
+			agent.key,
+			"send_email",
+			"POST",
+			messages,
+			{
+				to: ["stranger@example.org"],
+				subject: "The report",
+				html: "<p>The <b>report</b>.</p>",
+				attachments: [{ filename: "report.pdf", content: report }],
+			},
+		);
+		expect(held.state).toBe("held");
+		const read = await done<{
+			message: { text: string; attachments: { name: string; type: string; size: number }[] };
+		}>(agent.key, "read_email", "GET", `${messages}/${held.id}`);
+		expect(read.message.text).toContain("The report.");
+		expect(read.message.attachments).toEqual([
+			{ name: "report.pdf", type: "application/pdf", size: 1_800_000 },
+		]);
+
+		expect(
+			await ask(bearer, "POST", messages, {
+				to: ["stranger@example.org"],
+				subject: "Setup",
+				text: "Run it.",
+				attachments: [{ filename: "setup.exe", content: "aGk=" }],
+			}),
+		).toMatchObject({ status: 400, body: { error: expect.stringMatching(/\.exe files/) } });
+		const big = await ask(bearer, "POST", "/webhooks", {
+			url: `https://hooks.example.net/${"a".repeat(1_100_000)}`,
+			events: ["message.received"],
+		});
+		expect(big.status).toBe(413);
+	});
+
 	it("refuses what a route doesn't take, saying why with a status to act on", async () => {
 		const space = await workspace();
 		const agent = await agentOf(space);
@@ -239,7 +282,8 @@ describe("the agent API", () => {
 			});
 		expect((await post("[]")).status).toBe(400);
 		expect((await post("not json")).status).toBe(400);
-		expect((await post(JSON.stringify({ text: "x".repeat(1_100_000) }))).status).toBe(413);
+		// A send takes files, so a larger body than other routes do, but only so large.
+		expect((await post(JSON.stringify({ text: "x".repeat(16_000_000) }))).status).toBe(413);
 
 		// Addresses are made as its policy has them.
 		const make = { domain: space.domain, localPart: "twice", days: 1 };
