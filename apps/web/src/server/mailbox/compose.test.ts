@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
 	addressHeader,
 	headerText,
+	inCopyOrder,
 	MAX_HEADER_VALUE,
 	newOwnId,
 	type Outgoing,
@@ -20,6 +21,8 @@ const reply: Outgoing = {
 	cc: ["grace@example.com", "alan@example.com"],
 	subject: "Re: Invoice 42",
 	text: "Thanks, it's paid.\n\nOn Monday, Ada wrote:\n> Is it paid?",
+	html: null,
+	files: [],
 	inReplyTo: "b@example.com",
 	references: ["a@example.com", "b@example.com"],
 	ownId: "mine@acme.test",
@@ -80,6 +83,152 @@ describe("rawCopy", () => {
 		const email = await PostalMime.parse(raw);
 		expect(email.from).toEqual({ name: written.from.name, address: "s@acme.test" });
 		expect(email.subject).toBe(written.subject);
+	});
+});
+
+/** Bytes in Base64, as a file comes in a request. */
+const base64 = (bytes: number[]) => btoa(String.fromCharCode(...bytes));
+
+describe("rawCopy with HTML and files", () => {
+	const pdf = base64(Array.from({ length: 3000 }, (_, i) => i % 256));
+	const logo = base64([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+	const long = `Fatura — Ekim 2026 (müşteri kopyası) ${"ve ekleri ".repeat(8)}.pdf`;
+	const written: Outgoing = {
+		...reply,
+		text: "Your invoice is attached.",
+		html: '<p>Your <b>invoice</b> is attached.</p><img src="cid:logo@acme.test">',
+		files: [
+			{
+				filename: "invoice 42.pdf",
+				type: "application/pdf",
+				content: pdf,
+				contentId: null,
+				bytes: 3000,
+			},
+			{
+				filename: "logo.png",
+				type: "image/png",
+				content: logo,
+				contentId: "logo@acme.test",
+				bytes: 11,
+			},
+			{ filename: long, type: "application/pdf", content: pdf, contentId: null, bytes: 3000 },
+			{
+				filename: 'odd "name".txt',
+				type: "text/plain",
+				content: base64([104, 105]),
+				contentId: null,
+				bytes: 2,
+			},
+		],
+	};
+
+	it("reads back whole: its text, its HTML, and each file as it was given", async () => {
+		const raw = rawCopy(written, new Date());
+		const email = await PostalMime.parse(raw, { attachmentEncoding: "base64" });
+		expect(email.text?.trimEnd()).toBe(written.text);
+		expect(email.html?.trimEnd()).toBe(written.html);
+		const read = email.attachments.map((file) => ({
+			filename: file.filename,
+			type: file.mimeType,
+			disposition: file.disposition,
+			contentId: file.contentId ?? null,
+			content: file.content,
+		}));
+		expect(read).toEqual([
+			{
+				filename: "logo.png",
+				type: "image/png",
+				disposition: "inline",
+				contentId: "<logo@acme.test>",
+				content: logo,
+			},
+			{
+				filename: "invoice 42.pdf",
+				type: "application/pdf",
+				disposition: "attachment",
+				contentId: null,
+				content: pdf,
+			},
+			{
+				filename: long,
+				type: "application/pdf",
+				disposition: "attachment",
+				contentId: null,
+				content: pdf,
+			},
+			{
+				filename: 'odd "name".txt',
+				type: "text/plain",
+				disposition: "attachment",
+				contentId: null,
+				content: base64([104, 105]),
+			},
+		]);
+		// A long or non-ASCII name goes over short lines, as RFC 2231 continues it.
+		for (const line of raw.split("\r\n")) {
+			expect(line.length).toBeLessThanOrEqual(998);
+			if (/name/.test(line)) expect(line.length).toBeLessThanOrEqual(78);
+		}
+	});
+
+	it("holds the files in the order a try finds them, and names the root of its related part", () => {
+		expect(inCopyOrder(written.files).map((file) => file.filename)).toEqual([
+			"logo.png",
+			"invoice 42.pdf",
+			long,
+			'odd "name".txt',
+		]);
+		const raw = rawCopy(written, new Date());
+		expect(raw).toMatch(
+			/Content-Type: multipart\/related;\r\n type="multipart\/alternative";\r\n boundary=/,
+		);
+	});
+
+	it("keeps a calendar as bytes, which reading it as text would change", async () => {
+		// CRLF and a Latin-1 byte, as a calendar may hold them.
+		const invite = base64([
+			...new TextEncoder().encode("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nSUMMARY:Caf"),
+			0xe9,
+			...new TextEncoder().encode("\r\nEND:VCALENDAR\r\n"),
+		]);
+		const raw = rawCopy(
+			{
+				...reply,
+				files: [
+					{
+						filename: "invite.ics",
+						type: "text/calendar",
+						content: invite,
+						contentId: null,
+						bytes: 59,
+					},
+				],
+			},
+			new Date(),
+		);
+		expect(raw).toContain("Content-Type: application/octet-stream;");
+		const [file, ...more] = (await PostalMime.parse(raw, { attachmentEncoding: "base64" }))
+			.attachments;
+		expect(more).toEqual([]);
+		expect(file?.content).toBe(invite);
+	});
+
+	it("is one text part when there is no HTML or file", () => {
+		const raw = rawCopy(reply, new Date());
+		expect(raw).toContain("\r\nContent-Type: text/plain; charset=utf-8\r\n");
+		expect(raw).not.toContain("multipart");
+		const html = rawCopy({ ...reply, html: "<p>Hi</p>" }, new Date());
+		expect(html).toContain("Content-Type: multipart/alternative;");
+		expect(html).not.toContain("multipart/mixed");
+	});
+
+	it("asks Email Service for the HTML too, but leaves the files to each try", () => {
+		const request = sendRequest(written);
+		expect(request.html).toBe(written.html);
+		expect(request.text).toBe(written.text);
+		expect(request).not.toHaveProperty("attachments");
+		expect(sendRequest(reply)).not.toHaveProperty("html");
 	});
 });
 

@@ -1,3 +1,4 @@
+import { COPY_UNREAD_CODE } from "../../lib/outbox";
 import type { ResendFailure } from "../providers/resend";
 
 /**
@@ -59,6 +60,28 @@ export function outcomeOf(error: unknown, attempts: number, now: number): Outcom
 	return wait === undefined
 		? { state: "refused", code }
 		: { state: "waiting", code, nextAt: now + wait };
+}
+
+/**
+ * What a try means that couldn't read the message's files from its copy, when no provider was asked.
+ * R2 failing is a moment that passes, tried again as a busy one is. A copy that is gone, or doesn't
+ * hold the files it should, stops the message: refused, or uncertain if an earlier try may have sent
+ * it.
+ */
+export function copyOutcome(
+	kind: "unavailable" | "wrong",
+	attempts: number,
+	now: number,
+	earlierMaybeSent: boolean,
+): Outcome {
+	const stop: Outcome = earlierMaybeSent
+		? { state: "uncertain", code: COPY_UNREAD_CODE }
+		: { state: "refused", code: COPY_UNREAD_CODE };
+	if (kind === "wrong") return stop;
+	const wait = WAITS_MS.busy[attempts - 1];
+	return wait === undefined
+		? stop
+		: { state: "waiting", code: COPY_UNREAD_CODE, nextAt: now + wait };
 }
 
 /**

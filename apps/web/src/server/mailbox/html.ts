@@ -18,7 +18,7 @@ export const MAX_INLINE_IMAGES = 5_000_000;
  * Image types a browser shows without running anything, which an inline part may be. A part sent
  * as `image/jpg` counts as JPEG.
  */
-const INLINE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+export const INLINE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 
 /** Tags that stay, with the attributes below. Any other tag goes, and keeps its content or not. */
 const KEPT_TAGS = new Set([
@@ -297,7 +297,42 @@ export async function cleanHtml(
 		}
 		return address;
 	};
-	const rewriter = new HTMLRewriter()
+	const shown = (src: string): string | null => {
+		if (startsWith(src, CID)) return inlineImage(contentId(src));
+		return startsWith(src, INLINE_DATA) || (images && startsWith(src, REMOTE)) ? src : null;
+	};
+	const cleaned = await cleaner(shown, { frame: true })
+		.transform(
+			new Response(html.slice(0, MAX_SHOWN_HTML), {
+				headers: { "content-type": "text/html; charset=utf-8" },
+			}),
+		)
+		.text();
+	return `<!doctype html><meta charset="utf-8"><style>${FRAME_STYLE}</style>${cleaned}`;
+}
+
+/**
+ * A message's HTML as Mail sends it: kept to what `cleanHtml` shows, so that whoever reads the copy,
+ * or approves an agent's message, sees what goes. Images keep their addresses, `cid:` and remote ones
+ * too, for the mail client to show.
+ */
+export async function sendableHtml(html: string): Promise<string> {
+	const kept = (src: string) =>
+		startsWith(src, CID) || startsWith(src, INLINE_DATA) || startsWith(src, REMOTE) ? src : null;
+	return cleaner(kept, { frame: false })
+		.transform(new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } }))
+		.text();
+}
+
+/**
+ * The rules both keep to: the tags and attributes above, links to the web or mail only, and an
+ * image's address as `image` decides, or none. In the frame, links open a tab of their own.
+ */
+function cleaner(
+	image: (src: string) => string | null,
+	{ frame }: { frame: boolean },
+): HTMLRewriter {
+	return new HTMLRewriter()
 		.on("*", {
 			element(element) {
 				const tag = element.tagName.toLowerCase();
@@ -324,7 +359,7 @@ export async function cleanHtml(
 					if (href === null) return;
 					if (!startsWith(href, LINK)) {
 						element.removeAttribute("href");
-					} else if (!startsWith(href, /^#/)) {
+					} else if (frame && !startsWith(href, /^#/)) {
 						// A new tab, never the app's, and nothing of the frame's address goes with it.
 						element.setAttribute("target", "_blank");
 						element.setAttribute("rel", "noopener noreferrer");
@@ -333,13 +368,9 @@ export async function cleanHtml(
 				if (tag === "img") {
 					const src = element.getAttribute("src");
 					if (src === null) return;
-					if (startsWith(src, CID)) {
-						const found = inlineImage(contentId(src));
-						if (found) element.setAttribute("src", found);
-						else element.removeAttribute("src");
-					} else if (!startsWith(src, INLINE_DATA) && !(images && startsWith(src, REMOTE))) {
-						element.removeAttribute("src");
-					}
+					const kept = image(src);
+					if (kept === null) element.removeAttribute("src");
+					else if (kept !== src) element.setAttribute("src", kept);
 				}
 			},
 		})
@@ -348,14 +379,6 @@ export async function cleanHtml(
 				comment.remove();
 			},
 		});
-	const cleaned = await rewriter
-		.transform(
-			new Response(html.slice(0, MAX_SHOWN_HTML), {
-				headers: { "content-type": "text/html; charset=utf-8" },
-			}),
-		)
-		.text();
-	return `<!doctype html><meta charset="utf-8"><style>${FRAME_STYLE}</style>${cleaned}`;
 }
 
 /**

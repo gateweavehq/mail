@@ -131,8 +131,9 @@ export function accessFor(slug: string, key: string): MailAccess {
 		outbox: (mailboxId, action: OutboxAction) =>
 			ask(
 				mailboxPath(mailboxId, "outbox"),
-				(request) => outboxAnswer(request, slug, mailboxId),
-				action,
+				// Handed over as it is, as a message's files would be written out and read again.
+				(request) => outboxAnswer(request, slug, mailboxId, action),
+				{},
 			),
 		async webhooks() {
 			const { stub, asker } = await hooks();

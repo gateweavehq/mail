@@ -2,7 +2,7 @@
 
 Gateweave Mail runs on your own Cloudflare account as one Worker. It is early: today it has
 accounts, workspaces, a directory of addresses, and mailboxes that keep the mail sent to them and
-reply and write in plain text. It uses:
+reply and write: in plain text from people, and with HTML and files from agents. It uses:
 
 - a D1 database for accounts, the list of workspaces, and their domains, mailboxes and addresses;
 - an R2 bucket for mail as it arrived, one object per message;

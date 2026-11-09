@@ -27,6 +27,13 @@ export interface SentEmail {
 	text: string;
 	html?: string;
 	headers?: Record<string, string>;
+	attachments?: {
+		filename: string;
+		type: string;
+		disposition: "attachment" | "inline";
+		contentId?: string;
+		content: string;
+	}[];
 	/** The id `send()` gave back for it, as Email Service's delivery events name it. */
 	messageId: string;
 }

@@ -25,7 +25,14 @@ interface ResendRequest {
 		cc?: string[];
 		subject: string;
 		text: string;
+		html?: string;
 		headers?: Record<string, string>;
+		attachments?: {
+			filename: string;
+			content: string;
+			content_type: string;
+			content_id?: string;
+		}[];
 	};
 }
 
@@ -400,6 +407,84 @@ describe("a domain that sends through Resend", () => {
 			},
 		});
 		expect((await mail.emails()).filter((email) => [email.to].flat().includes(to))).toEqual([]);
+	});
+
+	it("hands Resend the HTML and the files from the mailbox's copy", async () => {
+		const box = await resendBox();
+		const to = `files.${box.slug}@example.org`;
+		const logo = btoa(String.fromCharCode(0x89, 0x50, 0x4e, 0x47, 1, 2, 3));
+		const pdf = btoa("%PDF-1.4 a report");
+		const html = '<p>Attached.</p><img src="cid:logo">';
+		const response = await outbox(box, {
+			action: "send",
+			to: [to],
+			subject: "Files",
+			text: "Attached.",
+			html,
+			attachments: [
+				{ filename: "Rapor — Ekim.pdf", content: pdf },
+				{ filename: "logo.png", content: logo, contentId: "logo" },
+			],
+		});
+		expect(await response.json()).toMatchObject({ ok: true, state: "sent" });
+		const [request] = requestsTo(to);
+		expect(request?.body).toMatchObject({
+			text: "Attached.",
+			html,
+			attachments: [
+				{ filename: "logo.png", content: logo, content_type: "image/png", content_id: "logo" },
+				{ filename: "Rapor — Ekim.pdf", content: pdf, content_type: "application/pdf" },
+			],
+		});
+		expect(request?.body.attachments?.[1]).not.toHaveProperty("content_id");
+	});
+
+	it("hands Resend the same files on the try after one that may have gone", {
+		timeout: 60_000,
+	}, async () => {
+		const box = await resendBox();
+		const to = `went-1@files.${box.slug}.example.org`;
+		const pdf = btoa("%PDF-1.4 a report");
+		const response = await outbox(box, {
+			action: "send",
+			to: [to],
+			subject: "Files",
+			text: "Attached.",
+			attachments: [{ filename: "report.pdf", content: pdf }],
+		});
+		const message = (await response.json()) as Sent;
+		expect(message).toMatchObject({ state: "waiting", code: "resend:application_error" });
+		expect((await until(box, message, "sent"))?.state).toBe("sent");
+		const [first, second, ...more] = requestsTo(to);
+		expect(more).toEqual([]);
+		expect(first?.body.attachments).toEqual([
+			{ filename: "report.pdf", content: pdf, content_type: "application/pdf" },
+		]);
+		// Resend refuses a changed request under the same key.
+		expect(second?.body).toEqual(first?.body);
+	});
+
+	it("is uncertain when its copy can't give its files after a try that may have gone", {
+		timeout: 60_000,
+	}, async () => {
+		const box = await resendBox();
+		const to = `went-1@unread.${box.slug}.example.org`;
+		const response = await outbox(box, {
+			action: "send",
+			to: [to],
+			subject: "Files",
+			text: "Attached.",
+			attachments: [{ filename: "report.pdf", content: btoa("%PDF-1.4 a report") }],
+		});
+		const message = (await response.json()) as Sent;
+		expect(message).toMatchObject({ state: "waiting", code: "resend:application_error" });
+		const { objects } = await mail.bucket.list({ prefix: `${box.workspaceId}/${box.mailboxId}/` });
+		const copy = objects.find((object) => object.key.endsWith(`/${message.id}.eml`));
+		expect(copy).toBeDefined();
+		await mail.bucket.put(copy?.key ?? "", "From: x@example.org\r\n\r\nNo files here.\r\n");
+		const stopped = await until(box, message, "uncertain");
+		expect(stopped).toMatchObject({ state: "uncertain", code: "mail:copy_unread" });
+		expect(requestsTo(to)).toHaveLength(1);
 	});
 
 	it("is refused when it is written without a key, before anything counts", async () => {

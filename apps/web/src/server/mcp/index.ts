@@ -1,4 +1,5 @@
 import { createMcpHandler } from "@modelcontextprotocol/server";
+import { MAX_SEND_BODY } from "../../lib/outbox";
 import { accessFor, agentOfRequest } from "../agent-api/access";
 import { createMailServer } from "./tools";
 
@@ -24,14 +25,18 @@ export async function handleMcpRequest(request: Request): Promise<Response> {
 	});
 }
 
-const mcpHandler = createMcpHandler(({ authInfo }) => {
-	const slug = authInfo?.extra?.slug;
-	// `handleMcpRequest` only lets a found key through, and always names its workspace.
-	if (typeof slug !== "string" || !authInfo?.token) {
-		throw new Error("MCP request without a verified key");
-	}
-	return createMailServer(accessFor(slug, authInfo.token));
-});
+const mcpHandler = createMcpHandler(
+	({ authInfo }) => {
+		const slug = authInfo?.extra?.slug;
+		// `handleMcpRequest` only lets a found key through, and always names its workspace.
+		if (typeof slug !== "string" || !authInfo?.token) {
+			throw new Error("MCP request without a verified key");
+		}
+		return createMailServer(accessFor(slug, authInfo.token));
+	},
+	// A message's files come in its call, in Base64; every tool's input bounds the rest.
+	{ maxRequestBodySize: MAX_SEND_BODY },
+);
 
 /** A JSON-RPC error, as an MCP client reads one, for a request without a working key. */
 function unauthorized(hadKey: boolean): Response {

@@ -147,7 +147,7 @@ async function inputOf(
 	const taken: Record<string, unknown> = {};
 	if (hasBody(known.route)) {
 		// Read only so far, whatever the request says its length is, or doesn't.
-		const read = await readUpTo(request.body, MAX_BODY);
+		const read = await readUpTo(request.body, known.operation.maxBody ?? MAX_BODY);
 		if (!read) return failure("The request is too large.", 413);
 		let body: unknown;
 		try {

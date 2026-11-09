@@ -4,7 +4,11 @@ import { goesWithoutApproval } from "../../lib/agent-policy";
 import {
 	canSendAgain,
 	isAddress,
+	MAX_ATTACHMENTS,
+	MAX_FILE_NAME,
+	MAX_HTML,
 	MAX_RECIPIENTS,
+	MAX_SEND_BODY,
 	MAX_SUBJECT,
 	MAX_TEXT,
 	type SendStatus,
@@ -17,11 +21,13 @@ import { agentPolicyOf } from "../auth/agents";
 import { appOrigin } from "../origin";
 import { sendingWith } from "../providers/keys";
 import { allowAgentSend, allowSend } from "../rate-limit";
+import { readUpTo, textOf } from "../streams";
 import { suppressedAmong } from "../suppressions";
 import {
 	addressHeader,
 	dateHeader,
 	headerText,
+	inCopyOrder,
 	newOwnId,
 	type Outgoing,
 	plainName,
@@ -29,10 +35,13 @@ import {
 	sendRequest,
 } from "./compose";
 import type { Sent } from "./durable-object";
+import { checkFiles } from "./files";
 import { firstHeader, parseHeaders, readHeaderBlock } from "./headers";
+import { sendableHtml } from "./html";
 import type { mailboxStub } from "./index";
 import { openMailbox } from "./read";
 import { envelopeAddresses, replySender, senderAddresses } from "./senders";
+import { textOfHtml } from "./text";
 import { messageIds, ownId } from "./thread";
 
 const Id = z.string().min(1).max(100);
@@ -52,10 +61,21 @@ const Action = z.discriminatedUnion("action", [
 			.min(1)
 			.max(MAX_SUBJECT)
 			.refine((subject) => !/[\r\n]/.test(subject)),
-		text: z
-			.string()
-			.max(MAX_TEXT)
-			.refine((text) => text.trim().length > 0),
+		/** Without text, the HTML's makes it; one of the two says something. */
+		text: z.string().max(MAX_TEXT).default(""),
+		html: z.string().max(MAX_HTML).nullable().default(null),
+		/** Checked by `checkFiles` once the rest is known to be well formed. */
+		attachments: z
+			.array(
+				z.object({
+					filename: z.string().max(MAX_FILE_NAME * 2),
+					contentType: z.string().max(200).nullable().optional(),
+					content: z.string().max(MAX_SEND_BODY),
+					contentId: z.string().max(200).nullable().optional(),
+				}),
+			)
+			.max(MAX_ATTACHMENTS)
+			.default([]),
 		/** The message it answers, in this mailbox. */
 		replyTo: Id.nullable().default(null),
 		/**
@@ -109,11 +129,15 @@ const recipientsOf = (row: { envelopeTo: string }) =>
  * `POST /api/mail/<workspace>/<mailbox>/outbox`. A person who may read the mailbox may, signed in.
  * An agent may only send, with its key, from a mailbox it was let send from, as its policy allows:
  * what it writes to anyone else waits for a person to approve it.
+ *
+ * `given` is the body already read, as the agents' API hands it over: a message's files would
+ * otherwise be written out and read again.
  */
 export async function outboxAnswer(
 	request: Request,
 	slug: string,
 	mailboxId: string,
+	given?: unknown,
 ): Promise<Response> {
 	// A key decides alone, as `currentCaller` has it, and no browser sends one by itself. A
 	// session's cookie comes along wherever a request is from, so then ask where that is.
@@ -123,7 +147,18 @@ export async function outboxAnswer(
 	}
 	const box = await openMailbox(slug, mailboxId, { people: !keyed });
 	if (!box) return refuse("Not found", 404);
-	const parsed = Action.safeParse(await request.json().catch(() => null));
+	let body: unknown = given ?? null;
+	if (given === undefined) {
+		// Read only so far, whatever the request says its length is, as files make a send large.
+		const read = await readUpTo(request.body, MAX_SEND_BODY);
+		if (!read) return refuse(TOO_LARGE, 413);
+		try {
+			body = JSON.parse(textOf(read));
+		} catch {
+			body = null;
+		}
+	}
+	const parsed = Action.safeParse(body);
 	if (!parsed.success) return refuse("That isn't something we can send.", 400);
 	const action = parsed.data;
 	const { workspaceId, memberId, role } = box.member.membership;
@@ -185,6 +220,25 @@ export async function outboxAnswer(
 	}
 	const lower = recipients.map((address) => address.toLowerCase());
 	if (new Set(lower).size !== lower.length) return refuse("An address is there twice.", 400);
+	// Whoever approves an agent's message sees its HTML, so its text is made from that, not written
+	// beside it to say something else.
+	if (agent && action.text.trim() && action.html?.trim()) {
+		return refuse(
+			"Give text or HTML, not both: Mail makes the text from the HTML, so that whoever approves it sees all that goes.",
+			400,
+		);
+	}
+	// Kept to what the page shows of it, so the copy shows what goes.
+	const cleaned = action.html?.trim() ? await sendableHtml(action.html) : null;
+	const html = cleaned?.trim() ? cleaned : null;
+	const files = checkFiles(action.attachments, { html: html !== null });
+	if (!files.ok) return refuse(files.error, 400);
+	// What a reader without HTML sees, made from the HTML when none was written.
+	const text =
+		action.text.trim() || html === null
+			? action.text
+			: (await textOfHtml(html)).text.slice(0, MAX_TEXT);
+	if (!text.trim()) return refuse("There is nothing to send: write some text or HTML.", 400);
 
 	const from = await senderAddresses(workspaceId, box.id);
 	let answering: Answering = { inReplyTo: null, references: [], addresses: [] };
@@ -253,7 +307,9 @@ export async function outboxAnswer(
 		cc: action.cc,
 		// A tab or other control character pasted in becomes a space.
 		subject: plainName(action.subject),
-		text: action.text,
+		text,
+		html,
+		files: files.files,
 		inReplyTo: headerSafe(answering.inReplyTo),
 		references: answering.references.filter(isHeaderSafe),
 		ownId: newOwnId(sender),
@@ -274,12 +330,16 @@ export async function outboxAnswer(
 		ownId: message.ownId,
 		references: answering.references,
 		request: sendRequest(message),
+		files: inCopyOrder(files.files).map(({ content: _content, ...file }) => file),
 		provider,
 		draft: action.draft,
 		hold,
 	});
 	return sentAnswer(sent);
 }
+
+const TOO_LARGE =
+	"That is too large to send: a request takes 16 MB at most, and a message's files 10 MB together.";
 
 function sentAnswer(sent: Sent): Response {
 	if (sent.ok) return answer(sent);

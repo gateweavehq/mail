@@ -7,7 +7,15 @@ import {
 	type OpenedMessage,
 	type ThreadCursor,
 } from "../../lib/mailbox";
-import { MAX_RECIPIENTS, MAX_SUBJECT, MAX_TEXT } from "../../lib/outbox";
+import {
+	MAX_ATTACHMENTS,
+	MAX_FILE_NAME,
+	MAX_HTML,
+	MAX_RECIPIENTS,
+	MAX_SEND_BODY,
+	MAX_SUBJECT,
+	MAX_TEXT,
+} from "../../lib/outbox";
 import { findVerificationCode } from "../../lib/verification-code";
 import {
 	MAX_AGENT_WEBHOOKS,
@@ -71,6 +79,8 @@ export interface Operation {
 	routes: Route[];
 	/** The statuses its routes may answer besides 200, 400, 401, 404 and 500. */
 	refusals: FailureStatus[];
+	/** The most bytes its REST body may hold, when it is more than the 1 MB every other takes. */
+	maxBody?: number;
 	/** Does it, for input that `input` parsed: the MCP SDK and the REST routes both parse first. */
 	run(
 		access: MailAccess,
@@ -112,7 +122,46 @@ const textInput = z
 	.string()
 	.max(MAX_TEXT)
 	.refine((text) => text.trim().length > 0, "The text is empty.")
-	.describe("Plain text.");
+	.describe("Plain text. Give it or html, not both: with html, Mail makes the text from it.");
+const htmlInput = z
+	.string()
+	.max(MAX_HTML)
+	.describe(
+		'The message as HTML, instead of text, which Mail makes from it. It goes as Mail shows mail, so scripts, forms, SVG, media and frames are left out. Show an attached image with <img src="cid:…"> and the image\'s contentId.',
+	);
+const attachmentsInput = z
+	.array(
+		z.object({
+			filename: z
+				.string()
+				.trim()
+				.min(1)
+				.max(MAX_FILE_NAME)
+				.describe("The file's name, as whoever gets it sees it."),
+			contentType: z
+				.string()
+				.trim()
+				.max(127)
+				.optional()
+				.describe(
+					"Its media type, such as application/pdf. From the name's extension if left out.",
+				),
+			content: z.string().min(1).describe("The file's bytes in Base64."),
+			contentId: z
+				.string()
+				.trim()
+				.min(1)
+				.max(100)
+				.optional()
+				.describe(
+					"For a PNG, JPEG, GIF or WebP image the html shows: the id its cid: names, such as logo. Leave it out for a file to attach.",
+				),
+		}),
+	)
+	.max(MAX_ATTACHMENTS)
+	.describe(
+		`Files it carries, ${MAX_ATTACHMENTS} at most and 10 MB together. Mail doesn't send kinds of file many mail servers refuse, such as .exe, .js, .bat or .msi.`,
+	);
 const draftInput = z
 	.uuid()
 	.describe(
@@ -356,13 +405,15 @@ const sendEmail = operation({
 	name: "send_email",
 	title: "Send email",
 	description:
-		"Sends a plain-text message from a mailbox you may send from. Mail to anyone your policy doesn't name waits for a person to approve it (state: held), and counts against your messages a day either way.",
+		"Sends a message from a mailbox you may send from: text or HTML, with files if you like. Mail to anyone your policy doesn't name waits for a person to approve it (state: held), and counts against your messages a day either way.",
 	input: z.object({
 		mailbox: mailboxInput,
 		to: addressesInput.min(1).describe(`To and cc together take ${MAX_RECIPIENTS} at most.`),
 		cc: addressesInput.optional().describe(`To and cc together take ${MAX_RECIPIENTS} at most.`),
 		subject: z.string().trim().min(1).max(MAX_SUBJECT),
-		text: textInput,
+		text: textInput.optional(),
+		html: htmlInput.optional(),
+		attachments: attachmentsInput.optional(),
 		from: addressInput
 			.optional()
 			.describe("One of the mailbox's addresses; the first unless you say."),
@@ -372,7 +423,8 @@ const sendEmail = operation({
 	hints: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
 	routes: [{ method: "POST", path: "/mailboxes/{mailbox}/messages" }],
 	refusals: [403, 409, 429],
-	async run(access, { mailbox, to, cc, subject, text, from, draftId }) {
+	maxBody: MAX_SEND_BODY,
+	async run(access, { mailbox, to, cc, subject, text, html, attachments, from, draftId }) {
 		const box = await findMailbox(access, mailbox);
 		return sent(
 			await access.outbox(box.id, {
@@ -380,7 +432,9 @@ const sendEmail = operation({
 				to,
 				cc: cc ?? [],
 				subject,
-				text,
+				text: text ?? "",
+				html: html ?? null,
+				attachments: attachments ?? [],
 				from: from ?? null,
 				draft: draftId ?? crypto.randomUUID(),
 			}),
@@ -392,18 +446,21 @@ const reply = operation({
 	name: "reply",
 	title: "Reply",
 	description:
-		"Answers a message in its thread, to whoever it asks answers to go to, from the address it came to. Waits for approval as send_email does.",
+		"Answers a message in its thread, to whoever it asks answers to go to, from the address it came to: text or HTML, with files if you like. Waits for approval as send_email does.",
 	input: z.object({
 		mailbox: mailboxInput,
 		messageId: idInput,
-		text: textInput,
+		text: textInput.optional(),
+		html: htmlInput.optional(),
+		attachments: attachmentsInput.optional(),
 		draftId: draftInput.optional(),
 	}),
 	output: OUTPUTS.reply,
 	hints: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
 	routes: [{ method: "POST", path: "/mailboxes/{mailbox}/messages/{messageId}/reply" }],
 	refusals: [403, 409, 429],
-	async run(access, { mailbox, messageId, text, draftId }) {
+	maxBody: MAX_SEND_BODY,
+	async run(access, { mailbox, messageId, text, html, attachments, draftId }) {
 		const box = await findMailbox(access, mailbox);
 		const message = await access.message(box.id, messageId);
 		if (!message) throw new ApiError("No such message in this mailbox.", 404);
@@ -415,7 +472,9 @@ const reply = operation({
 				to: reply.to,
 				cc: reply.cc,
 				subject: reply.subject,
-				text,
+				text: text ?? "",
+				html: html ?? null,
+				attachments: attachments ?? [],
 				replyTo: message.id,
 				from: reply.from,
 				draft: draftId ?? crypto.randomUUID(),

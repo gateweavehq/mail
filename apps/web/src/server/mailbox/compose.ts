@@ -8,6 +8,37 @@
 /** The most bytes Email Service takes in one header's value. */
 export const MAX_HEADER_VALUE = 2_048;
 
+/** A file a message carries. */
+export interface OutgoingFile {
+	filename: string;
+	/** Its media type, lower case. */
+	type: string;
+	/** Its bytes in Base64, without line breaks. */
+	content: string;
+	/** For an image the HTML shows, the id its `cid:` names; null for a file attached. */
+	contentId: string | null;
+	/** How many bytes it holds. */
+	bytes: number;
+}
+
+/** What the mailbox keeps of a file it sends, to find it in the copy again at each try. */
+export type SentFile = Omit<OutgoingFile, "content">;
+
+/** A message's files in the order its copy holds them: the inline images, then the rest. */
+export function inCopyOrder<File extends SentFile>(files: File[]): File[] {
+	return [
+		...files.filter((file) => file.contentId !== null),
+		...files.filter((file) => file.contentId === null),
+	];
+}
+
+/**
+ * The type a file has in the copy. A calendar's is read back as text, in Unicode and with new line
+ * ends, so the copy keeps it as bytes, and each try gives it its own type again.
+ */
+export const copyType = (type: string) =>
+	type === "text/calendar" || type === "application/ics" ? "application/octet-stream" : type;
+
 /** What a person writes, with what threads it. */
 export interface Outgoing {
 	from: { name: string; email: string };
@@ -15,6 +46,10 @@ export interface Outgoing {
 	cc: string[];
 	subject: string;
 	text: string;
+	/** Its HTML, beside the text, or null for text alone. */
+	html: string | null;
+	/** Its files, which go from the copy, not from `sendRequest`'s answer. */
+	files: OutgoingFile[];
 	/** The id of the message it answers, or null for a new one. */
 	inReplyTo: string | null;
 	/** The ids it follows, oldest first, ending with the one it answers. Mail's own id isn't here. */
@@ -55,7 +90,10 @@ export function referencesValue(references: string[], ownId: string): string {
 // biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are what it removes.
 export const plainName = (name: string) => name.replace(/[\x00-\x1f\x7f]+/g, " ").trim();
 
-/** What `send()` of the `EMAIL` binding is given. */
+/**
+ * What `send()` of the `EMAIL` binding is given, but for the files: the object reads those from the
+ * copy at each try, so that their bytes are never in its own storage.
+ */
 export function sendRequest(message: Outgoing): EmailMessageBuilder {
 	const headers: Record<string, string> = {
 		References: referencesValue(message.references, message.ownId),
@@ -67,6 +105,7 @@ export function sendRequest(message: Outgoing): EmailMessageBuilder {
 		...(message.cc.length > 0 ? { cc: message.cc } : {}),
 		subject: message.subject,
 		text: message.text,
+		...(message.html === null ? {} : { html: message.html }),
 		headers,
 	};
 }
@@ -131,9 +170,97 @@ export function dateHeader(date: Date): string {
 	return date.toUTCString().replace(/GMT$/, "+0000");
 }
 
+/** A MIME part: its headers, and its body as it goes, without the line break that ends it. */
+interface Part {
+	headers: string[];
+	body: string;
+}
+
+/** Base64 in lines of 76 characters, as MIME has it. */
+const wrapped = (content: string) => content.match(/.{1,76}/g)?.join("\r\n") ?? "";
+
+const textPart = (subtype: "plain" | "html", text: string): Part => ({
+	headers: [`Content-Type: text/${subtype}; charset=utf-8`, "Content-Transfer-Encoding: base64"],
+	body: wrapped(base64(new TextEncoder().encode(text.replace(/\r?\n/g, "\r\n")))),
+});
+
+/**
+ * A parameter of a header, such as a file's name: quoted when it is short printable ASCII, and
+ * otherwise as RFC 2231 writes it, in UTF-8, escaped and continued over lines that stay short.
+ */
+function parameter(key: string, value: string): string {
+	const quoted = `${key}="${value.replace(/(["\\])/g, "\\$1")}"`;
+	if (/^[\x20-\x7e]*$/.test(value) && quoted.length <= 70) return quoted;
+	const escaped = encodeURIComponent(value).replace(
+		/['()*]/g,
+		(char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
+	);
+	// Pieces of 50 characters at most, never splitting an escape.
+	const pieces: string[] = [];
+	let piece = "";
+	for (const token of escaped.match(/%[0-9A-F]{2}|[^%]/g) ?? []) {
+		if (piece.length + token.length > 50) {
+			pieces.push(piece);
+			piece = "";
+		}
+		piece += token;
+	}
+	pieces.push(piece);
+	return pieces
+		.map((each, at) => `${key}*${at}*=${at === 0 ? "UTF-8''" : ""}${each}`)
+		.join(";\r\n ");
+}
+
+const filePart = (file: OutgoingFile): Part => ({
+	headers: [
+		`Content-Type: ${copyType(file.type)};\r\n ${parameter("name", file.filename)}`,
+		`Content-Disposition: ${file.contentId === null ? "attachment" : "inline"};\r\n ${parameter("filename", file.filename)}`,
+		...(file.contentId === null ? [] : [`Content-ID: <${file.contentId}>`]),
+		"Content-Transfer-Encoding: base64",
+	],
+	body: wrapped(file.content),
+});
+
+/** Parts as one, under a boundary nothing in them can hold: Base64 has no `_`. */
+function multipart(
+	subtype: "alternative" | "related" | "mixed",
+	parts: Part[],
+	root: string | null = null,
+): Part {
+	const boundary = `=_${crypto.randomUUID()}`;
+	const each = parts.map(
+		(part) => `--${boundary}\r\n${part.headers.join("\r\n")}\r\n\r\n${part.body}\r\n`,
+	);
+	// RFC 2387 has `multipart/related` name the type of its first part.
+	const type = root === null ? "" : `\r\n type="${root}";`;
+	return {
+		headers: [`Content-Type: multipart/${subtype};${type}\r\n boundary="${boundary}"`],
+		body: `${each.join("")}--${boundary}--`,
+	};
+}
+
+/**
+ * A message's body as MIME: its text, beside its HTML when it has some, with the images that HTML
+ * shows and then the files it carries.
+ */
+function bodyOf(message: Outgoing): Part {
+	const text = textPart("plain", message.text);
+	let body =
+		message.html === null ? text : multipart("alternative", [text, textPart("html", message.html)]);
+	const inline = message.files.filter((file) => file.contentId !== null);
+	if (inline.length > 0) {
+		const root = message.html === null ? "text/plain" : "multipart/alternative";
+		body = multipart("related", [body, ...inline.map(filePart)], root);
+	}
+	const attached = message.files.filter((file) => file.contentId === null);
+	if (attached.length > 0) body = multipart("mixed", [body, ...attached.map(filePart)]);
+	return body;
+}
+
 /**
  * The copy the mailbox keeps of what it sent, as raw mail, so that reading it, downloading it and
- * searching it work as they do for mail that arrived. Its `Message-ID` is Mail's own id.
+ * searching it work as they do for mail that arrived. Its `Message-ID` is Mail's own id. It holds
+ * the message whole, files too, and each try sends those from it.
  */
 export function rawCopy(message: Outgoing, date: Date): string {
 	const lines = [
@@ -147,12 +274,9 @@ export function rawCopy(message: Outgoing, date: Date): string {
 		// Folded between ids, so no line runs past what mail allows.
 		`References: ${referencesValue(message.references, message.ownId).split(" ").join("\r\n ")}`,
 		"MIME-Version: 1.0",
-		"Content-Type: text/plain; charset=utf-8",
-		"Content-Transfer-Encoding: base64",
 	];
-	const body = base64(new TextEncoder().encode(message.text.replace(/\r?\n/g, "\r\n")));
-	const wrapped = body.match(/.{1,76}/g)?.join("\r\n") ?? "";
-	return `${lines.join("\r\n")}\r\n\r\n${wrapped}\r\n`;
+	const body = bodyOf(message);
+	return `${[...lines, ...body.headers].join("\r\n")}\r\n\r\n${body.body}\r\n`;
 }
 
 function base64(bytes: Uint8Array): string {

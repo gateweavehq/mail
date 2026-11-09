@@ -668,6 +668,286 @@ describe("what is written", () => {
 	});
 });
 
+/** Bytes in Base64, as a file comes in a request to send. */
+const base64Of = (bytes: number[]) => btoa(String.fromCharCode(...bytes));
+const pdf = base64Of(Array.from({ length: 2000 }, (_, i) => (i * 7) % 256));
+const logo = base64Of([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 9, 8, 7]);
+const filesHtml = '<p>The <b>report</b> is attached.</p><img src="cid:logo" alt="">';
+const files = [
+	{ filename: "report.pdf", content: pdf },
+	{ filename: "logo.png", content: logo, contentId: "logo" },
+];
+
+/** A message of the mailbox, as its page opens it. */
+async function opened(box: Box, id: string) {
+	const response = await mail.fetch(`${origin}/api/mail/${box.slug}/${box.mailboxId}/${id}`, {
+		headers: owner.headers,
+	});
+	expect(response.status).toBe(200);
+	return (await response.json()) as {
+		text: string;
+		hasHtml: boolean;
+		attachments: { name: string | null; type: string; size: number }[];
+	};
+}
+
+/** What Email Service was handed for this address, files first, as the copy has them. */
+const handedFiles = [
+	{
+		filename: "logo.png",
+		type: "image/png",
+		disposition: "inline",
+		contentId: "logo",
+		content: logo,
+	},
+	{ filename: "report.pdf", type: "application/pdf", disposition: "attachment", content: pdf },
+];
+
+describe("HTML and files", () => {
+	it("go to Email Service whole, from the copy the mailbox keeps of them", async () => {
+		const box = await mailboxWithAddress();
+		const to = `files.${box.slug}@example.org`;
+		const sent = await send(box, {
+			to: [to],
+			subject: "The report",
+			text: "The report is attached.",
+			html: filesHtml,
+			attachments: files,
+		});
+		expect(sent.state).toBe("sent");
+		const [email, ...more] = await sentTo(to);
+		expect(more).toEqual([]);
+		expect(email).toMatchObject({
+			subject: "The report",
+			text: "The report is attached.",
+			html: filesHtml,
+			attachments: handedFiles,
+		});
+		// Its page reads it as it reads mail that arrived.
+		const page = await opened(box, sent.id);
+		expect(page.text.trim()).toBe("The report is attached.");
+		expect(page.attachments).toEqual([
+			{ name: "logo.png", type: "image/png", size: 11 },
+			{ name: "report.pdf", type: "application/pdf", size: 2000 },
+		]);
+	});
+
+	it("make the text from the HTML when none is written", async () => {
+		const box = await mailboxWithAddress();
+		const to = `html.${box.slug}@example.org`;
+		await send(box, { to: [to], text: "", html: "<h1>Hello Ada</h1><p>Your order shipped.</p>" });
+		const [email] = await sentTo(to);
+		expect(email?.text).toMatch(/Hello Ada[\s\S]*Your order shipped\./);
+		expect(email?.html).toBe("<h1>Hello Ada</h1><p>Your order shipped.</p>");
+		expect(email).not.toHaveProperty("attachments");
+	});
+
+	it("are refused before anything goes or counts, when they can't go", async () => {
+		const box = await mailboxWithAddress();
+		const to = `refused.${box.slug}@example.org`;
+		// Base64 of 3.5 MiB, three of which a request may carry but a message may not.
+		const part = "A".repeat(4_893_016);
+		const refused: [Record<string, unknown>, number, RegExp][] = [
+			[{ attachments: [{ filename: "setup.exe", content: pdf }] }, 400, /\.exe files/],
+			[{ attachments: [{ filename: "../report.pdf", content: pdf }] }, 400, /slash/],
+			[{ attachments: [{ filename: "report.pdf", content: "%%%%" }] }, 400, /Base64/],
+			[{ text: " ", html: "<img src=x>" }, 400, /nothing to send/],
+			[
+				{ attachments: [{ filename: "=?utf-8?B?ZXZpbC5leGU=?=", content: pdf }] },
+				400,
+				/encoded text/,
+			],
+			[
+				{
+					html: "<p>Hi</p>",
+					attachments: [{ filename: "notes.txt", content: pdf, contentId: "notes" }],
+				},
+				400,
+				/goes inline/,
+			],
+			[
+				{
+					attachments: ["a", "b", "c"].map((name) => ({
+						filename: `${name}.bin`,
+						content: part,
+					})),
+				},
+				400,
+				/10 MB together/,
+			],
+			[
+				{ attachments: [{ filename: "big.bin", content: "A".repeat(16_000_004) }] },
+				413,
+				/too large/,
+			],
+		];
+		for (const [draft, status, error] of refused) {
+			const response = await outbox(box, owner, {
+				action: "send",
+				to: [to],
+				subject: "Hi",
+				text: "Hi.",
+				...draft,
+			});
+			expect(response.status).toBe(status);
+			expect(((await response.json()) as { error: string }).error).toMatch(error);
+		}
+		expect(await sentTo(to)).toEqual([]);
+		// None of them counted against the day.
+		for (let i = 0; i < SEND_PER_DAY; i++) {
+			expect((await send(box, { to: [`counted${i}.${box.slug}@example.org`] })).state).toBe("sent");
+		}
+	});
+
+	it("wait with an agent's message for a person, who sees them before they go", async () => {
+		const box = await mailboxWithAddress();
+		const agent = await makeAgent(box);
+		await letSend(box, [agent.memberId], [agent.memberId]);
+		const to = `held.${box.slug}@example.org`;
+		const written = await mail.fetch(`${origin}/api/mail/${box.slug}/${box.mailboxId}/outbox`, {
+			method: "POST",
+			headers: { ...agent.headers, "content-type": "application/json" },
+			body: JSON.stringify({
+				action: "send",
+				draft: crypto.randomUUID(),
+				to: [to],
+				subject: "Your report",
+				html: filesHtml,
+				attachments: files,
+			}),
+		});
+		expect(written.status).toBe(200);
+		const held = (await written.json()) as Sent;
+		expect(held.state).toBe("held");
+		expect((await opened(box, held.id)).attachments.map((file) => file.name)).toEqual([
+			"logo.png",
+			"report.pdf",
+		]);
+		expect(await sentTo(to)).toEqual([]);
+		const approved = await outbox(box, owner, { action: "approve", message: held.id });
+		expect(await approved.json()).toMatchObject({ ok: true, state: "sent" });
+		const [email] = await sentTo(to);
+		expect(email).toMatchObject({ html: filesHtml, attachments: handedFiles });
+		expect(email?.text).toMatch(/report[\s\S]*attached/);
+	});
+
+	it("go as the page shows them: what it leaves out of the HTML doesn't go either", async () => {
+		const box = await mailboxWithAddress();
+		const to = `cleaned.${box.slug}@example.org`;
+		const sent = await send(box, {
+			to: [to],
+			text: "",
+			html: '<p>The report.</p><script>steal()</script><svg><text y="20">Wire 9,800 EUR today</text></svg><img src="cid:logo" alt=""><img src="https://example.net/a.png">',
+			attachments: [{ filename: "logo.png", content: logo, contentId: "logo" }],
+		});
+		expect(sent.state).toBe("sent");
+		const [email] = await sentTo(to);
+		expect(email?.html).toBe(
+			'<p>The report.</p><img src="cid:logo" alt=""><img src="https://example.net/a.png">',
+		);
+		expect(email?.text).toMatch(/The report\./);
+		expect(email?.text).not.toMatch(/Wire|steal/);
+	});
+
+	it("carry a calendar byte for byte, as it was given", async () => {
+		const box = await mailboxWithAddress();
+		const to = `invite.${box.slug}@example.org`;
+		const encode = (text: string) => [...new TextEncoder().encode(text)];
+		// CRLF, as RFC 5545 has it, and a Latin-1 byte, which reading it as text would change.
+		const invite = base64Of([
+			...encode("BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nSUMMARY:Caf"),
+			0xe9,
+			...encode("\r\nEND:VCALENDAR\r\n"),
+		]);
+		await send(box, {
+			to: [to],
+			text: "The invite.",
+			attachments: [{ filename: "invite.ics", content: invite }],
+		});
+		const [email] = await sentTo(to);
+		expect(email?.attachments).toEqual([
+			{ filename: "invite.ics", type: "text/calendar", disposition: "attachment", content: invite },
+		]);
+	});
+
+	it("go on every try, as after Email Service was busy", { timeout: 60_000 }, async () => {
+		const box = await mailboxWithAddress();
+		const to = `busy-1@${box.slug}.example.org`;
+		const busy = await send(box, {
+			to: [to],
+			text: "The report is attached.",
+			html: filesHtml,
+			attachments: files,
+		});
+		expect(busy).toMatchObject({ state: "waiting", code: "E_RATE_LIMIT_EXCEEDED" });
+		let state = busy.state;
+		for (let waited = 0; state !== "sent" && waited < 45_000; waited += 1_000) {
+			await new Promise((resolve) => setTimeout(resolve, 1_000));
+			state = (await thread(box, busy.threadId)).messages[0]?.sent?.status?.state ?? "";
+		}
+		expect(state).toBe("sent");
+		const [email, ...more] = await sentTo(to);
+		expect(more).toEqual([]);
+		expect(email).toMatchObject({ html: filesHtml, attachments: handedFiles });
+	});
+
+	it("don't go when the copy no longer holds them, and say why", async () => {
+		const box = await mailboxWithAddress();
+		const agent = await makeAgent(box);
+		await letSend(box, [agent.memberId], [agent.memberId]);
+		const to = `changed.${box.slug}@example.org`;
+		const written = await mail.fetch(`${origin}/api/mail/${box.slug}/${box.mailboxId}/outbox`, {
+			method: "POST",
+			headers: { ...agent.headers, "content-type": "application/json" },
+			body: JSON.stringify({
+				action: "send",
+				draft: crypto.randomUUID(),
+				to: [to],
+				subject: "Your report",
+				html: filesHtml,
+				attachments: files,
+			}),
+		});
+		const held = (await written.json()) as Sent;
+		expect(held.state).toBe("held");
+		const { objects } = await mail.bucket.list({ prefix: `${box.workspaceId}/${box.mailboxId}/` });
+		const copy = objects.find((object) => object.key.endsWith(`/${held.id}.eml`));
+		expect(copy).toBeDefined();
+		// Its files gone from the copy, as a copy put back from elsewhere might have them.
+		await mail.bucket.put(
+			copy?.key ?? "",
+			"From: x@example.org\r\nSubject: Your report\r\n\r\nNo files here.\r\n",
+		);
+		const approved = await outbox(box, owner, { action: "approve", message: held.id });
+		expect(await approved.json()).toMatchObject({
+			ok: true,
+			state: "refused",
+			code: "mail:copy_unread",
+		});
+		expect(await sentTo(to)).toEqual([]);
+	});
+
+	it("are an agent's HTML or its text, never both, so what is approved is what goes", async () => {
+		const box = await mailboxWithAddress();
+		const agent = await makeAgent(box);
+		await letSend(box, [agent.memberId], [agent.memberId]);
+		const response = await mail.fetch(`${origin}/api/mail/${box.slug}/${box.mailboxId}/outbox`, {
+			method: "POST",
+			headers: { ...agent.headers, "content-type": "application/json" },
+			body: JSON.stringify({
+				action: "send",
+				draft: crypto.randomUUID(),
+				to: [`both.${box.slug}@example.org`],
+				subject: "Your report",
+				text: "Wire the money to the account below.",
+				html: "<p>Your report is attached.</p>",
+			}),
+		});
+		expect(response.status).toBe(400);
+		expect(((await response.json()) as { error: string }).error).toMatch(/not both/);
+	});
+});
+
 describe("an agent", () => {
 	it("sends only from a mailbox that lets it, and only agents are let", async () => {
 		const box = await mailboxWithAddress();

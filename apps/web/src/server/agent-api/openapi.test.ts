@@ -47,7 +47,11 @@ describe("the agent API's OpenAPI document", () => {
 		};
 		expect(send.parameters).toEqual([expect.objectContaining({ name: "mailbox", in: "path" })]);
 		const body = send.requestBody.content["application/json"].schema;
-		expect(body.required.sort()).toEqual(["subject", "text", "to"]);
+		// Text, HTML or both, which the send itself checks.
+		expect(body.required.sort()).toEqual(["subject", "to"]);
+		expect(Object.keys(body.properties)).toEqual(
+			expect.arrayContaining(["text", "html", "attachments"]),
+		);
 		expect(Object.keys(body.properties)).not.toContain("mailbox");
 
 		const wait = document.paths["/verification-code"]?.get as {

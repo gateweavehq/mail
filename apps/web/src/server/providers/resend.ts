@@ -75,7 +75,28 @@ export function resendBody(request: Request) {
 		...(request.text === undefined ? {} : { text: request.text }),
 		...(request.html === undefined ? {} : { html: request.html }),
 		...(request.headers ? { headers: request.headers } : {}),
+		...(request.attachments?.length ? { attachments: request.attachments.map(resendFile) } : {}),
 	};
+}
+
+/** A file as Resend takes one: in Base64, an inline image by its content id. */
+function resendFile(file: EmailAttachment) {
+	return {
+		filename: file.filename,
+		content: typeof file.content === "string" ? file.content : base64Of(file.content),
+		content_type: file.type,
+		...(file.disposition === "inline" ? { content_id: file.contentId } : {}),
+	};
+}
+
+function base64Of(content: ArrayBuffer | ArrayBufferView): string {
+	const bytes =
+		content instanceof ArrayBuffer
+			? new Uint8Array(content)
+			: new Uint8Array(content.buffer, content.byteOffset, content.byteLength);
+	let binary = "";
+	for (const byte of bytes) binary += String.fromCharCode(byte);
+	return btoa(binary);
 }
 
 /** What one of Resend's error answers means. */

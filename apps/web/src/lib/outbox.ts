@@ -34,6 +34,12 @@ export type SendStatus = {
  */
 export const SUPPRESSED_CODE = "mail:suppressed";
 
+/**
+ * Mail's code for a message whose files couldn't be read from its copy at a try, so no provider was
+ * asked to send it.
+ */
+export const COPY_UNREAD_CODE = "mail:copy_unread";
+
 /** The most people one message goes to, To and Cc together. Email Service takes up to 50. */
 export const MAX_RECIPIENTS = 20;
 
@@ -42,6 +48,58 @@ export const MAX_SUBJECT = 998;
 
 /** The most text one message may have, in characters. */
 export const MAX_TEXT = 100_000;
+
+/** The most HTML one message may have, in characters. */
+export const MAX_HTML = 500_000;
+
+/** The most files one message may carry. */
+export const MAX_ATTACHMENTS = 20;
+
+/**
+ * The most bytes a message's files may hold together. In Base64, beside the text and HTML, they
+ * stay well under what one message may be at Email Service (25 MiB) and at Resend (40 MB).
+ */
+export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+
+/** The most bytes a request to send may be: its files in Base64, a third larger, and the rest. */
+export const MAX_SEND_BODY = 16_000_000;
+
+/** The longest name a file may have, in characters. */
+export const MAX_FILE_NAME = 200;
+
+/**
+ * Kinds of file Mail doesn't send, by extension: those Resend refuses to send. They are refused
+ * whichever provider a domain uses, so that it doesn't change what may go, and many receiving
+ * servers refuse them too.
+ */
+const REFUSED_KINDS = new Set(
+	"adp app asp bas bat cer chm cmd com cpl crt csh der exe fxp gadget hlp hta inf ins isp its js jse ksh lib lnk mad maf mag mam maq mar mas mat mau mav maw mda mdb mde mdt mdw mdz msc msh msh1 msh2 mshxml msh1xml msh2xml msi msp mst ops pcd pif plg prf prg reg scf scr sct shb shs sys ps1 ps1xml ps2 ps2xml psc1 psc2 tmp url vb vbe vbs vps vsmacros vss vst vsw vxd ws wsc wsf wsh xnk".split(
+		" ",
+	),
+);
+
+/** Why a file of this name can't go, or null when it may. */
+export function fileNameRefusal(name: string): string | null {
+	if (name.trim().length === 0 || name.length > MAX_FILE_NAME) {
+		return `A file's name takes 1 to ${MAX_FILE_NAME} characters.`;
+	}
+	// biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are what it finds.
+	if (/[\x00-\x1f\x7f-\x9f/\\]/.test(name)) {
+		return "A file's name can't hold a slash, a backslash or a control character.";
+	}
+	// Marks that turn text around, so that "invoice\u202Efdp.html" reads as "invoicelmth.pdf".
+	if (/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/.test(name)) {
+		return "A file's name can't hold a mark that turns its text around.";
+	}
+	// Mail reads "=?…?=" in a name as encoded text, which would give the file another name.
+	if (name.includes("=?")) return "A file's name can't hold =?, which mail reads as encoded text.";
+	if (/^[. ]+$/.test(name)) return "A file's name needs more than dots.";
+	// Windows drops dots and spaces at a name's end, so "a.exe." opens as "a.exe".
+	const kind = /\.([^.]*)$/.exec(name.replace(/[. ]+$/, ""))?.[1]?.toLowerCase() ?? "";
+	return REFUSED_KINDS.has(kind)
+		? `Mail doesn't send .${kind} files, which many mail servers refuse.`
+		: null;
+}
 
 /**
  * An address someone types: a local part of RFC 5322's dot-atoms, so no dot at its ends or two in a
@@ -68,6 +126,8 @@ export function refusalReason(code: string | null, detail: string | null = null)
 	switch (code) {
 		case SUPPRESSED_CODE:
 			return "An address it goes to came onto this workspace's suppression list while it waited, so Mail didn't send it. An owner or admin can see the list in Settings, under Suppressions.";
+		case COPY_UNREAD_CODE:
+			return "Mail couldn't read its files from its copy, so it didn't send it. Write it again.";
 		case "E_RECIPIENT_SUPPRESSED":
 			return "An address it goes to bounced before or asked not to get mail, so Email Service won't send to it.";
 		case "E_SENDER_DOMAIN_NOT_AVAILABLE":

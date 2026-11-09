@@ -22,6 +22,34 @@ describe("resendBody", () => {
 		});
 	});
 
+	it("carries HTML and files, an inline image by its content id", () => {
+		const body = resendBody({
+			from: "help@example.com",
+			to: "ada@example.org",
+			subject: "Invoice",
+			text: "Attached.",
+			html: '<p>Attached.</p><img src="cid:logo">',
+			attachments: [
+				{ filename: "a.pdf", type: "application/pdf", content: "aGk=", disposition: "attachment" },
+				{
+					filename: "logo.png",
+					type: "image/png",
+					content: new Uint8Array([104, 105]),
+					disposition: "inline",
+					contentId: "logo",
+				},
+			],
+		});
+		expect(body.html).toBe('<p>Attached.</p><img src="cid:logo">');
+		expect(body.attachments).toEqual([
+			{ filename: "a.pdf", content: "aGk=", content_type: "application/pdf" },
+			{ filename: "logo.png", content: "aGk=", content_type: "image/png", content_id: "logo" },
+		]);
+		expect(
+			resendBody({ from: "a@example.com", to: "b@example.com", subject: "" }),
+		).not.toHaveProperty("attachments");
+	});
+
 	it("quotes a name that an address header can't hold as it is", () => {
 		const from = (name: string) =>
 			resendBody({ from: { name, email: "a@example.com" }, to: "b@example.com", subject: "" }).from;

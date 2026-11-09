@@ -44,6 +44,7 @@ describe("migrate", () => {
 			{ version: 7 },
 			{ version: 8 },
 			{ version: 9 },
+			{ version: 10 },
 		]);
 	});
 
@@ -92,6 +93,8 @@ describe("migrate", () => {
 				detail: null,
 				maybe_sent: 0,
 				key_version: null,
+				// Version 10's: its copy carries no files.
+				files: "[]",
 			},
 		]);
 		sent("held");
