@@ -4,7 +4,7 @@
  * can write. The choice is the member's own (`image_sender`): loading images tells the sender
  * someone opened the message, and each reader of a shared mailbox decides that for themselves.
  */
-import { and, count, desc, eq } from "drizzle-orm";
+import { and, count, desc, eq, sql } from "drizzle-orm";
 import type { ImageSender } from "../../lib/images";
 import type { Database } from "../db";
 import { schema } from "../db";
@@ -46,15 +46,19 @@ export async function allowImageSender(
 	domain: string,
 ): Promise<boolean> {
 	const { imageSender } = schema;
-	if (await allowsImages(db, memberId, domain)) return true;
-	const held = await db
-		.select({ n: count() })
-		.from(imageSender)
-		.where(eq(imageSender.memberId, memberId))
-		.get();
-	if ((held?.n ?? 0) >= MAX_IMAGE_SENDERS) return false;
-	await db.insert(imageSender).values({ memberId, domain }).onConflictDoNothing().run();
-	return true;
+	// Counted in the insert itself, so two at once can't both take the last place. Every column in
+	// the table's order, as Drizzle's insert-select needs.
+	const { meta } = await db
+		.insert(imageSender)
+		.select(
+			sql`SELECT ${memberId}, ${domain}, ${Date.now()}
+				WHERE (SELECT ${count()} FROM ${imageSender} WHERE ${imageSender.memberId} = ${memberId})
+					< ${MAX_IMAGE_SENDERS}`,
+		)
+		.onConflictDoNothing()
+		.run();
+	// Nothing written: the domain was there already, or there was no room for it.
+	return meta.changes > 0 || (await allowsImages(db, memberId, domain));
 }
 
 /** Stops the images of the member's mail from `domain` showing by themselves. */

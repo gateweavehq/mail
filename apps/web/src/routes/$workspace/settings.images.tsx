@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "#/components/ui/button";
 import { useWorkspace } from "#/components/workspace/context";
 import { formatDateTime } from "#/lib/dates";
@@ -8,6 +8,7 @@ import {
 	type ImageSender,
 	type ImageSendersPage,
 	imagesUrl,
+	rememberImageChoice,
 } from "#/lib/images";
 import { useDocumentTitle } from "#/lib/title";
 
@@ -17,19 +18,20 @@ export const Route = createFileRoute("/$workspace/settings/images")({
 
 function ImagesSettings() {
 	useDocumentTitle("Images");
+	const heading = useRef<HTMLHeadingElement>(null);
 	return (
 		<section aria-labelledby="images-heading" className="space-y-4">
 			<div className="space-y-1">
-				<h2 id="images-heading" className="text-sm font-semibold">
+				<h2 id="images-heading" ref={heading} tabIndex={-1} className="text-sm font-semibold">
 					Images
 				</h2>
 				<p className="text-sm text-muted-foreground">
-					Remote images show by themselves, for you only, in mail proved to come from these domains.
-					Loading them tells the sender you opened their message. You add a domain from a message it
-					sent, with "Always show images from".
+					Remote images show by themselves, for you only, in mail proved to come from these domains,
+					from anyone there. Loading them tells the sender you opened their message. You add a
+					domain from a message it sent, with "Always show images from".
 				</p>
 			</div>
-			<SenderList />
+			<SenderList onRemoved={() => heading.current?.focus()} />
 		</section>
 	);
 }
@@ -46,11 +48,12 @@ async function load(workspace: string): Promise<Loaded> {
 	}
 }
 
-function SenderList() {
+function SenderList({ onRemoved }: { onRemoved: () => void }) {
 	const { slug } = useWorkspace();
 	const [senders, setSenders] = useState<ImageSender[] | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [busy, setBusy] = useState<string | null>(null);
+	const [done, setDone] = useState("");
 
 	const refresh = useCallback(async () => {
 		const loaded = await load(slug);
@@ -67,14 +70,21 @@ function SenderList() {
 	}, [refresh]);
 
 	async function stop(domain: string) {
+		// Not disabled meanwhile, which would take the focus from it: a second press does nothing.
+		if (busy) return;
 		setBusy(domain);
+		setError(null);
 		const answer = await changeImageSenders(slug, { action: "stop", domain });
 		setBusy(null);
 		if (!answer.ok) {
 			setError(answer.error);
 			return;
 		}
+		rememberImageChoice(slug, domain, false);
 		setSenders((current) => current?.filter((sender) => sender.domain !== domain) ?? null);
+		setDone(`Images from ${domain} no longer show by themselves.`);
+		// Its row and button are gone, so the focus goes somewhere that stays.
+		onRemoved();
 	}
 
 	if (senders === null) {
@@ -93,6 +103,9 @@ function SenderList() {
 					{error}
 				</p>
 			)}
+			<p role="status" className="text-sm text-muted-foreground empty:hidden">
+				{done}
+			</p>
 			{senders.length === 0 ? (
 				<p className="text-sm text-muted-foreground">
 					None yet: every message's remote images wait until you ask for them.
@@ -108,7 +121,6 @@ function SenderList() {
 							<Button
 								size="sm"
 								variant="outline"
-								disabled={busy === sender.domain}
 								onClick={() => stop(sender.domain)}
 								aria-label={`Stop showing images from ${sender.domain}`}
 							>

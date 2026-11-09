@@ -4,6 +4,8 @@
  * `server/mailbox/image-senders.ts`.
  */
 
+import { useSyncExternalStore } from "react";
+
 /** One sender a person allows. */
 export interface ImageSender {
 	/** Lower case. */
@@ -44,4 +46,36 @@ export async function changeImageSenders(
 	} catch {
 		return { ok: false, error: "That didn't reach the server. Try again." };
 	}
+}
+
+/**
+ * What the reader chose for a sender while this page has been open, by workspace and domain.
+ * Messages they opened earlier keep what the server said when they loaded, and a thread's older
+ * messages load once; this is how a choice reaches them all at once, without loading them again.
+ */
+const choices = new Map<string, boolean>();
+const listeners = new Set<() => void>();
+
+const choiceKey = (workspace: string, domain: string) => `${workspace}\n${domain.toLowerCase()}`;
+
+function subscribe(listener: () => void) {
+	listeners.add(listener);
+	return () => {
+		listeners.delete(listener);
+	};
+}
+
+/** Records what the reader chose for a sender, for every message of theirs on the page. */
+export function rememberImageChoice(workspace: string, domain: string, allowed: boolean) {
+	choices.set(choiceKey(workspace, domain), allowed);
+	for (const listener of listeners) listener();
+}
+
+/** What the reader chose for a sender since the page opened, or null when they haven't. */
+export function useImageChoice(workspace: string, domain: string | null): boolean | null {
+	return useSyncExternalStore(
+		subscribe,
+		() => (domain ? (choices.get(choiceKey(workspace, domain)) ?? null) : null),
+		() => null,
+	);
 }

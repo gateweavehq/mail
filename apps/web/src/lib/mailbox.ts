@@ -153,7 +153,7 @@ export interface OpenedMessage {
 	remoteImages: boolean;
 	/**
 	 * Its remote images show without asking, as the reader allowed the domain it was proved to come
-	 * from (`lib/images.ts`). Never for an agent's key.
+	 * from (`lib/images.ts`). False when it has none to show, and always for an agent's key.
 	 */
 	imagesAllowed: boolean;
 	/** Its HTML is too long to show in full, so the frame shows the start of it. */

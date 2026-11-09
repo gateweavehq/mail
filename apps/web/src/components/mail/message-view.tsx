@@ -1,11 +1,10 @@
-import { useRouter } from "@tanstack/react-router";
 import { Image, ImageOff, Paperclip, Send, ShieldAlert, ShieldCheck, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { Button } from "#/components/ui/button";
 import { ConfirmDialog } from "#/components/workspace/confirm-dialog";
 import { isAdminRole, useMyRole } from "#/components/workspace/context";
 import { formatDateTime } from "#/lib/dates";
-import { changeImageSenders } from "#/lib/images";
+import { changeImageSenders, rememberImageChoice, useImageChoice } from "#/lib/images";
 import {
 	deleteMessage,
 	htmlUrl,
@@ -125,18 +124,17 @@ function Body({
 	mailbox: string;
 	message: OpenedMessage;
 }) {
-	const router = useRouter();
 	const [asText, setAsText] = useState(false);
-	// What the reader chose for this view, and what they last chose for its sender here, until the
-	// page is loaded again with it.
+	// What the reader chose for this view; what they chose for its sender while the page has been
+	// open, which every message of theirs here follows at once; or else what the server said.
 	const [shown, setShown] = useState<boolean | null>(null);
-	const [saved, setSaved] = useState<boolean | null>(null);
+	const domain = message.verifiedDomain;
+	const choice = useImageChoice(workspace, domain);
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
-	const allowed = saved ?? message.imagesAllowed;
+	const allowed = choice ?? message.imagesAllowed;
 	const images = shown ?? allowed;
 	const formatted = message.hasHtml && !asText;
-	const domain = message.verifiedDomain;
 
 	async function choose(allow: boolean) {
 		// Not disabled meanwhile, which would take the focus from it: a second press does nothing.
@@ -152,11 +150,16 @@ function Body({
 			setError(answer.error);
 			return;
 		}
-		setSaved(allow);
+		rememberImageChoice(workspace, answer.domain, allow);
 		setShown(null);
-		// The thread's other messages from the sender follow.
-		await router.invalidate();
 	}
+
+	// Said where a screen reader hears it change, as pressing a button only changes its label.
+	const state = !images
+		? "Remote images are off, so the sender can't tell you opened this."
+		: allowed && domain
+			? `Images show by themselves for any mail proved to come from ${domain}, as you chose. Its sender can tell you opened this.`
+			: "";
 
 	return (
 		<div className="space-y-2">
@@ -172,29 +175,32 @@ function Body({
 							</Button>
 							{/* Only a proved domain: a From that nothing proves can be anyone's. */}
 							{domain && (
-								<Button size="sm" variant="outline" onClick={() => choose(!allowed)}>
+								<Button
+									size="sm"
+									variant="outline"
+									className="h-auto min-h-8 max-w-full whitespace-normal break-all text-left"
+									onClick={() => choose(!allowed)}
+								>
 									{allowed
 										? `Stop showing images from ${domain}`
 										: `Always show images from ${domain}`}
 								</Button>
 							)}
-							{images && allowed ? (
-								<p className="flex items-center gap-2 text-sm text-muted-foreground">
-									<Image className="size-4 shrink-0" aria-hidden />
-									<span className="min-w-0 break-words">
-										Images show by themselves for mail proved to come from{" "}
-										<span className="font-medium text-foreground">{domain}</span>, as you chose. Its
-										sender can tell you opened this.
-									</span>
-								</p>
-							) : (
-								!images && (
-									<p className="flex items-center gap-2 text-sm text-muted-foreground">
-										<ImageOff className="size-4 shrink-0" aria-hidden />
-										Remote images are off, so the sender can't tell you opened this.
-									</p>
-								)
-							)}
+							<p
+								role="status"
+								className="flex min-w-0 items-center gap-2 text-sm text-muted-foreground empty:hidden"
+							>
+								{state && (
+									<>
+										{images ? (
+											<Image className="size-4 shrink-0" aria-hidden />
+										) : (
+											<ImageOff className="size-4 shrink-0" aria-hidden />
+										)}
+										<span className="min-w-0 break-words">{state}</span>
+									</>
+								)}
+							</p>
 						</>
 					)}
 				</div>

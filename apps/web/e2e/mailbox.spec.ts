@@ -526,13 +526,7 @@ test("a reader lets a proved sender's images show by themselves, and takes it ba
 }) => {
 	const { slug, mailboxId, to, deliver } = await supportMailbox(page, request, baseURL);
 	const offer = (subject: string, proved: boolean) => [
-		// What Email Routing puts above a message whose sender Cloudflare proved.
-		...(proved
-			? [
-					"Received: from mail.example.org (mail.example.org [192.0.2.1]) by cloudflare-email.net (unknown) id A for <x@example.com>",
-					"Authentication-Results: mx.cloudflare.net; dkim=pass header.d=example.org; dmarc=pass header.from=example.org; spf=pass",
-				]
-			: []),
+		...(proved ? PROVED : []),
 		"From: Shop News <news@example.org>",
 		`To: ${to}`,
 		`Subject: ${subject}`,
@@ -563,7 +557,7 @@ test("a reader lets a proved sender's images show by themselves, and takes it ba
 	await page.getByRole("button", { name: "Always show images from example.org" }).click();
 	await expect.poll(() => asked).toBe(1);
 	await expect(
-		page.getByText(/Images show by themselves for mail proved to come from/),
+		page.getByText(/Images show by themselves for any mail proved to come from example.org/),
 	).toBeVisible();
 	await expect(
 		page.getByRole("button", { name: "Stop showing images from example.org" }),
@@ -588,10 +582,100 @@ test("a reader lets a proved sender's images show by themselves, and takes it ba
 	await expect(list.getByText("example.org")).toBeVisible();
 	await list.getByRole("button", { name: "Stop showing images from example.org" }).click();
 	await expect(page.getByText(/None yet/)).toBeVisible();
+	await expect(page.getByRole("status")).toHaveText(
+		"Images from example.org no longer show by themselves.",
+	);
+	// Its button went with it, so the focus is on what stays.
+	await expect(page.getByRole("heading", { name: "Images" })).toBeFocused();
 
 	await openOffer("Toasters");
 	await expect(
 		page.getByRole("button", { name: "Always show images from example.org" }),
+	).toBeVisible();
+	expect(asked).toBe(2);
+});
+
+test("a choice about a sender's images reaches a thread's older messages at once", async ({
+	page,
+	request,
+	baseURL,
+}) => {
+	const { slug, mailboxId, to, deliver } = await supportMailbox(page, request, baseURL);
+	const firstId = `<${unique("deal")}@example.org>`;
+	const deal = (subject: string, heading: string, more: string[]) => [
+		...PROVED,
+		"From: Shop News <news@example.org>",
+		`To: ${to}`,
+		`Subject: ${subject}`,
+		...more,
+		"MIME-Version: 1.0",
+		"Content-Type: text/html; charset=utf-8",
+		"",
+		`<h1>${heading}</h1><img src="https://images.example/logo.png" alt="Shop logo">`,
+		"",
+	];
+	await deliver(
+		"news@example.org",
+		deal("Kettle deal", "First deal", [
+			"Date: Sun, 08 Nov 2026 09:00:00 +0000",
+			`Message-ID: ${firstId}`,
+		]),
+	);
+	await deliver(
+		"news@example.org",
+		deal("Re: Kettle deal", "Second deal", [
+			"Date: Sun, 08 Nov 2026 10:00:00 +0000",
+			`Message-ID: <${unique("deal")}@example.org>`,
+			`In-Reply-To: ${firstId}`,
+			`References: ${firstId}`,
+		]),
+	);
+	let asked = 0;
+	await page.route("https://images.example/**", (route) => {
+		asked++;
+		return route.fulfill({ contentType: "image/png", body: Buffer.from(PIXEL, "base64") });
+	});
+
+	await page.goto(`/${slug}/mailboxes/${mailboxId}`);
+	await waitForHydration(page);
+	await page.getByRole("link", { name: /\(2 messages\).*Kettle deal/ }).click();
+	const thread = page.getByRole("list", { name: "Messages in this thread" });
+	const [older, newest] = [
+		thread.locator(":scope > li").first(),
+		thread.locator(":scope > li").last(),
+	];
+	const frame = '[title="The message, as its sender formatted it"]';
+	await expect(
+		newest.frameLocator(frame).getByRole("heading", { name: "Second deal" }),
+	).toBeVisible();
+	expect(asked).toBe(0);
+
+	// Allowed from the newest, the older one shows them when opened.
+	await newest.getByRole("button", { name: "Always show images from example.org" }).click();
+	await expect.poll(() => asked).toBe(1);
+	await older.getByRole("button", { name: /Shop News/ }).click();
+	await expect(
+		older.frameLocator(frame).getByRole("heading", { name: "First deal" }),
+	).toBeVisible();
+	await expect.poll(() => asked).toBe(2);
+
+	// Taken back from the newest, the older one, loaded before, follows at once.
+	await newest.getByRole("button", { name: "Stop showing images from example.org" }).click();
+	await expect(
+		older.getByRole("button", { name: "Always show images from example.org" }),
+	).toBeVisible();
+	await expect(older.getByRole("button", { name: "Show remote images" })).toBeVisible();
+	await expect(
+		newest.getByText("Remote images are off, so the sender can't tell you opened this."),
+	).toBeVisible();
+	// Closed and opened again, it stays as it was told.
+	await older.getByRole("button", { name: /Shop News/ }).click();
+	await older.getByRole("button", { name: /Shop News/ }).click();
+	await expect(
+		older.frameLocator(frame).getByRole("heading", { name: "First deal" }),
+	).toBeVisible();
+	await expect(
+		older.getByRole("button", { name: "Always show images from example.org" }),
 	).toBeVisible();
 	expect(asked).toBe(2);
 });
@@ -994,6 +1078,12 @@ test("an admin lets an agent make addresses, and the workspace's page says which
 });
 
 /** A one-pixel PNG. */
+/** What Email Routing puts above a message whose sender Cloudflare proved to be example.org. */
+const PROVED = [
+	"Received: from mail.example.org (mail.example.org [192.0.2.1]) by cloudflare-email.net (unknown) id A for <x@example.com>",
+	"Authentication-Results: mx.cloudflare.net; dkim=pass header.d=example.org; dmarc=pass header.from=example.org; spf=pass",
+];
+
 const PIXEL =
 	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 

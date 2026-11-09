@@ -1,10 +1,11 @@
 /**
  * `/api/images/<workspace>`: the senders whose remote images show by themselves for the person
- * signed in. Only people have it: an agent's key reads no HTML, and never reaches this.
+ * signed in. Only people have it: an agent's key reads no HTML, and a request with one is turned
+ * away before anything is looked up.
  */
 import { z } from "zod";
 import type { ImageAnswer, ImageSendersPage } from "../lib/images";
-import { currentMember } from "./access";
+import { bearsKey, currentMember } from "./access";
 import { db } from "./auth";
 import {
 	allowImageSender,
@@ -34,7 +35,8 @@ function answer(body: ImageAnswer | ImageSendersPage | { ok: false; error: strin
 const notFound = () => answer({ ok: false, error: "Not found" }, 404);
 
 /** `GET /api/images/<workspace>`: the senders the person allows, the newest first. */
-export async function readImageSenders(slug: string): Promise<Response> {
+export async function readImageSenders(request: Request, slug: string): Promise<Response> {
+	if (bearsKey(request.headers)) return notFound();
 	const member = await currentMember(slug);
 	if (!member) return notFound();
 	return answer({ senders: await listImageSenders(db, member.membership.memberId) });
@@ -50,6 +52,7 @@ export async function changeImageSenders(request: Request, slug: string): Promis
 	if (request.headers.get("origin") !== appOrigin()) {
 		return answer({ ok: false, error: "Not allowed from there" }, 403);
 	}
+	if (bearsKey(request.headers)) return notFound();
 	const parsed = Action.safeParse(await request.json().catch(() => null));
 	if (!parsed.success) return answer({ ok: false, error: "That isn't a change we know." }, 400);
 	const action = parsed.data;

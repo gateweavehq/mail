@@ -446,11 +446,13 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     (`verifiedDomain`) and by nothing else: anyone can write a `From`. The choice is the member's
     own (D1 `image_sender`), as each reader of a shared mailbox decides for themselves whether
     senders learn they opened something, and it goes with their membership. A message's JSON says
-    `imagesAllowed` when its proved domain is on the reader's list; an agent's key never has one. To
-    allow, the page names a message, not a domain, and the server reads the domain from the message
-    as it was judged on arrival, so a domain that proved nothing can't be added. The page says when
-    images showed because of the choice, with a button to take it back, and Settings › Images lists
-    them. At most 500 per person.
+    `imagesAllowed` when it has remote images and its proved domain is on the reader's list; an
+    agent's key never has one. To allow, the page names a message, not a domain, and the server
+    reads the domain from the message as it was judged on arrival, so a domain that proved nothing
+    can't be added. The page says when images showed because of the choice, with a button to take it
+    back, and a choice reaches every message from that domain already open, a thread's older ones
+    too. Settings › Images lists them. At most 500 per person in each workspace, counted as the row
+    is written.
   - **Search.** A mailbox's page, and `…/threads?q=`, list the threads with a message that has
     every word typed, newest news first. The last word also finds the words it starts, when it
     ends in two letters or digits or more (FTS5 takes the prefix from its last token, so `a.` is

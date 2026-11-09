@@ -2177,6 +2177,21 @@ describe("remote images a person allows", () => {
 		expect(await allowed(box.slug)).toEqual(["example.org"]);
 	});
 
+	it("only from a message of a mailbox the person reads, named with that mailbox", async () => {
+		const box = await mailboxWithAddress();
+		const id = await arrive(box);
+		const allowing = { action: "allow", mailbox: box.mailboxId, message: id };
+		// A member of the workspace who wasn't given the mailbox.
+		const reader = await join(box.workspaceId);
+		expect((await images(box.slug, reader, allowing)).status).toBe(404);
+		expect(await allowed(box.slug, reader)).toEqual([]);
+		// Another mailbox of the workspace, which the owner reads too, doesn't hold that message.
+		const other = await addMailbox(box.slug, owner, box.domainId, `sales@${box.domain}`);
+		const mixed = { action: "allow", mailbox: other, message: id };
+		expect((await images(box.slug, owner, mixed)).status).toBe(404);
+		expect(await allowed(box.slug)).toEqual([]);
+	});
+
 	it("takes a change only from the app's own pages", async () => {
 		const box = await mailboxWithAddress();
 		const id = await arrive(box);
@@ -2206,6 +2221,9 @@ describe("remote images a person allows", () => {
 		// One goes, and there is room again.
 		await images(box.slug, owner, { action: "stop", domain: "sender0.example" });
 		expect((await images(box.slug, owner, allowing)).status).toBe(200);
+		// Full again, allowing one already there still says yes.
+		expect((await images(box.slug, owner, allowing)).status).toBe(200);
+		expect((await allowed(box.slug)).length).toBe(500);
 	});
 
 	it("goes with the person's membership", async () => {
