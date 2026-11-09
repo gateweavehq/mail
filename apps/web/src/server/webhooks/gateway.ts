@@ -11,8 +11,10 @@ import { currentMember } from "../access";
 import { db } from "../auth";
 import { schema } from "../db";
 import { appOrigin } from "../origin";
-import type { Refused, WebhookLink } from "./durable-object";
+import type { Asker, Refused, WebhookLink } from "./durable-object";
 import { webhooksStub } from "./index";
+
+const ADMIN: Asker = { admin: true };
 
 const id = z.string().min(1).max(64);
 
@@ -39,19 +41,37 @@ async function mailboxesOf(workspaceId: string) {
 		.all();
 }
 
-/** What the webhooks page shows. The caller must be an owner or admin of the workspace. */
+/**
+ * What the webhooks page shows, with the names of the agents that made their own. The caller must
+ * be an owner or admin of the workspace.
+ */
 export async function readWebhooks(workspaceId: string): Promise<WorkspaceWebhooks> {
-	const [listed, mailboxes] = await Promise.all([
-		webhooksStub(workspaceId).list(),
-		mailboxesOf(workspaceId),
-	]);
-	return { ...listed, mailboxes };
+	const stub = webhooksStub(workspaceId);
+	// Not those of a key revoked, or an agent deleted, while the object was out of reach.
+	await stub.prune();
+	const [listed, mailboxes] = await Promise.all([stub.list(ADMIN), mailboxesOf(workspaceId)]);
+	const made = [...new Set(listed.webhooks.flatMap((hook) => hook.agentMemberId ?? []))];
+	const { member, user } = schema;
+	const agents: WorkspaceWebhooks["agents"] = [];
+	// D1 binds at most 100 values in a statement.
+	for (let at = 0; at < made.length; at += 90) {
+		const rows = await db
+			.select({ memberId: member.id, name: user.name })
+			.from(member)
+			.innerJoin(user, eq(member.userId, user.id))
+			.where(
+				and(eq(member.organizationId, workspaceId), inArray(member.id, made.slice(at, at + 90))),
+			)
+			.all();
+		agents.push(...rows);
+	}
+	return { ...listed, mailboxes, agents };
 }
 
 /**
  * `POST /api/webhooks/<workspace>`: adds, changes, pauses, tests or deletes a webhook, or gives it
  * a new secret. Only an owner or admin may: webhooks tell of every mailbox's mail, and their
- * secrets sign it.
+ * secrets sign it. Of one an agent made for itself, they may pause, resume, test or delete it.
  */
 export async function changeWebhooks(request: Request, slug: string): Promise<Response> {
 	// A session cookie comes along wherever a request is from, so ask where that is.
@@ -77,19 +97,19 @@ export async function changeWebhooks(request: Request, slug: string): Promise<Re
 		case "create": {
 			const unknown = await unknownMailbox(workspaceId, change.input.mailboxIds);
 			if (unknown) return unknown;
-			return reply(await hooks.create(link, change.input));
+			return reply(await hooks.create(link, change.input, ADMIN));
 		}
 		case "update": {
 			const unknown = await unknownMailbox(workspaceId, change.patch.mailboxIds);
 			if (unknown) return unknown;
-			return reply(await hooks.update(link, change.id, change.patch));
+			return reply(await hooks.update(link, change.id, change.patch, ADMIN));
 		}
 		case "delete":
-			return reply(await hooks.remove(change.id));
+			return reply(await hooks.remove(change.id, ADMIN));
 		case "rotate":
-			return reply(await hooks.rotate(change.id));
+			return reply(await hooks.rotate(change.id, ADMIN));
 		case "test":
-			return reply(await hooks.test(link, change.id));
+			return reply(await hooks.test(link, change.id, ADMIN));
 	}
 }
 

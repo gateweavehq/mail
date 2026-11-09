@@ -46,8 +46,20 @@ CREATE TABLE seen_event (
 ) STRICT, WITHOUT ROWID;
 `;
 
+// An agent's own webhook names its membership and the key that made it, and lasts as long as that
+// key; the workspace's own, which owners and admins make, name neither. `paused_by_admin` keeps an
+// admin's pause of an agent's own from being undone by the agent.
+const VERSION_2 = `
+ALTER TABLE webhook ADD COLUMN agent_member_id TEXT;
+ALTER TABLE webhook ADD COLUMN agent_key_id TEXT;
+ALTER TABLE webhook ADD COLUMN paused_by_admin INTEGER NOT NULL DEFAULT 0;
+`;
+
 /** Each brings the schema from the version before it. Append only: objects keep what they ran. */
-export const MIGRATIONS: ((sql: SqlStorage) => void)[] = [(sql) => sql.exec(VERSION_1)];
+export const MIGRATIONS: ((sql: SqlStorage) => void)[] = [
+	(sql) => sql.exec(VERSION_1),
+	(sql) => sql.exec(VERSION_2),
+];
 
 /** Runs the migrations this object hasn't, all or none. */
 export function migrate(storage: Pick<DurableObjectStorage, "sql" | "transactionSync">): void {

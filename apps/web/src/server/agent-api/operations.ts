@@ -10,6 +10,13 @@ import {
 import { MAX_RECIPIENTS, MAX_SUBJECT, MAX_TEXT } from "../../lib/outbox";
 import { findVerificationCode } from "../../lib/verification-code";
 import {
+	MAX_AGENT_WEBHOOKS,
+	MAX_WEBHOOK_MAILBOXES,
+	type Webhook,
+	type WebhookDelivery,
+	webhookInput,
+} from "../../lib/webhooks";
+import {
 	type AgentMailbox,
 	type Answer,
 	ApiError,
@@ -18,6 +25,7 @@ import {
 	gone,
 	InternalFailure,
 	type MailAccess,
+	pickMailbox,
 } from "./mail-access";
 import { OUTPUTS, READ_MESSAGE, READ_THREAD } from "./outputs";
 import { UNTRUSTED } from "./untrusted";
@@ -27,8 +35,8 @@ import { domainOf, MAX_WAIT_SECONDS, WAIT_SECONDS, waitFor } from "./wait";
 // is over REST. Mail's MCP tools, its REST routes under /api/v1 and their OpenAPI document are all
 // made from these, so none of them can drift from the others.
 
-/** An HTTP method a route answers. */
-export type Method = "GET" | "POST" | "DELETE";
+/** An HTTP method a route answers. POST and PATCH take a JSON body, the others a query. */
+export type Method = "GET" | "POST" | "PATCH" | "DELETE";
 
 /** Where an operation is over REST. */
 export interface Route {
@@ -158,6 +166,22 @@ const waitInput = {
 		.optional()
 		.describe(`How long to wait for it, ${WAIT_SECONDS} seconds unless you say.`),
 };
+
+const webhookIdInput = idInput.describe("Its id, from list_webhooks.");
+const webhookUrlInput = webhookInput.shape.url.describe(
+	"Where Mail posts each event: an https URL, never Mail's own.",
+);
+const webhookEventsInput = webhookInput.shape.events.describe(
+	"What it hears of. message.received: mail came to the mailbox. message.held: mail written waits for a person to approve it. message.rejected: a person rejected it. message.sent: it went to the provider. message.delivered, message.bounced and message.complained: a recipient's server took it, refused it, or marked it as spam, told once for each recipient. Of mail you write, you aren't told of what you did yourself (holding it, or sending what needed no approval), only of what people and servers did.",
+);
+const webhookMailboxesInput = z
+	.array(mailboxInput)
+	.min(1)
+	.max(MAX_WEBHOOK_MAILBOXES)
+	.nullable()
+	.describe(
+		"The mailboxes it hears of, by id, name or address, from list_mailboxes; null for every mailbox you may read, those you are given later too.",
+	);
 
 const listMailboxes = operation({
 	name: "list_mailboxes",
@@ -466,6 +490,113 @@ const endAddress = operation({
 	},
 });
 
+const listWebhooks = operation({
+	name: "list_webhooks",
+	title: "List webhooks",
+	description: `Lists the webhooks you made, with each one's latest deliveries and how they went. You may have ${MAX_AGENT_WEBHOOKS}.`,
+	input: z.object({}),
+	output: OUTPUTS.list_webhooks,
+	hints: { readOnlyHint: true, openWorldHint: false },
+	routes: [{ method: "GET", path: "/webhooks" }],
+	refusals: [],
+	async run(access) {
+		const { webhooks, deliveries } = await access.webhooks();
+		return {
+			webhooks: webhooks.map((hook) => ({
+				...webhookOf(hook),
+				deliveries: deliveries.filter((delivery) => delivery.webhookId === hook.id).map(deliveryOf),
+			})),
+			max: MAX_AGENT_WEBHOOKS,
+		};
+	},
+});
+
+const createWebhook = operation({
+	name: "create_webhook",
+	title: "Create webhook",
+	description:
+		"Makes a webhook of your own, so you hear of mail without waiting for it: Mail posts each event you choose, of mailboxes you may read, to your https URL, and tries again for about a day while it fails. Each POST is signed per Standard Webhooks (webhook-id, webhook-timestamp and webhook-signature headers) with the secret this answer gives, once: keep it. A body is { type, timestamp, data }, and data names the workspace, the mailbox and the message, never its text, which read_email gives; what senders wrote comes marked as such, and members are given by id, not by name. A mailbox you may no longer read goes quiet, and the webhook goes when the key you make it with is revoked. Test it with test_webhook.",
+	input: z.object({
+		url: webhookUrlInput,
+		events: webhookEventsInput,
+		mailboxes: webhookMailboxesInput.optional(),
+	}),
+	output: OUTPUTS.create_webhook,
+	hints: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+	routes: [{ method: "POST", path: "/webhooks" }],
+	refusals: [409],
+	async run(access, { url, events, mailboxes }) {
+		const mailboxIds = await mailboxIdsOf(access, mailboxes ?? null);
+		const { webhook, secret } = await access.createWebhook({ url, events, mailboxIds });
+		return { webhook: webhookOf(webhook), secret };
+	},
+});
+
+const updateWebhook = operation({
+	name: "update_webhook",
+	title: "Update webhook",
+	description:
+		"Changes a webhook of yours: where it goes, what it hears of, or whether it is active. Pausing it drops what it had yet to deliver; taking a mailbox or an event off it drops what waited for those. One an admin paused (pausedByAdmin) only an admin resumes. With newSecret: true it gets a new secret, which this answer gives once, and signs what it sends from then on with it, retries too.",
+	input: z.object({
+		webhookId: webhookIdInput,
+		url: webhookUrlInput.optional(),
+		events: webhookEventsInput.optional(),
+		mailboxes: webhookMailboxesInput.optional(),
+		active: z.boolean().optional().describe("false to pause it, true to resume it."),
+		newSecret: z.boolean().optional().describe("true for a new secret."),
+	}),
+	output: OUTPUTS.update_webhook,
+	hints: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
+	routes: [{ method: "PATCH", path: "/webhooks/{webhookId}" }],
+	refusals: [409],
+	async run(access, { webhookId, url, events, mailboxes, active, newSecret }) {
+		const changes = url !== undefined || events !== undefined || mailboxes !== undefined;
+		if (!changes && active === undefined && !newSecret) {
+			throw new ApiError("Give what to change: url, events, mailboxes, active or newSecret.", 400);
+		}
+		const mailboxIds = mailboxes === undefined ? undefined : await mailboxIdsOf(access, mailboxes);
+		const { webhook, secret } = await access.updateWebhook(
+			webhookId,
+			{ url, events, mailboxIds, active },
+			newSecret ?? false,
+		);
+		return secret === null
+			? { webhook: webhookOf(webhook) }
+			: { webhook: webhookOf(webhook), secret };
+	},
+});
+
+const deleteWebhook = operation({
+	name: "delete_webhook",
+	title: "Delete webhook",
+	description: "Deletes a webhook of yours, and what it had yet to deliver.",
+	input: z.object({ webhookId: webhookIdInput }),
+	output: OUTPUTS.delete_webhook,
+	hints: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+	routes: [{ method: "DELETE", path: "/webhooks/{webhookId}" }],
+	refusals: [],
+	async run(access, { webhookId }) {
+		await access.deleteWebhook(webhookId);
+		return { deleted: true };
+	},
+});
+
+const testWebhook = operation({
+	name: "test_webhook",
+	title: "Test webhook",
+	description:
+		"Has a webhook of yours post a webhook.test event, whatever it listens to, to check that your receiver gets it and checks its signature. One at a time, while it is active; see how it went with list_webhooks.",
+	input: z.object({ webhookId: webhookIdInput }),
+	output: OUTPUTS.test_webhook,
+	hints: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+	routes: [{ method: "POST", path: "/webhooks/{webhookId}/test" }],
+	refusals: [409],
+	async run(access, { webhookId }) {
+		await access.testWebhook(webhookId);
+		return { queued: true };
+	},
+});
+
 /** Everything an agent can do, in the order its tools and routes are listed. */
 export const OPERATIONS: readonly Operation[] = [
 	listMailboxes,
@@ -478,6 +609,11 @@ export const OPERATIONS: readonly Operation[] = [
 	listAddresses,
 	createAddress,
 	endAddress,
+	listWebhooks,
+	createWebhook,
+	updateWebhook,
+	deleteWebhook,
+	testWebhook,
 ];
 
 const iso = (ms: number) => new Date(ms).toISOString();
@@ -505,6 +641,40 @@ function addressOf(address: AgentMailbox["addresses"][number]) {
 		id: address.id,
 		address: address.address,
 		expiresAt: address.expiresAt === null ? null : iso(address.expiresAt),
+	};
+}
+
+/** The mailboxes a webhook names, by id, among those the agent may read; null for all of them. */
+async function mailboxIdsOf(access: MailAccess, wanted: string[] | null): Promise<string[] | null> {
+	if (wanted === null) return null;
+	const all = await access.mailboxes();
+	return [...new Set(wanted.map((one) => pickMailbox(all, one).id))].sort();
+}
+
+function webhookOf(hook: Webhook) {
+	return {
+		id: hook.id,
+		url: hook.url,
+		events: hook.events,
+		mailboxIds: hook.mailboxIds,
+		active: hook.active,
+		pausedByAdmin: hook.pausedByAdmin,
+		secretStart: hook.secretStart,
+		createdAt: iso(hook.createdAt),
+		updatedAt: iso(hook.updatedAt),
+	};
+}
+
+function deliveryOf(delivery: WebhookDelivery) {
+	return {
+		id: delivery.id,
+		event: delivery.event,
+		status: delivery.status,
+		attempts: delivery.attempts,
+		responseStatus: delivery.responseStatus,
+		error: delivery.error,
+		nextAttemptAt: delivery.nextAttemptAt === null ? null : iso(delivery.nextAttemptAt),
+		createdAt: iso(delivery.createdAt),
 	};
 }
 

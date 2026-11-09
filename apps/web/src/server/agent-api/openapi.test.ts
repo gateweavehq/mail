@@ -77,4 +77,35 @@ describe("the agent API's OpenAPI document", () => {
 		);
 		expect(document.components.responses.Failed429).toHaveProperty("headers.Retry-After");
 	});
+
+	it("takes a webhook's changes as a JSON body, and its test and deletion by its path", () => {
+		type Route = {
+			parameters: { name: string; in: string }[];
+			requestBody?: {
+				content: { "application/json": { schema: { required: string[]; properties: object } } };
+			};
+		};
+		const one = document.paths["/webhooks/{webhookId}"] as { patch: Route; delete: Route };
+		expect(one.patch.parameters).toEqual([
+			expect.objectContaining({ name: "webhookId", in: "path" }),
+		]);
+		const body = one.patch.requestBody?.content["application/json"].schema;
+		expect(Object.keys(body?.properties ?? {}).sort()).toEqual([
+			"active",
+			"events",
+			"mailboxes",
+			"newSecret",
+			"url",
+		]);
+		expect(body?.required).toEqual([]);
+		expect(one.delete.parameters).toEqual([
+			expect.objectContaining({ name: "webhookId", in: "path" }),
+		]);
+		expect(one.delete.requestBody).toBeUndefined();
+		const made = document.paths["/webhooks"]?.post as Route;
+		expect(made.requestBody?.content["application/json"].schema.required.sort()).toEqual([
+			"events",
+			"url",
+		]);
+	});
 });

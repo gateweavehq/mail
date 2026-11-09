@@ -8,6 +8,7 @@ import type {
 	ThreadPage,
 	ThreadsPage,
 } from "../../lib/mailbox";
+import type { Webhook, WebhookDelivery, WebhookEventType } from "../../lib/webhooks";
 import type { AgentAddressAction } from "../directory/agent-addresses";
 import type { OutboxAction } from "../mailbox/send";
 
@@ -24,6 +25,17 @@ export interface AgentMailbox {
 	/** Whether the agent was let send from it. */
 	maySend: boolean;
 }
+
+/** A webhook of the agent's own, as it makes one. */
+export interface AgentWebhookFields {
+	url: string;
+	events: WebhookEventType[];
+	/** Mailboxes it may read, by id, sorted; null for every one it may read. */
+	mailboxIds: string[] | null;
+}
+
+/** What it changes of one; what is left out stays as it is. */
+export type AgentWebhookPatch = Partial<AgentWebhookFields> & { active?: boolean };
 
 /** What a route answered, as its JSON. */
 export interface Answer {
@@ -58,6 +70,22 @@ export interface MailAccess {
 	/** Lists the addresses it made in a mailbox, with `null`, or makes or ends one. */
 	addresses(mailboxId: string, action: AgentAddressAction | null): Promise<Answer>;
 	outbox(mailboxId: string, action: OutboxAction): Promise<Answer>;
+	/**
+	 * Its own webhooks, with each one's latest deliveries. The webhooks object decides as each
+	 * event is queued, and again as it is sent, which mailboxes it may still hear of.
+	 */
+	webhooks(): Promise<{ webhooks: Webhook[]; deliveries: WebhookDelivery[] }>;
+	/** Makes a webhook of its own, with a secret only this answer gives. */
+	createWebhook(fields: AgentWebhookFields): Promise<{ webhook: Webhook; secret: string }>;
+	/** Changes one of its webhooks, and with `renew` gives it a new secret, which only this answer gives. */
+	updateWebhook(
+		id: string,
+		patch: AgentWebhookPatch,
+		renew: boolean,
+	): Promise<{ webhook: Webhook; secret: string | null }>;
+	deleteWebhook(id: string): Promise<void>;
+	/** Queues a `webhook.test` delivery to one of its webhooks. */
+	testWebhook(id: string): Promise<void>;
 }
 
 /** The statuses a failure the caller can act on answers with, over REST. */
@@ -99,7 +127,11 @@ export function logFailure(operation: string, error: unknown): void {
  * for one that doesn't exist, so ids can't be probed.
  */
 export async function findMailbox(access: MailAccess, wanted: string): Promise<AgentMailbox> {
-	const all = await access.mailboxes();
+	return pickMailbox(await access.mailboxes(), wanted);
+}
+
+/** As `findMailbox`, among the mailboxes the agent may read, as it gave them. */
+export function pickMailbox(all: AgentMailbox[], wanted: string): AgentMailbox {
 	const lower = wanted.toLowerCase();
 	const byId = all.find((box) => box.id === wanted);
 	if (byId) return byId;

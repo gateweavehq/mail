@@ -430,4 +430,49 @@ describe("an agent's MCP server", () => {
 			status: 401,
 		});
 	});
+
+	it("makes and manages webhooks of the agent's own", async () => {
+		const space = await workspace();
+		const agent = await agentOf(space);
+		const mcp = await connect(agent.key);
+		const names = (await mcp.listTools()).tools.map((tool) => tool.name);
+		expect(names).toEqual(
+			expect.arrayContaining([
+				"list_webhooks",
+				"create_webhook",
+				"update_webhook",
+				"delete_webhook",
+				"test_webhook",
+			]),
+		);
+		const fields = { url: "https://hooks.example/mcp", events: ["message.received"] };
+		const made = await ok<{ webhook: { id: string; mailboxIds: string[] | null }; secret: string }>(
+			mcp,
+			"create_webhook",
+			{ ...fields, mailboxes: [space.signUps.address] },
+		);
+		expect(made.webhook.mailboxIds).toEqual([space.signUps.id]);
+		expect(made.secret).toMatch(/^whsec_/);
+		expect(
+			await refused(mcp, "create_webhook", { ...fields, mailboxes: [space.billing.name] }),
+		).toMatch(/^No mailbox/);
+
+		const paused = await ok<{ webhook: { active: boolean } }>(mcp, "update_webhook", {
+			webhookId: made.webhook.id,
+			active: false,
+		});
+		expect(paused.webhook.active).toBe(false);
+		expect(await refused(mcp, "test_webhook", { webhookId: made.webhook.id })).toBe(
+			"Resume the webhook first.",
+		);
+		const listed = await ok<{ webhooks: { id: string }[]; max: number }>(mcp, "list_webhooks");
+		expect(listed).toMatchObject({ webhooks: [{ id: made.webhook.id }], max: 3 });
+		expect(await ok(mcp, "delete_webhook", { webhookId: made.webhook.id })).toEqual({
+			deleted: true,
+		});
+		expect(await refused(mcp, "delete_webhook", { webhookId: made.webhook.id })).toBe(
+			"No such webhook.",
+		);
+		await mcp.close();
+	});
 });

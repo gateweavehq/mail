@@ -181,16 +181,22 @@ These are load-bearing. Breaking one breaks users' data or security, usually sil
     list, which every webhook of the account hears, counts only for the workspace whose mailbox
     sent the email that put it there, as Resend's API says with that workspace's key, and takes
     off only an entry Resend's events made, and not one said again since.
-18. **A webhook tells of what happened, once, and only to whom the workspace's admins chose.** A
+18. **A webhook tells of what happened, once, and only to whom the workspace's admins, or an agent
+    for itself, chose.** A
     mailbox writes its event in the transaction that makes the change it tells of: storing a
     message, holding, sending or rejecting one, or a recipient's record moving on
     (`apps/web/src/server/mailbox/durable-object.ts`, `events.ts`, `deliveries.ts`). The
     workspace's `Webhooks` object queues each event once, whatever the mailbox hands over again
     (`apps/web/src/server/webhooks/durable-object.ts`). That object has no public route: only
     `POST /api/webhooks/<workspace>`, after checking where the request is from and that an owner
-    or admin asks, and the workspace's own mailboxes reach it. A body says who sent a message and
-    what it is about, marked as words anyone may have written, never its text: that stays behind
-    an agent's key and its access. Secrets are shown once and never logged.
+    or admin asks, the agent API, with an agent's key and for that agent's own webhooks, and the
+    workspace's own mailboxes reach it. An agent's own webhook hears only of mailboxes the agent
+    may read, as `canReadMailbox` decides when each event is queued and again when it is sent,
+    never of what the agent did itself, names members by id only, as the agent API does, and goes
+    when the key that made it does; admins may pause (which holds), test or delete it, never point
+    it elsewhere. A body says who sent a message and what it is about,
+    marked as words anyone may have written, never its text: that stays behind an agent's key and
+    its access. Secrets are shown once and never logged.
 
 ## Code style
 

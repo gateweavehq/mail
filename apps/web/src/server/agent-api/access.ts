@@ -10,7 +10,12 @@ import { listMessages, listThreads, openMessage, openThread } from "../mailbox/r
 import { type OutboxAction, outboxAnswer } from "../mailbox/send";
 import { appOrigin } from "../origin";
 import { allowAgentWait } from "../rate-limit";
+import type { Asker, Refused } from "../webhooks";
+import { webhooksStub } from "../webhooks";
 import { type Answer, ApiError, type MailAccess } from "./mail-access";
+
+/** The webhooks object's refusal, in its words, with its status. */
+const refusal = (refused: Refused) => new ApiError(refused.error, refused.status);
 
 /**
  * The agent whose key a request bears as its bearer token, with the key, or why there is none:
@@ -58,6 +63,22 @@ export function accessFor(slug: string, key: string): MailAccess {
 	};
 	const mailboxPath = (mailboxId: string, rest: string) =>
 		`/api/mail/${encodeURIComponent(slug)}/${encodeURIComponent(mailboxId)}/${rest}`;
+	/** The workspace's webhooks object, asked as this agent with this key, for its own only. */
+	const hooks = async () => {
+		const [{ workspaceId, memberId }, agent] = await Promise.all([
+			caller(),
+			findAgentByKey(db, key),
+		]);
+		if (!agent) {
+			throw new ApiError("That agent key doesn't work: it was revoked, or its agent deleted.", 401);
+		}
+		const asker: Asker = { agent: memberId, key: agent.keyId };
+		return {
+			stub: webhooksStub(workspaceId),
+			asker,
+			link: { workspaceId, slug, origin: appOrigin() },
+		};
+	};
 
 	return {
 		async mailboxes() {
@@ -113,5 +134,31 @@ export function accessFor(slug: string, key: string): MailAccess {
 				(request) => outboxAnswer(request, slug, mailboxId),
 				action,
 			),
+		async webhooks() {
+			const { stub, asker } = await hooks();
+			return stub.list(asker);
+		},
+		async createWebhook(fields) {
+			const { stub, asker, link } = await hooks();
+			const made = await stub.create(link, fields, asker);
+			if (!made.ok) throw refusal(made);
+			return { webhook: made.webhook, secret: made.secret };
+		},
+		async updateWebhook(id, patch, renew) {
+			const { stub, asker, link } = await hooks();
+			const changed = await stub.update(link, id, patch, asker, renew);
+			if (!changed.ok) throw refusal(changed);
+			return { webhook: changed.webhook, secret: changed.secret };
+		},
+		async deleteWebhook(id) {
+			const { stub, asker } = await hooks();
+			const removed = await stub.remove(id, asker);
+			if (!removed.ok) throw refusal(removed);
+		},
+		async testWebhook(id) {
+			const { stub, asker, link } = await hooks();
+			const queued = await stub.test(link, id, asker);
+			if (!queued.ok) throw refusal(queued);
+		},
 	};
 }

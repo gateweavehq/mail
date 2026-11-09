@@ -903,3 +903,44 @@ test("an admin adds a webhook, which hears of mail as it arrives, signed, and ca
 		await new Promise((resolve) => receiver.close(resolve));
 	}
 });
+
+test("an agent makes a webhook of its own, which an admin sees as the agent's and can pause or delete", async ({
+	page,
+	request,
+	baseURL,
+}) => {
+	const { slug } = await supportMailbox(page, request, baseURL);
+	await page.goto(`/${slug}/settings/agents`);
+	await waitForHydration(page);
+	await page.getByLabel("Agent name").fill("Listener");
+	await page.getByRole("button", { name: "Create agent" }).click();
+	const key = await page.getByLabel("Agent key").inputValue();
+	const headers = { authorization: `Bearer ${key}` };
+	const url = "https://hooks.example.net/agent";
+	const made = await request.post("/api/v1/webhooks", {
+		headers,
+		data: { url, events: ["message.received"] },
+	});
+	expect(made.status()).toBe(200);
+
+	await page.goto(`/${slug}/settings/webhooks`);
+	await waitForHydration(page);
+	const row = page.getByRole("list", { name: "Webhooks" }).getByRole("listitem").first();
+	await expect(row.getByText(url)).toBeVisible();
+	await expect(row.getByText("Mail received · Every mailbox it may read")).toBeVisible();
+	await expect(row.getByText(/^Made by Listener, for itself/)).toBeVisible();
+	// Where it goes and its secret are the agent's; pausing and deleting it are the admin's.
+	await row.getByRole("button", { name: `More for ${url}` }).click();
+	await expect(page.getByRole("menuitem", { name: "Edit" })).toHaveCount(0);
+	await expect(page.getByRole("menuitem", { name: "New secret" })).toHaveCount(0);
+	await page.getByRole("menuitem", { name: "Pause" }).click();
+	await expect(row.getByText("Paused")).toBeVisible();
+	const listed = await (await request.get("/api/v1/webhooks", { headers })).json();
+	expect(listed.webhooks).toEqual([expect.objectContaining({ url, active: false })]);
+
+	await row.getByRole("button", { name: `More for ${url}` }).click();
+	await page.getByRole("menuitem", { name: "Delete webhook" }).click();
+	await page.getByRole("dialog").getByRole("button", { name: "Delete" }).click();
+	await expect(page.getByText("No webhooks yet.")).toBeVisible();
+	expect((await (await request.get("/api/v1/webhooks", { headers })).json()).webhooks).toEqual([]);
+});
