@@ -55,7 +55,7 @@ export const getWorkspaceMembers = createServerFn({ method: "GET" })
 		const { getAuth, db, emailEnabled } = await import("#/server/auth");
 		const auth = getAuth();
 		const { findMembership, toPersonRole, toRole } = await import("#/server/workspaces");
-		const { isAgentMembership } = await import("#/server/auth/agents");
+		const { isAgentMember } = await import("#/server/auth/agents");
 		const headers = getRequestHeaders();
 		const session = await auth.api.getSession({ headers });
 		const membership = session && (await findMembership(db, slug, session.user.id));
@@ -78,7 +78,7 @@ export const getWorkspaceMembers = createServerFn({ method: "GET" })
 			inviteByEmail: canInvite && emailEnabled && session.user.emailVerified,
 			// Agents are listed on their own page.
 			members: members
-				.filter((member) => !isAgentMembership(member.role))
+				.filter((member) => !isAgentMember({ role: member.role, email: member.user.email }))
 				.map(
 					(member): WorkspaceMember => ({
 						memberId: member.id,

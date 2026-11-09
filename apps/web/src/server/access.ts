@@ -1,6 +1,6 @@
 import { getRequestHeaders } from "@tanstack/react-start/server";
 import { db, getAuth } from "./auth";
-import { findAgentByKey } from "./auth/agents";
+import { findAgentByKey, KEY_PREFIX } from "./auth/agents";
 import { findMembership, type Membership } from "./workspaces";
 
 /**
@@ -22,27 +22,30 @@ export interface Caller {
 }
 
 /**
- * Whether a request carries a bearer token, which makes it an agent's, whatever cookies come with
- * it. Another scheme, such as Basic auth from a proxy in front of the app, carries no key.
+ * Whether a request carries an agent's key: a bearer token in Mail's shape (`gwm_…`), which makes
+ * it an agent's, whatever cookies come with it, even when the rest of it is wrong. Another bearer
+ * token, such as an ID token a proxy in front of the app adds, or another scheme, carries no key,
+ * and the session decides.
  */
-export const bearsKey = (headers: Headers) =>
-	/^bearer(\s|$)/i.test(headers.get("authorization")?.trim() ?? "");
+export function bearsKey(headers: Headers): boolean {
+	const token = /^bearer\s+(\S+)/i.exec(headers.get("authorization")?.trim() ?? "")?.[1];
+	return token?.toLowerCase().startsWith(KEY_PREFIX) ?? false;
+}
 
 /**
  * The caller for what an agent may also do: reading the mailboxes it was given, listing them, and
- * sending from those that let it. A request with a bearer token is an agent's (`bearsKey`): a key
+ * sending from those that let it. A request with an agent's key is the key's (`bearsKey`): a key
  * that doesn't work is turned away, never tried as someone's session instead. A key works only in
  * the workspace it was made for. Without one, the session decides. Other changes stay with
  * `currentMember`, for people.
  */
 export async function currentCaller(slug: string): Promise<Caller | null> {
 	const headers = getRequestHeaders();
-	const authorization = headers.get("authorization")?.trim() ?? "";
 	if (!bearsKey(headers)) {
 		const member = await currentMember(slug);
 		return member && { userId: member.user.id, membership: member.membership };
 	}
-	const key = /^bearer\s+(\S+)$/i.exec(authorization)?.[1];
+	const key = /^bearer\s+(\S+)$/i.exec(headers.get("authorization")?.trim() ?? "")?.[1];
 	const agent = key ? await findAgentByKey(db, key) : null;
 	if (!agent || agent.slug !== slug) return null;
 	const membership = await findMembership(db, slug, agent.userId);
