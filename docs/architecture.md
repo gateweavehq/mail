@@ -419,7 +419,11 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
         typed, their spaces, backslashes and entities too: one that only looks like a heading or a
         rule, "9. November" or a number that doesn't follow on, a line after a list, and a link it
         can't make or whose words name another place, even a host Mail doesn't know, all stay as
-        they were written. A quote is someone else's words, as a reply's is, so nothing in it is
+        they were written. A link's words are read as a browser reads a host, with what stands
+        against them (a fullwidth dot is a dot, an invisible character nothing, and
+        `[bank](…)[.example](…)` shows bank.example), and its address is written as a browser
+        reads it, never with a name before its host or mail to people its words don't name. A
+        quote is someone else's words, as a reply's is, so nothing in it is
         read as a mark, or its links could go under the workspace's name to places their words
         don't say; the sender's name above it loses its brackets for the same reason. The toolbar
         types the marks into the text, so each change can be undone, and the

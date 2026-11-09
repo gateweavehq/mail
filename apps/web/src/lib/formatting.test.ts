@@ -73,20 +73,83 @@ describe("the HTML that goes beside a message's text", () => {
 			"<p>[https://bank.example](https://evil.example/login)</p>\n",
 		);
 		expect(formatted("[bank.example](https://BANK.example/login)").html).toBe(
-			'<p><a href="https://BANK.example/login">bank.example</a></p>\n',
+			'<p><a href="https://bank.example/login">bank.example</a></p>\n',
 		);
 		for (const spoof of [
 			"[bank.example.](https://evil.example)",
 			"[bank.example,](https://evil.example)",
 			"[bank.example:443](https://evil.example)",
+			"[bank.example1](https://evil.example)",
 			"[bank.internal](https://evil.example)",
+			"[bank.xn--p1ai](https://evil.example)",
 			"[Log in at https://bank.example](https://evil.example)",
 			"[**https://bank.example**](https://evil.example)",
 			"[ada@bank.example](mailto:eve@evil.example)",
 			"[ada@bank.example](https://evil.example)",
+			"[192.168.1.1](https://evil.example)",
+			"[10.0.0.1:8080/admin](https://evil.example)",
+			"[https://bank.example@evil.example](https://evil.example)",
+			"[www.bank.example@evil.example](https://evil.example)",
 		]) {
-			expect(formatted(spoof).html).not.toContain("<a");
+			expect(formatted(spoof).html, spoof).not.toContain("<a");
 		}
+	});
+
+	it("reads a link's words as a browser would read a host in them", () => {
+		for (const spoof of [
+			// Dots that look like one, or that a URL parser reads as one.
+			...["．", "。", "｡", "․", "﹒", "ꓸ"].map(
+				(dot) => `[bank${dot}example](https://evil.example)`,
+			),
+			// Characters that don't show, inside a host.
+			...["­", "​", "‍", "⁠", "﻿", "͏", "️"].map(
+				(hidden) => `[bank${hidden}.example](https://evil.example)`,
+			),
+			"[‮elpmaxe.knab1](https://evil.example)",
+			"[www．bank．example](https://evil.example)",
+			"[https：／／bank．example](https://evil.example)",
+			"[bank.भारत](https://evil.example)",
+			"[ada＠evil.example](mailto:eve@evil.example)",
+		]) {
+			expect(formatted(spoof).html, JSON.stringify(spoof)).not.toContain("<a");
+		}
+	});
+
+	it("reads a link's words with what they touch, so a host can't be split around them", () => {
+		for (const spoof of [
+			"[bank](https://evil.example)[.example](https://evil.example)",
+			"[bank.](https://evil.example)[example](https://evil.example)",
+			"**bank**[.example](https://evil.example)",
+			"https://bank.[example](https://evil.example)/login",
+		]) {
+			expect(formatted(spoof).html, spoof).not.toContain("<a");
+		}
+		expect(formatted("See ([the docs](https://docs.example)).").html).toContain(
+			'<a href="https://docs.example/">the docs</a>',
+		);
+		expect(formatted("[one](https://one.example)/[two](https://two.example)").html).toBe(
+			'<p><a href="https://one.example/">one</a>/<a href="https://two.example/">two</a></p>\n',
+		);
+		// What shows is docs.example/api, so the second can't go elsewhere.
+		expect(formatted("[docs.example](https://docs.example)/[api](https://api.example)").html).toBe(
+			'<p><a href="https://docs.example/">docs.example</a>/[api](https://api.example)</p>\n',
+		);
+	});
+
+	it("writes a link's address as a browser reads it, and refuses what would hide where it goes", () => {
+		expect(formatted("[us](https://bank.example\\@evil.example)").html).toContain(
+			'href="https://bank.example/@evil.example"',
+		);
+		for (const hidden of [
+			"[pay](https://bank.example@evil.example)",
+			"[ada@bank.example](mailto:ada@bank.example?bcc=eve@evil.example)",
+			"[ada@bank.example](mailto:ada@bank.example?subject=Hi&cc=eve@evil.example)",
+		]) {
+			expect(formatted(hidden).html, hidden).not.toContain("<a");
+		}
+		expect(formatted("[write](mailto:ada@bank.example?subject=Hi)").html).toContain(
+			'href="mailto:ada@bank.example?subject=Hi"',
+		);
 		expect(formatted("[ada@bank.example](mailto:Ada@bank.example)").html).toContain(
 			'<a href="mailto:Ada@bank.example">',
 		);
@@ -202,6 +265,8 @@ describe("the HTML that goes beside a message's text", () => {
 			"f(*p);\n".repeat(long / 7),
 			"[".repeat(long),
 			"[a](".repeat(long / 4),
+			"[a](x.org)".repeat(long / 10),
+			`[${"1.".repeat(250)}](https://example.org) `.repeat(long / 517),
 			`[${"a.".repeat(long / 2)}](https://example.org)`,
 			"- a\n".repeat(long / 4),
 			Array.from({ length: 3000 }, (_, i) => `${" ".repeat(i)}- a`).join("\n"),
@@ -261,7 +326,7 @@ describe("bold and italic from the toolbar", () => {
 
 	it("marks each line of a selection on its own, as a mark can't span lines", () => {
 		expect(applied(...selectionAnd("one [two\n\nthree] four", 2))).toBe(
-			"one [**two**\n\n**three**] four",
+			"one **[two**\n\n**three]** four",
 		);
 		expect(applied(...selectionAnd("one [**two**\n**three**] four", 2))).toBe(
 			"one [two\nthree] four",
@@ -269,6 +334,17 @@ describe("bold and italic from the toolbar", () => {
 		expect(htmlOfText("one **two**\n**three** four")).toBe(
 			"<p>one <strong>two</strong><br><strong>three</strong> four</p>\n",
 		);
+	});
+
+	it("takes marks off several lines from inside them too, and only when all have them", () => {
+		expect(applied(...selectionAnd("**[one**\n**two]**", 2))).toBe("[one\ntwo]");
+		expect(applied(...selectionAnd("*[one*\n*two]*", 1))).toBe("[one\ntwo]");
+		expect(applied(...selectionAnd("[**one**\ntwo]", 2))).toBe("**[one**\n**two]**");
+	});
+
+	it("takes in a pair of the same marks the selection cuts through", () => {
+		expect(applied(...selectionAnd("[a **b]** c", 2))).toBe("**[a b]** c");
+		expect(applied(...selectionAnd("a **[b** c]", 2))).toBe("a **[b c]**");
 	});
 });
 
@@ -305,6 +381,11 @@ describe("a link from the toolbar", () => {
 		expect(applied(value, insertLink(value, start, end))).toBe(
 			`See [[]](${LINK_PLACEHOLDER}) today`,
 		);
+	});
+
+	it("puts words from several lines on one, as a link is read within a line", () => {
+		const [value, start, end] = selection("See [our\npage] today");
+		expect(insertLink(value, start, end).insert).toBe(`[our page](${LINK_PLACEHOLDER})`);
 	});
 });
 
@@ -351,5 +432,16 @@ describe("lists and quotes from the toolbar", () => {
 		expect(applied("a\n\nb", toggleLines("a\n\nb", 2, 2, "bullet"))).toBe("a\n- []\nb");
 		expect(applied("a\n\nb", toggleLines("a\n\nb", 2, 2, "number"))).toBe("a\n1. []\nb");
 		expect(applied("", toggleLines("", 0, 0, "quote"))).toBe("> []");
+	});
+
+	it("keeps a number the reader doesn't take as an item", () => {
+		const date = "9. November: we meet";
+		expect(toggleLines(date, 0, date.length, "bullet").insert).toBe(`- ${date}`);
+		expect(toggleLines(date, 0, date.length, "number").insert).toBe(`1. ${date}`);
+		expect(toggleLines("2024. A year", 0, 12, "bullet").insert).toBe("- 2024. A year");
+		// An item in the middle of a list is one, though the selection doesn't hold its start.
+		const list = "1. a\n2. b";
+		expect(toggleLines(list, 5, 9, "number").insert).toBe("b");
+		expect(toggleLines(list, 5, 9, "bullet").insert).toBe("- b");
 	});
 });
