@@ -57,6 +57,9 @@ test("an owner sees which addresses mailboxes won't send to, and removes one", a
 	const grace = list.getByRole("listitem").filter({ hasText: "grace@example.org" });
 	await expect(grace.getByText(/^Bounced ·/)).toBeVisible();
 	await expect(grace.getByText(/does not exist/)).toBeVisible();
+	// It ends in a week, so it isn't for good.
+	await expect(grace).toContainText("Their mail server refused mail to it.");
+	await expect(grace).not.toContainText("for good");
 	await expect(page.getByRole("button", { name: "Show more" })).toBeHidden();
 	expect(asked).toEqual(["", `?before=${encodeURIComponent(`${first.lastAt}:${first.id}`)}`]);
 

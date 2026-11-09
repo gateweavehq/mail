@@ -210,7 +210,9 @@ function SuppressionRow({ entry, onRemoved }: { entry: Suppression; onRemoved: (
 					</p>
 					<p className="text-sm">
 						{suppressionLabel(entry.reason)}{" "}
-						<span className="text-muted-foreground">· {suppressionMeaning(entry.reason)}</span>
+						<span className="text-muted-foreground">
+							· {suppressionMeaning(entry.reason, entry.expiresAt)}
+						</span>
 					</p>
 				</div>
 				<Button
