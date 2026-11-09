@@ -30,13 +30,14 @@ export function takenBy(operation: Operation, route: Route): string[] {
 	return route.takes ?? Object.keys(operation.input.shape).filter((name) => !inPath.includes(name));
 }
 
-const FAILURE_WORDS: Record<FailureStatus | 401 | 500, string> = {
+const FAILURE_WORDS: Record<FailureStatus | 413 | 500, string> = {
 	400: "The request isn't one it takes, or names no mailbox, message or address it can tell.",
 	401: "No agent key, or one that doesn't work: revoked, or its agent deleted.",
 	403: "Your key may not do this here, as your grants or policy have it.",
 	404: "No such mailbox, message, thread or address that you may reach.",
 	409: "It can't be done as things are, as when what you answer names nobody.",
-	429: "Too many at once. Retry-After, when there, says in how many seconds.",
+	413: "The body is larger than any request takes.",
+	429: "Too many for now. Retry-After, when there, says in how many seconds to try again.",
 	500: "Mail couldn't do it just now. Try again.",
 };
 
@@ -47,8 +48,8 @@ export function openApiDocument(origin: string) {
 		const input = jsonSchema(operation.input, "input");
 		const properties = input.properties ?? {};
 		const required = new Set(input.required ?? []);
-		const output = jsonSchema(operation.output, "output");
 		for (const route of operation.routes) {
+			const output = jsonSchema(route.output ?? operation.output, "output");
 			const taken = takenBy(operation, route);
 			const parameter = (name: string, place: "path" | "query") => {
 				const { description, ...schema } = properties[name] ?? {};
@@ -69,7 +70,16 @@ export function openApiDocument(origin: string) {
 				properties: Object.fromEntries(taken.map((name) => [name, properties[name] ?? {}])),
 				required: taken.filter((name) => required.has(name)),
 			};
-			const failures = [400, 401, 404, ...operation.refusals, 500].sort((a, b) => a - b);
+			const failures = [
+				...new Set([
+					400,
+					401,
+					404,
+					...operation.refusals,
+					...(route.method === "POST" ? [413] : []),
+					500,
+				]),
+			].sort((a, b) => a - b);
 			paths[route.path] = {
 				...paths[route.path],
 				[route.method.toLowerCase()]: {
@@ -143,6 +153,16 @@ export function openApiDocument(origin: string) {
 					`Failed${status}`,
 					{
 						description: words,
+						...(status === "429"
+							? {
+									headers: {
+										"Retry-After": {
+											description: "In how many seconds to try again, when known.",
+											schema: { type: "integer", minimum: 0 },
+										},
+									},
+								}
+							: {}),
 						content: { "application/json": { schema: { $ref: "#/components/schemas/Failure" } } },
 					},
 				]),

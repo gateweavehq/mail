@@ -297,8 +297,13 @@ const isHeld = (row: { sending: string | null } | null) => statusOf(row)?.state 
 
 function tooMany(retryAfter: number | null | undefined, who = "This workspace has sent"): Response {
 	const hours = Math.max(1, Math.round((retryAfter ?? 0) / 3600));
-	return refuse(
-		`${who} as much as it may for now. Try again in about ${hours === 1 ? "an hour" : `${hours} hours`}.`,
+	return answer(
+		{
+			ok: false,
+			error: `${who} as much as it may for now. Try again in about ${hours === 1 ? "an hour" : `${hours} hours`}.`,
+			// In seconds, for an agent's API to pass on as Retry-After.
+			retryAfter: retryAfter ?? null,
+		},
 		429,
 	);
 }

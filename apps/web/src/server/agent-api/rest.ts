@@ -1,11 +1,21 @@
 import { appOrigin } from "../origin";
+import { readUpTo, textOf } from "../streams";
 import { accessFor, agentOfRequest } from "./access";
-import { ApiError } from "./mail-access";
+import { ApiError, INTERNAL_FAILURE, logFailure } from "./mail-access";
 import { API_PATH, jsonSchema, openApiDocument, pathNames, takenBy } from "./openapi";
 import { OPERATIONS, type Operation, type Route } from "./operations";
 
 /** The most a request's body may be: a message's text is at most 100,000 characters. */
 const MAX_BODY = 1_000_000;
+
+/**
+ * Any site may call the API from a browser, as a tool made from the document may: only a key in
+ * `Authorization` counts, never a cookie, and a browser sends none of its own.
+ */
+const CORS = {
+	"access-control-allow-origin": "*",
+	"access-control-expose-headers": "retry-after, www-authenticate",
+};
 
 interface Known {
 	operation: Operation;
@@ -29,6 +39,16 @@ const ROUTES: Known[] = OPERATIONS.flatMap((operation) => {
 	}));
 });
 
+/** The document, written once for the origin it names. */
+let written: { origin: string; text: string } | null = null;
+
+function documentText(origin: string): string {
+	if (written?.origin !== origin) {
+		written = { origin, text: JSON.stringify(openApiDocument(origin)) };
+	}
+	return written.text;
+}
+
 /**
  * The agent API under /api/v1, for an agent with its key, and its OpenAPI document. Each route is
  * one of the agent's operations, which its MCP tools are too: the same input, the same answer, the
@@ -39,12 +59,13 @@ export async function handleApiRequest(request: Request): Promise<Response> {
 	const url = new URL(request.url);
 	const path = url.pathname.slice(API_PATH.length) || "/";
 	if (path === "/openapi.json") {
+		if (request.method === "OPTIONS") return preflight("GET");
 		if (request.method !== "GET") return failure("Only GET.", 405, { allow: "GET" });
-		return Response.json(openApiDocument(appOrigin()), {
+		return new Response(documentText(appOrigin()), {
 			headers: {
+				...CORS,
+				"content-type": "application/json",
 				"cache-control": "public, max-age=300",
-				// A tool that reads the document may run in a browser, on another site.
-				"access-control-allow-origin": "*",
 			},
 		});
 	}
@@ -54,11 +75,10 @@ export async function handleApiRequest(request: Request): Promise<Response> {
 	if (here.length === 0) {
 		return failure(`No such route. See ${API_PATH}/openapi.json.`, 404);
 	}
+	const allow = [...new Set(here.map(({ known }) => known.route.method))].join(", ");
+	if (request.method === "OPTIONS") return preflight(allow);
 	const matched = here.find(({ known }) => known.route.method === request.method);
-	if (!matched?.found) {
-		const allow = [...new Set(here.map(({ known }) => known.route.method))].join(", ");
-		return failure(`This route takes ${allow}.`, 405, { allow });
-	}
+	if (!matched?.found) return failure(`This route takes ${allow}.`, 405, { allow });
 	const agent = await agentOfRequest(request);
 	if (!("key" in agent)) return unauthorized(agent.hadKey);
 
@@ -79,22 +99,29 @@ export async function handleApiRequest(request: Request): Promise<Response> {
 			},
 		);
 	}
+	const name = known.route.id ?? known.operation.name;
 	try {
 		const result = await known.operation.run(
 			accessFor(agent.slug, agent.key),
 			parsed.data,
 			request.signal,
 		);
-		return Response.json(result, { headers: { "cache-control": "private, no-store" } });
+		// As an MCP client checks a tool's answer against its schema, so that what the document
+		// promises is what comes.
+		const output = (known.route.output ?? known.operation.output).safeParse(result);
+		if (!output.success) {
+			logFailure(name, new TypeError("answer unlike its schema"));
+			return failure(INTERNAL_FAILURE, 500);
+		}
+		return Response.json(result, { headers: { ...CORS, "cache-control": "private, no-store" } });
 	} catch (error) {
 		if (error instanceof ApiError) {
 			const retry: Record<string, string> =
 				error.retryAfter === null ? {} : { "retry-after": String(error.retryAfter) };
 			return failure(error.message, error.status, retry);
 		}
-		// Only the error's kind: what it says may hold a message's words.
-		console.error(`agent api: ${known.operation.name} failed`, (error as Error)?.name ?? "error");
-		return failure("Mail couldn't do that just now. Try again.", 500);
+		logFailure(name, error);
+		return failure(INTERNAL_FAILURE, 500);
 	}
 }
 
@@ -119,10 +146,15 @@ async function inputOf(
 	}
 	const taken: Record<string, unknown> = {};
 	if (known.route.method === "POST") {
-		if (Number(request.headers.get("content-length") ?? 0) > MAX_BODY) {
-			return failure("The request is too large.", 413);
+		// Read only so far, whatever the request says its length is, or doesn't.
+		const read = await readUpTo(request.body, MAX_BODY);
+		if (!read) return failure("The request is too large.", 413);
+		let body: unknown;
+		try {
+			body = JSON.parse(textOf(read));
+		} catch {
+			body = undefined;
 		}
-		const body: unknown = await request.json().catch(() => undefined);
 		if (typeof body !== "object" || body === null || Array.isArray(body)) {
 			return failure("The body must be a JSON object.", 400);
 		}
@@ -146,6 +178,19 @@ function fromQuery(value: string, type: unknown): unknown {
 	return value;
 }
 
+/** What a browser asks before it calls a route from another site. */
+function preflight(allow: string): Response {
+	return new Response(null, {
+		status: 204,
+		headers: {
+			...CORS,
+			"access-control-allow-methods": allow,
+			"access-control-allow-headers": "authorization, content-type",
+			"access-control-max-age": "86400",
+		},
+	});
+}
+
 function failure(
 	error: string,
 	status: number,
@@ -154,7 +199,7 @@ function failure(
 ): Response {
 	return Response.json(
 		{ error, ...more },
-		{ status, headers: { ...headers, "cache-control": "private, no-store" } },
+		{ status, headers: { ...CORS, ...headers, "cache-control": "private, no-store" } },
 	);
 }
 

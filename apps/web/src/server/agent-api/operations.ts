@@ -16,9 +16,10 @@ import {
 	type FailureStatus,
 	findMailbox,
 	gone,
+	InternalFailure,
 	type MailAccess,
 } from "./mail-access";
-import { OUTPUTS } from "./outputs";
+import { OUTPUTS, READ_MESSAGE, READ_THREAD } from "./outputs";
 import { domainOf, MAX_WAIT_SECONDS, WAIT_SECONDS, waitFor } from "./wait";
 
 // What an agent can do with Mail, each defined once: its input and output, its words, and where it
@@ -43,6 +44,8 @@ export interface Route {
 	summary?: string;
 	/** The inputs, besides the path's, this route takes: all of them unless these are named. */
 	takes?: string[];
+	/** Its answer, when narrower than the operation's. */
+	output?: z.ZodObject;
 }
 
 /** What an MCP client is told about a tool, beside its words. */
@@ -115,13 +118,17 @@ const senderInput = z
 	.string()
 	.trim()
 	.toLowerCase()
+	.min(1)
+	.max(255)
 	.transform((sender) => sender.replace(/^@/, ""))
 	.pipe(z.string().min(1).max(254));
 const waitInput = {
-	mailbox: mailboxInput.optional().describe("The mailbox, when `to` doesn't say which."),
+	mailbox: mailboxInput.optional().describe("The mailbox. Give it, or `to`, or both."),
 	to: addressInput
 		.optional()
-		.describe("Only mail that came to this address, which also says the mailbox."),
+		.describe(
+			"Only mail that came to this address, which also says the mailbox. Give it, or `mailbox`, or both.",
+		),
 	from: senderInput
 		.optional()
 		.describe(
@@ -232,6 +239,7 @@ const readEmail = operation({
 			path: "/mailboxes/{mailbox}/messages/{messageId}",
 			summary: "Read message",
 			takes: [],
+			output: READ_MESSAGE,
 		},
 		{
 			method: "GET",
@@ -239,6 +247,7 @@ const readEmail = operation({
 			id: "read_thread",
 			summary: "Read thread",
 			takes: ["cursor"],
+			output: READ_THREAD,
 		},
 	],
 	refusals: [],
@@ -329,8 +338,8 @@ const sendEmail = operation({
 		"Sends a plain-text message from a mailbox you may send from. Mail to anyone your policy doesn't name waits for a person to approve it (state: held), and counts against your messages a day either way.",
 	input: z.object({
 		mailbox: mailboxInput,
-		to: addressesInput.min(1),
-		cc: addressesInput.optional(),
+		to: addressesInput.min(1).describe(`To and cc together take ${MAX_RECIPIENTS} at most.`),
+		cc: addressesInput.optional().describe(`To and cc together take ${MAX_RECIPIENTS} at most.`),
 		subject: z.string().trim().min(1).max(MAX_SUBJECT),
 		text: textInput,
 		from: addressInput
@@ -547,12 +556,14 @@ const FAILURES: readonly number[] = [400, 403, 404, 409, 429] satisfies FailureS
 function answered(answer: Answer): Answer {
 	if (answer.status >= 200 && answer.status < 300 && answer.body.ok !== false) return answer;
 	// A route's own failure is Mail's, not the caller's to put right.
-	if (answer.status >= 500) throw new Error(`An agent's route answered ${answer.status}`);
+	if (answer.status >= 500) throw new InternalFailure(`an agent's route answered ${answer.status}`);
 	const error = typeof answer.body.error === "string" ? answer.body.error : "That didn't work.";
 	const status = (FAILURES.includes(answer.status) ? answer.status : 400) as FailureStatus;
+	const retryAfter = typeof answer.body.retryAfter === "number" ? answer.body.retryAfter : null;
 	throw new ApiError(
 		error === "Not found" ? "No such mailbox or address of yours." : error,
 		status,
+		retryAfter,
 	);
 }
 

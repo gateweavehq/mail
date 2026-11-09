@@ -10,7 +10,7 @@ import { listMessages, listThreads, openMessage, openThread } from "../mailbox/r
 import { type OutboxAction, outboxAnswer } from "../mailbox/send";
 import { appOrigin } from "../origin";
 import { allowAgentWait } from "../rate-limit";
-import type { Answer, MailAccess } from "./mail-access";
+import { type Answer, ApiError, type MailAccess } from "./mail-access";
 
 /**
  * The agent whose key a request bears as its bearer token, with the key, or why there is none:
@@ -34,7 +34,9 @@ export function accessFor(slug: string, key: string): MailAccess {
 	const caller = async () => {
 		const found = await currentCaller(slug);
 		// Revoked since the request began, or its agent removed.
-		if (!found) throw new Error("The agent's key no longer works");
+		if (!found) {
+			throw new ApiError("That agent key doesn't work: it was revoked, or its agent deleted.", 401);
+		}
 		return found.membership;
 	};
 	/** Asks one of the agent's routes, with its key, as its own request would. */

@@ -1,3 +1,4 @@
+import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { OUTPUTS } from "../src/server/agent-api/outputs";
 import { agentWorld } from "./agent-world";
@@ -139,6 +140,15 @@ describe("the agent API", () => {
 			`${box(space.signUps.id)}/threads/${waited.message.threadId}`,
 		);
 		expect(thread.thread.latest.id).toBe(waited.message.id);
+		// A route takes only its own inputs: a messageId beside a thread's path changes nothing.
+		const same = await done<{ thread: { latest: Opened } }>(
+			agent.key,
+			"read_email",
+			"GET",
+			`${box(space.signUps.id)}/threads/${waited.message.threadId}`,
+			{ messageId: "nope" },
+		);
+		expect(same.thread.latest.id).toBe(waited.message.id);
 		const message = await done<{ message: Opened }>(
 			agent.key,
 			"read_email",
@@ -216,6 +226,43 @@ describe("the agent API", () => {
 		expect(wrong.status).toBe(405);
 		expect(wrong.headers.get("allow")).toBe("GET");
 
+		// The path names the mailbox, whatever the query says.
+		const named = await ask(key, "GET", `${box(space.billing.id)}/threads`, {
+			mailbox: space.signUps.id,
+		});
+		expect(named.status).toBe(404);
+		const post = (body: string) =>
+			world.mail.fetch(`${origin}/api/v1${box(space.signUps.id)}/messages`, {
+				method: "POST",
+				headers: { ...key, "content-type": "application/json" },
+				body,
+			});
+		expect((await post("[]")).status).toBe(400);
+		expect((await post("not json")).status).toBe(400);
+		expect((await post(JSON.stringify({ text: "x".repeat(1_100_000) }))).status).toBe(413);
+
+		// Addresses are made as its policy has them.
+		const make = { domain: space.domain, localPart: "twice", days: 1 };
+		expect((await ask(key, "POST", `${box(space.signUps.id)}/addresses`, make)).status).toBe(200);
+		expect((await ask(key, "POST", `${box(space.signUps.id)}/addresses`, make)).status).toBe(409);
+		const elsewhere = { domain: "elsewhere.example.com", days: 1 };
+		expect((await ask(key, "POST", `${box(space.signUps.id)}/addresses`, elsewhere)).status).toBe(
+			403,
+		);
+
+		// Its day's mail spent, a send says when it may write again.
+		const spend = await auth("/agents/set-policy", {
+			agentId: agent.id,
+			sendPerDay: 1,
+			allowed: [],
+		});
+		expect(spend.status).toBe(200);
+		const send = { to: ["stranger@example.org"], subject: "Hello", text: "Hi." };
+		expect((await ask(key, "POST", `${box(space.signUps.id)}/messages`, send)).status).toBe(200);
+		const spent = await ask(key, "POST", `${box(space.signUps.id)}/messages`, send);
+		expect(spent.status).toBe(429);
+		expect(Number(spent.headers.get("retry-after"))).toBeGreaterThan(0);
+
 		// From a mailbox it may only read, it sends nothing.
 		await directory(space.slug, {
 			action: "set-mailbox-access",
@@ -234,9 +281,18 @@ describe("the agent API", () => {
 			body: { error: expect.stringMatching(/may read this mailbox but not send/) },
 		});
 
-		// Waits are limited, as over MCP, and say when another may start.
+		// Waits are limited, over REST and MCP together, and say when another may start.
 		const wait = { to: space.signUps.address, timeoutSeconds: 0 };
-		for (let n = 0; n < 30; n++) expect((await ask(key, "GET", "/wait", wait)).status).toBe(200);
+		for (let n = 0; n < 29; n++) expect((await ask(key, "GET", "/wait", wait)).status).toBe(200);
+		const mcp = new Client({ name: "api-test", version: "1.0.0" });
+		await mcp.connect(
+			new StreamableHTTPClientTransport(new URL(`${origin}/mcp`), {
+				fetch: world.mail.fetch,
+				requestInit: { headers: key },
+			}),
+		);
+		const overMcp = await mcp.callTool({ name: "wait_for_email", arguments: wait });
+		expect(overMcp.isError).toBeFalsy();
 		const limited = await ask(key, "GET", "/wait", wait);
 		expect(limited.status).toBe(429);
 		expect(Number(limited.headers.get("retry-after"))).toBeGreaterThan(0);
@@ -251,6 +307,15 @@ describe("the agent API", () => {
 		const none = await ask({}, "GET", "/mailboxes");
 		expect(none.status).toBe(401);
 		expect(none.headers.get("www-authenticate")).toBe('Bearer realm="Gateweave Mail"');
+		// Another site may call it, as only a key counts and a browser sends none of its own.
+		expect(none.headers.get("access-control-allow-origin")).toBe("*");
+		const preflight = await world.mail.fetch(`${origin}/api/v1/mailboxes`, {
+			method: "OPTIONS",
+			headers: { origin: "https://elsewhere.example", "access-control-request-method": "GET" },
+		});
+		expect(preflight.status).toBe(204);
+		expect(preflight.headers.get("access-control-allow-methods")).toBe("GET");
+		expect(preflight.headers.get("access-control-allow-credentials")).toBeNull();
 		expect((await ask(world.owner.headers, "GET", "/mailboxes")).status).toBe(401);
 		const fake = await ask({ authorization: "Bearer gwm_not-a-key" }, "GET", "/mailboxes");
 		expect(fake.status).toBe(401);

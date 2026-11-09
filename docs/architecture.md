@@ -219,8 +219,12 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     `/api/v1/openapi.json` is written from the same schemas (`z.toJSONSchema`), so a tool, its
     route and the document can't say different things. A route takes its inputs from its path,
     then from its query string for a GET or DELETE, reading numbers and booleans as the input
-    has them, or from its JSON body for a POST, and answers what the tool would, or
-    `{ "error" }` with 400, 403, 404, 409 or 429 (with `Retry-After` when known).
+    has them, or from its JSON body for a POST (1 MB at most, however it is sent), and answers
+    what the tool would, checked against the same schema, or `{ "error" }` with 400, 401, 403,
+    404, 409, 413 or 429 (with `Retry-After` when known). A failure of Mail's own is a 500 over
+    REST and a tool error over MCP, in the same words, and is logged by its kind alone, as what a
+    database or a message said may hold mail. Any site may call the API (CORS without
+    credentials), as only a key counts and a browser sends none of its own.
 
     Both are stateless (the MCP server is `createMcpHandler` from `@modelcontextprotocol/server`,
     as in Track) and take only an agent's key: without one, or with one that doesn't work, they

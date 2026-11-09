@@ -62,6 +62,19 @@ const addressOutput = z.looseObject({
 	expiresAt: z.string().nullable(),
 });
 
+const threadOutput = z.looseObject({
+	id: z.string(),
+	subject: z.string(),
+	count: z.number(),
+	messages: z.array(summaryOutput).describe("Oldest first."),
+	latest: messageOutput.nullable(),
+	older: z.string().nullable().describe("Pass as cursor for older messages."),
+});
+
+/** read_email's answer on its REST routes, each of which gives one of the two. */
+export const READ_MESSAGE = z.looseObject({ message: messageOutput });
+export const READ_THREAD = z.looseObject({ thread: threadOutput });
+
 /** Each operation's answer, by its name. */
 export const OUTPUTS = {
 	list_mailboxes: z.looseObject({
@@ -105,16 +118,7 @@ export const OUTPUTS = {
 	}),
 	read_email: z.looseObject({
 		message: messageOutput.optional(),
-		thread: z
-			.looseObject({
-				id: z.string(),
-				subject: z.string(),
-				count: z.number(),
-				messages: z.array(summaryOutput).describe("Oldest first."),
-				latest: messageOutput.nullable(),
-				older: z.string().nullable().describe("Pass as cursor for older messages."),
-			})
-			.optional(),
+		thread: threadOutput.optional(),
 	}),
 	wait_for_email: z.looseObject({ found: z.boolean(), message: messageOutput.optional() }),
 	get_verification_code: z.looseObject({

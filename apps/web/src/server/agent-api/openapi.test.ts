@@ -59,4 +59,22 @@ describe("the agent API's OpenAPI document", () => {
 		expect(byName.timeoutSeconds?.schema.type).toBe("integer");
 		expect(byName.provedOnly?.schema.type).toBe("boolean");
 	});
+
+	it("gives each read route the answer it gives, and says what else may come", () => {
+		const answer = (path: string, method = "get") => {
+			const route = document.paths[path]?.[method] as {
+				responses: Record<string, { content?: { "application/json": { schema: Schema } } }>;
+			};
+			return route.responses;
+		};
+		type Schema = { required?: string[] };
+		const message = answer("/mailboxes/{mailbox}/messages/{messageId}");
+		expect(message["200"]?.content?.["application/json"].schema.required).toEqual(["message"]);
+		const thread = answer("/mailboxes/{mailbox}/threads/{threadId}");
+		expect(thread["200"]?.content?.["application/json"].schema.required).toEqual(["thread"]);
+		expect(Object.keys(answer("/mailboxes/{mailbox}/messages", "post"))).toEqual(
+			expect.arrayContaining(["403", "409", "413", "429"]),
+		);
+		expect(document.components.responses.Failed429).toHaveProperty("headers.Retry-After");
+	});
 });

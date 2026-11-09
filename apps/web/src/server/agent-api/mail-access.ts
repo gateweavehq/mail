@@ -61,7 +61,7 @@ export interface MailAccess {
 }
 
 /** The statuses a failure the caller can act on answers with, over REST. */
-export type FailureStatus = 400 | 403 | 404 | 409 | 429;
+export type FailureStatus = 400 | 401 | 403 | 404 | 409 | 429;
 
 /**
  * A failure the caller can act on: a tool error over MCP, an answer with its status over REST. Any
@@ -77,6 +77,21 @@ export class ApiError extends Error {
 		this.status = status;
 		this.retryAfter = retryAfter;
 	}
+}
+
+/**
+ * A failure of Mail's own, in words Mail wrote, which may be logged as they are. Other errors may
+ * carry what a message or a database said, so only their kind is.
+ */
+export class InternalFailure extends Error {}
+
+/** What a transport tells the caller about a failure of Mail's own. */
+export const INTERNAL_FAILURE = "Mail couldn't do that just now. Try again.";
+
+/** Logs a failure of Mail's own in an operation, without a word of mail or a key. */
+export function logFailure(operation: string, error: unknown): void {
+	const said = error instanceof InternalFailure ? error.message : (error as Error)?.name;
+	console.error(`agent api: ${operation} failed: ${said ?? "unknown"}`);
 }
 
 /**
