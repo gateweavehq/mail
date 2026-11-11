@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	dropStale,
+	oldestStale,
 	RESEAL_BATCH,
 	RESEAL_BYTES,
+	RESEAL_TRIES,
 	resealBatch,
 	type Sealer,
 	sealedName,
@@ -24,10 +26,18 @@ function mailbox(count: number, size = 10) {
 	const row = (id: string) =>
 		db
 			.prepare(
-				"SELECT object, seal, stale_object AS stale, seal_failed_at AS failed FROM message WHERE id = ?",
+				`SELECT object, seal, stale_object AS stale, stale_at AS staleAt,
+					seal_tries AS tries, seal_failed_at AS failed FROM message WHERE id = ?`,
 			)
 			.get(id) as
-			| { object: string; seal: string | null; stale: string | null; failed: number | null }
+			| {
+					object: string;
+					seal: string | null;
+					stale: string | null;
+					staleAt: number | null;
+					tries: number;
+					failed: number | null;
+			  }
 			| undefined;
 	const sealed = () =>
 		(
@@ -85,19 +95,33 @@ describe("resealBatch", () => {
 		vi.restoreAllMocks();
 	});
 
-	it("switches a message to its sealed copy in one step, and deletes the original after", async () => {
+	it("switches a message to its sealed copy in one step, and keeps the original for a while", async () => {
 		const box = mailbox(1);
 		const r2 = bucket(box);
 		expect(await resealBatch(box.storage, r2.sealer)).toBe("done");
-		expect(box.row("m0")).toEqual({
+		const switched = box.row("m0");
+		expect(switched).toMatchObject({
 			object: "w/b/m0.sealed.eml",
 			seal: "v1.salt",
-			stale: null,
+			stale: "w/b/m0.eml",
 			failed: null,
 		});
-		expect([...r2.objects]).toEqual(["w/b/m0.sealed.eml"]);
+		const at = switched?.staleAt ?? 0;
+		expect(at).toBeGreaterThan(0);
+		expect(oldestStale(box.storage)).toBe(at);
+		// A page that read the row just before still finds its object.
+		expect([...r2.objects].sort()).toEqual(["w/b/m0.eml", "w/b/m0.sealed.eml"]);
 		expect(await resealBatch(box.storage, r2.sealer)).toBe("done");
 		expect(r2.calls.copy).toEqual(["w/b/m0.eml"]);
+
+		// Deleted only once the window has passed.
+		expect(await dropStale(box.storage, r2.sealer, at - 1)).toBe("done");
+		expect([...r2.objects].sort()).toEqual(["w/b/m0.eml", "w/b/m0.sealed.eml"]);
+		expect(box.row("m0")?.stale).toBe("w/b/m0.eml");
+		expect(await dropStale(box.storage, r2.sealer, at)).toBe("done");
+		expect([...r2.objects]).toEqual(["w/b/m0.sealed.eml"]);
+		expect(box.row("m0")).toMatchObject({ stale: null, staleAt: null });
+		expect(oldestStale(box.storage)).toBeNull();
 	});
 
 	it("takes a few messages a run, the newest first, until none is left", async () => {
@@ -155,6 +179,30 @@ describe("resealBatch", () => {
 		expect(box.sealed()).toEqual(["m0", "m1"]);
 	});
 
+	it("gives up on a message after R2 has failed five times, and doesn't take it again", async () => {
+		const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+		const box = mailbox(2);
+		const r2 = bucket(box);
+		r2.hooks.copy = (object) => {
+			if (object === "w/b/m1.eml") throw new TypeError("R2 is down");
+		};
+		for (let run = 1; run < RESEAL_TRIES; run++) {
+			await resealBatch(box.storage, r2.sealer);
+			expect(box.row("m1")).toMatchObject({ tries: run, failed: null });
+		}
+		await resealBatch(box.storage, r2.sealer);
+		expect(box.row("m1")).toMatchObject({ tries: RESEAL_TRIES, seal: null });
+		expect(box.row("m1")?.failed).toEqual(expect.any(Number));
+		expect(r2.calls.copy.filter((object) => object === "w/b/m1.eml").length).toBe(RESEAL_TRIES);
+		// The sixth run leaves it be, and the other message was sealed all along.
+		await resealBatch(box.storage, r2.sealer);
+		expect(r2.calls.copy.filter((object) => object === "w/b/m1.eml").length).toBe(RESEAL_TRIES);
+		expect(box.sealed()).toEqual(["m0"]);
+		// Said by the kind of error alone.
+		expect(JSON.stringify(logged.mock.calls)).toContain("too often");
+		expect(JSON.stringify(logged.mock.calls)).not.toContain("R2 is down");
+	});
+
 	it("seals nothing when the server can't", async () => {
 		const box = mailbox(2);
 		const r2 = bucket(box);
@@ -174,8 +222,9 @@ describe("resealBatch", () => {
 		};
 		expect(await resealBatch(box.storage, r2.sealer)).toBe("done");
 		expect(box.row("m1")).toBeUndefined();
-		// The copy went. The original is the message's own, which whoever deleted it deletes.
-		expect([...r2.objects].sort()).toEqual(["w/b/m0.sealed.eml", "w/b/m1.eml"]);
+		// The copy went. The original is the message's own, which whoever deleted it deletes. m0's
+		// original waits out its window.
+		expect([...r2.objects].sort()).toEqual(["w/b/m0.eml", "w/b/m0.sealed.eml", "w/b/m1.eml"]);
 	});
 
 	it("leaves a message as it is when it began being sent while its copy was written", async () => {
@@ -210,20 +259,20 @@ describe("resealBatch", () => {
 		expect([...r2.objects]).toEqual(["w/b/m0.eml"]);
 	});
 
-	it("keeps the original in the row when it can't delete it, and a later run does", async () => {
+	it("keeps an original in the row that R2 can't delete, and a later run deletes it", async () => {
 		vi.spyOn(console, "error").mockImplementation(() => {});
 		const box = mailbox(1);
 		const r2 = bucket(box);
+		expect(await resealBatch(box.storage, r2.sealer)).toBe("done");
+		const at = box.row("m0")?.staleAt ?? 0;
 		r2.hooks.remove = () => {
 			throw new TypeError("R2 is down");
 		};
-		// A stop between the switch and the delete is the same: the row names the copy, which is there.
-		expect(await resealBatch(box.storage, r2.sealer)).toBe("failed");
+		expect(await dropStale(box.storage, r2.sealer, at)).toBe("failed");
 		expect(box.row("m0")).toMatchObject({ object: "w/b/m0.sealed.eml", stale: "w/b/m0.eml" });
 		expect([...r2.objects].sort()).toEqual(["w/b/m0.eml", "w/b/m0.sealed.eml"]);
-		expect(await dropStale(box.storage, r2.sealer)).toBe("failed");
 		r2.hooks.remove = undefined;
-		expect(await dropStale(box.storage, r2.sealer)).toBe("done");
+		expect(await dropStale(box.storage, r2.sealer, at)).toBe("done");
 		expect(box.row("m0")?.stale).toBeNull();
 		expect([...r2.objects]).toEqual(["w/b/m0.sealed.eml"]);
 	});

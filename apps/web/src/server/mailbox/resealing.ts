@@ -4,8 +4,10 @@
  * A message stored before sealing, or while the deployment had no `SECRETS_KEY`, has no seal and
  * its mail sits in R2 as it came. Once the deployment has a key, each such message gets a sealed
  * copy under a name of its own, the row switches to it in one synchronous step (object and seal
- * together), and the original is deleted after that. Whatever stops the work, the row names an
- * object that is there and opens: before the switch it names the original, after it the copy.
+ * together), and the original is deleted after that, once a grace window has passed, so that a
+ * page or a download that read the row just before the switch still finds its object. Whatever
+ * stops the work, the row names an object that is there and opens: before the switch it names the
+ * original, after it the copy.
  *
  * Nothing here is unknown to the mailbox. The copy's name comes from the message's (`sealedName`),
  * so a copy a stop left behind is overwritten by the next try, or deleted with its message, and
@@ -28,6 +30,12 @@ export const RESEAL_BYTES = 32 * 1024 * 1024;
 
 /** How many stale originals one run deletes. */
 const STALE_BATCH = 100;
+
+/**
+ * How many times R2 may fail to seal a message before the alarm gives up on it, as on mail that
+ * doesn't open.
+ */
+export const RESEAL_TRIES = 5;
 
 /** What a message's sealed copy is named: the message's own name, with `.sealed` before `.eml`. */
 export const sealedName = (object: string) =>
@@ -66,16 +74,31 @@ export type Resealed = "done" | "more" | "failed";
 
 const named = (error: unknown) => (error instanceof Error ? error.name : "unknown");
 
-/** Deletes the originals that sealed copies replaced. Those R2 can't delete wait for the next run. */
+/** When the first original that a sealed copy replaced was replaced, or null when none waits. */
+export function oldestStale(storage: MigratedStorage): number | null {
+	return storage.sql
+		.exec<{ at: number | null }>(
+			"SELECT min(stale_at) AS at FROM message INDEXED BY message_stale WHERE stale_object IS NOT NULL",
+		)
+		.one().at;
+}
+
+/**
+ * Deletes the originals that sealed copies replaced at `before` or earlier. Later ones are kept
+ * for now, so that a page or a download that read a row just before its switch still finds its
+ * object. Those R2 can't delete wait for the next run.
+ */
 export async function dropStale(
 	storage: MigratedStorage,
 	sealer: Sealer,
+	before: number,
 ): Promise<"done" | "failed"> {
 	const sql = storage.sql;
 	const stale = sql
 		.exec<{ id: string; stale: string }>(
 			`SELECT id, stale_object AS stale FROM message INDEXED BY message_stale
-			WHERE stale_object IS NOT NULL LIMIT ?`,
+			WHERE stale_object IS NOT NULL AND stale_at <= ? LIMIT ?`,
+			before,
 			STALE_BATCH,
 		)
 		.toArray();
@@ -90,7 +113,7 @@ export async function dropStale(
 	}
 	for (const row of stale) {
 		sql.exec(
-			"UPDATE message SET stale_object = NULL WHERE id = ? AND stale_object = ?",
+			"UPDATE message SET stale_object = NULL, stale_at = NULL WHERE id = ? AND stale_object = ?",
 			row.id,
 			row.stale,
 		);
@@ -135,9 +158,26 @@ export async function resealBatch(storage: MigratedStorage, sealer: Sealer): Pro
 					name: error.name,
 				});
 			} else {
-				console.error("mailbox: sealing a message's mail failed; it will be tried again", {
-					name: named(error),
-				});
+				// Counted, so that mail R2 never gives doesn't hold the alarm in a retry for good. The
+				// fifth failure marks it, as mail that doesn't open.
+				sql.exec(
+					`UPDATE message SET seal_tries = seal_tries + 1,
+						seal_failed_at = CASE WHEN seal_tries + 1 >= ? THEN ? END
+					WHERE id = ? AND seal IS NULL AND object = ?`,
+					RESEAL_TRIES,
+					Date.now(),
+					row.id,
+					row.object,
+				);
+				const marked = sql
+					.exec("SELECT 1 FROM message WHERE id = ? AND seal_failed_at IS NOT NULL", row.id)
+					.toArray();
+				console.error(
+					marked.length > 0
+						? "mailbox: sealing a message's mail failed too often; it is left as it is"
+						: "mailbox: sealing a message's mail failed; it will be tried again",
+					{ name: named(error) },
+				);
 				failures++;
 			}
 			continue;
@@ -160,10 +200,11 @@ export async function resealBatch(storage: MigratedStorage, sealer: Sealer): Pro
 					.toArray();
 				if (still.length === 0) return false;
 				sql.exec(
-					"UPDATE message SET object = ?, seal = ?, stale_object = ? WHERE id = ?",
+					"UPDATE message SET object = ?, seal = ?, stale_object = ?, stale_at = ? WHERE id = ?",
 					copy,
 					seal,
 					row.object,
+					Date.now(),
 					row.id,
 				);
 				return true;
@@ -179,22 +220,8 @@ export async function resealBatch(storage: MigratedStorage, sealer: Sealer): Pro
 		}
 		if (!switched) {
 			await forget(sealer, copy);
-			continue;
 		}
-		try {
-			await sealer.remove([row.object]);
-			sql.exec(
-				"UPDATE message SET stale_object = NULL WHERE id = ? AND stale_object = ?",
-				row.id,
-				row.object,
-			);
-		} catch (error) {
-			// The next run deletes it: the row remembers.
-			console.error("mailbox: deleting mail that was sealed failed; it will be tried again", {
-				name: named(error),
-			});
-			failures++;
-		}
+		// The original stays for now: `dropStale` deletes it after the grace window.
 	}
 	// When none of a run's could be sealed, R2 is likely failing: running again at once won't help.
 	if (failures > 0 && failures === batch.length) return "failed";

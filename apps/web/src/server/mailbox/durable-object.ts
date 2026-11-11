@@ -23,7 +23,14 @@ import {
 import { listed, type SentFacts, writeSentEvent } from "./events";
 import { base64Size, bytesOfBase64 } from "./files";
 import { indexBatch } from "./indexing";
-import { dropStale, type Resealed, resealBatch, type Sealer, sealedName } from "./resealing";
+import {
+	dropStale,
+	oldestStale,
+	type Resealed,
+	resealBatch,
+	type Sealer,
+	sealedName,
+} from "./resealing";
 import { LINKED_THREADS, migrate } from "./schema";
 import { type RawRef, rawMail, SealError } from "./sealed";
 import { ftsQuery, searchable } from "./search";
@@ -377,27 +384,32 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			.toArray();
 		if (waiting.length > 0) void ctx.blockConcurrencyWhile(() => this.#indexSoon());
 		// Mail kept as it came is sealed once the deployment has a key, and the originals of what was
-		// sealed are deleted, as after a stop between the two.
-		if (this.#hasWorkToSeal()) {
-			void ctx.blockConcurrencyWhile(() => this.#alarmBy(Date.now() + RESEAL_DELAY_MS));
-		}
+		// sealed are deleted when their window has passed, as after a stop between the two. So a
+		// mailbox seals its old mail as it wakes, which any mail, read or alarm does.
+		const sealAt = this.#sealingDue();
+		if (sealAt !== null) void ctx.blockConcurrencyWhile(() => this.#alarmBy(sealAt));
 	}
 
-	/** Whether the alarm has mail to seal, or originals of sealed mail to delete. */
-	#hasWorkToSeal(): boolean {
+	/**
+	 * When the alarm next has mail to seal, or originals of sealed mail to delete, or null when it
+	 * has neither.
+	 */
+	#sealingDue(): number | null {
 		const sql = this.ctx.storage.sql;
-		if (sql.exec("SELECT 1 FROM message WHERE stale_object IS NOT NULL LIMIT 1").toArray().length) {
-			return true;
-		}
-		return (
+		const stale = oldestStale(this.ctx.storage);
+		const unsealed =
 			rawMail(this.env).canSeal() &&
 			sql
 				.exec(
 					`SELECT 1 FROM message INDEXED BY message_unsealed
 					WHERE state = 'stored' AND seal IS NULL AND seal_failed_at IS NULL LIMIT 1`,
 				)
-				.toArray().length > 0
-		);
+				.toArray().length > 0;
+		const times = [
+			stale === null ? null : Math.max(stale + PENDING_MS, Date.now()),
+			unsealed ? Date.now() + RESEAL_DELAY_MS : null,
+		].filter((at): at is number => at !== null);
+		return times.length > 0 ? Math.min(...times) : null;
 	}
 
 	/** What the alarm seals mail with. */
@@ -1553,16 +1565,21 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 	}
 
 	/**
-	 * Seals a few messages' mail kept as it came, and deletes what that replaced. Last in the alarm,
-	 * and never throws, so that what it can't do holds up none of the rest.
+	 * Seals a few messages' mail kept as it came, and deletes the originals of what was sealed
+	 * `PENDING_MS` ago. Last in the alarm, and never throws, so that what it can't do holds up none
+	 * of the rest. Says too when the next original is due, or null.
 	 */
-	async #sealSome(canSeal: boolean): Promise<Resealed> {
+	async #sealSome(canSeal: boolean): Promise<{ sealed: Resealed; staleAt: number | null }> {
 		try {
 			const sealer = this.#sealer();
-			const stale = await dropStale(this.ctx.storage, sealer);
-			if (!canSeal) return stale;
-			const sealed = await resealBatch(this.ctx.storage, sealer);
-			return stale === "failed" && sealed === "done" ? "failed" : sealed;
+			const stale = await dropStale(this.ctx.storage, sealer, Date.now() - PENDING_MS);
+			const sealed = canSeal ? await resealBatch(this.ctx.storage, sealer) : "done";
+			const oldest = oldestStale(this.ctx.storage);
+			return {
+				sealed: stale === "failed" && sealed === "done" ? "failed" : sealed,
+				// Not when R2 just failed to delete them: that retries after a minute, not at once.
+				staleAt: oldest === null || stale === "failed" ? null : oldest + PENDING_MS,
+			};
 		} catch (error) {
 			// The storage, not R2, which the run handles: as when the mailbox was removed meanwhile.
 			// No alarm is set for it, so a removed mailbox isn't woken again; the next start finds
@@ -1570,7 +1587,7 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			console.error("mailbox: sealing mail failed", {
 				name: error instanceof Error ? error.name : "unknown",
 			});
-			return "done";
+			return { sealed: "done", staleAt: null };
 		}
 	}
 
@@ -1640,7 +1657,7 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 		for (const { id } of due) if (!taken.has(id)) await this.#tryNow(id, "due");
 		const raw = rawMail(this.env);
 		const indexed = await indexBatch(this.ctx.storage, (message) => searchable(raw, message));
-		const sealed = await this.#sealSome(raw.canSeal());
+		const { sealed, staleAt } = await this.#sealSome(raw.canSeal());
 		const next = sql
 			.exec<{ at: number | null }>(
 				"SELECT min(arrived_at) AS at FROM message WHERE state = 'pending'",
@@ -1664,6 +1681,7 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 				: sealed === "failed"
 					? Date.now() + RESEAL_RETRY_MS
 					: null,
+			staleAt,
 			await this.ctx.storage.getAlarm(),
 		].filter((at): at is number => at !== null);
 		if (times.length > 0) await this.ctx.storage.setAlarm(Math.min(...times));

@@ -142,7 +142,9 @@ alone, since it belongs to the workspace.
 R2, under a key of its own that comes from `SECRETS_KEY`, so the bucket, or a copy of it, gives
 nobody the mail itself; R2 still shows each object's name and size. Mail kept without it, or
 before encryption, is read as it is until a key is set, and then each mailbox encrypts it in the
-background, a few messages at a time, with no action from you. Make 32 random bytes, keep them
+background, a few messages at a time, with no action from you. A mailbox starts when it next
+gets mail, is read, or has its alarm, so one nobody uses keeps its old mail as it came until
+then. The unencrypted original is deleted 15 minutes after its encrypted copy takes its place. Make 32 random bytes, keep them
 somewhere safe, such as a password manager, and give them to the Worker:
 
 ```sh

@@ -252,15 +252,19 @@ ALTER TABLE message ADD COLUMN seal TEXT;
 `;
 
 // Sealing mail kept as it came, from the alarm (`resealing.ts`). `stale_object` is the object a
-// message's sealed copy replaced, which the alarm deletes and then forgets, so that a stop between
-// the switch and the delete leaves nothing behind for good. `seal_failed_at` marks mail that
-// doesn't open, which the alarm doesn't try again.
+// message's sealed copy replaced, and `stale_at` is when it was, so that a page or download that
+// read the row just before still finds it. The alarm deletes it once a grace window has passed and
+// then forgets it, so that a stop in between leaves nothing behind for good. `seal_tries` counts
+// the times R2 failed to seal a message, and `seal_failed_at` marks mail that doesn't open, or
+// failed too often, which the alarm doesn't try again.
 const VERSION_13 = `
 ALTER TABLE message ADD COLUMN stale_object TEXT;
+ALTER TABLE message ADD COLUMN stale_at INTEGER;
+ALTER TABLE message ADD COLUMN seal_tries INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE message ADD COLUMN seal_failed_at INTEGER;
 CREATE INDEX message_unsealed ON message (arrived_at DESC, id DESC)
 	WHERE state = 'stored' AND seal IS NULL AND seal_failed_at IS NULL;
-CREATE INDEX message_stale ON message (id) WHERE stale_object IS NOT NULL;
+CREATE INDEX message_stale ON message (stale_at) WHERE stale_object IS NOT NULL;
 `;
 
 /** Each brings the schema from the version before it. Append only: objects keep what they ran. */

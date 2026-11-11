@@ -414,24 +414,27 @@ describe("sealing mail kept as it came", () => {
 	const sealedFailures = () =>
 		mail.logs.filter((log) => log.message.includes("can't be sealed")).length;
 
-	it("seals it under a new name in the mailbox's prefix, reads the same, and deletes the original", async () => {
+	it("seals it under a new name in the mailbox's prefix, reads the same, and keeps the original for a while", async () => {
 		const box = await mailboxWithAddress();
 		const { id, raw } = await keptPlain(box, "Old harbour plans");
 		const old = `${prefixOf(box)}${id}.eml`;
+		// The original stays for a window of 15 minutes, so a page that read the row just before
+		// the switch still finds its object. A unit test has it deleted after.
 		await expect
 			.poll(() => objects(prefixOf(box)), { timeout: 15_000 })
-			.toEqual([sealedKey(box, id)]);
-		expect(await objects(old)).toEqual([]);
+			.toEqual([old, sealedKey(box, id)].sort());
+		const original = await mail.bucket.get(old);
+		expect(Buffer.from((await original?.arrayBuffer()) ?? new ArrayBuffer(0)).toString()).toBe(raw);
 		const stored = Buffer.from(
 			(await (await mail.bucket.get(sealedKey(box, id)))?.arrayBuffer()) ?? new ArrayBuffer(0),
 		);
 		expect(stored.length).toBeGreaterThan(raw.length);
 		expect(stored.toString("latin1")).not.toContain("harbour");
-		const original = await mail.fetch(
+		const downloaded = await mail.fetch(
 			`${origin}/api/mail/${box.slug}/${box.mailboxId}/${id}/original`,
 			{ headers: owner.headers },
 		);
-		expect(await original.text()).toBe(raw);
+		expect(await downloaded.text()).toBe(raw);
 		expect((await open(box.slug, box.mailboxId, id)).text.trim()).toBe(
 			"The text of Old harbour plans.",
 		);
@@ -449,13 +452,23 @@ describe("sealing mail kept as it came", () => {
 		const second = await keptPlain(box, "Second");
 		await expect
 			.poll(() => objects(prefixOf(box)), { timeout: 15_000 })
-			.toEqual([sealedKey(box, first.id), sealedKey(box, second.id)].sort());
+			.toEqual(
+				[
+					`${prefixOf(box)}${first.id}.eml`,
+					`${prefixOf(box)}${second.id}.eml`,
+					sealedKey(box, first.id),
+					sealedKey(box, second.id),
+				].sort(),
+			);
 		const deleted = await mail.fetch(
 			`${origin}/api/mail/${box.slug}/${box.mailboxId}/${first.id}`,
 			{ method: "DELETE", headers: owner.headers },
 		);
 		expect(deleted.status).toBe(200);
-		expect(await objects(prefixOf(box))).toEqual([sealedKey(box, second.id)]);
+		// Its sealed copy and its original, still waiting out its window, both go at once.
+		expect(await objects(prefixOf(box))).toEqual(
+			[`${prefixOf(box)}${second.id}.eml`, sealedKey(box, second.id)].sort(),
+		);
 		await directory(box.slug, owner.headers, { action: "remove-mailbox", id: box.mailboxId });
 		expect(await objects(prefixOf(box))).toEqual([]);
 	});
@@ -476,7 +489,11 @@ describe("sealing mail kept as it came", () => {
 			.toEqual([sealedKey(box, later.id)]);
 		expect(sealedFailures()).toBe(before + 2);
 		expect(await objects(prefixOf(box))).toEqual(
-			[`${prefixOf(box)}${short.id}.eml`, sealedKey(box, later.id)].sort(),
+			[
+				`${prefixOf(box)}${short.id}.eml`,
+				`${prefixOf(box)}${later.id}.eml`,
+				sealedKey(box, later.id),
+			].sort(),
 		);
 	});
 
@@ -490,7 +507,7 @@ describe("sealing mail kept as it came", () => {
 			const keys = await objects(prefixOf(box));
 			const done = keys.filter((key) => key.endsWith(".sealed.eml")).length;
 			if (seen.at(-1) !== done) seen.push(done);
-			if (done === count && keys.length === count) break;
+			if (done === count) break;
 			if (Date.now() > until) throw new Error(`only ${done} sealed after 30 s`);
 			await new Promise((resolve) => setTimeout(resolve, 50));
 		}
