@@ -20,7 +20,7 @@ beforeAll(async () => {
 	});
 	const now = Date.now();
 	await mail.db.batch(
-		["one", "two", "three"].map((id) =>
+		["one", "two", "three", "four"].map((id) =>
 			mail.db
 				.prepare("INSERT INTO organization (id, name, slug, created_at) VALUES (?1, ?1, ?1, ?2)")
 				.bind(id, now),
@@ -72,14 +72,17 @@ describe("a changed SECRETS_KEY", () => {
 		const two = `v1.${iv}.${data}`;
 		// Under a key the deployment never had: it can't be opened, so it is left.
 		const three = await seal(OTHER, "three", place, "re_three");
+		// Saved again by code that doesn't know versions, as after a rollback: its version is another
+		// saving's, so the digest names it.
+		const four = await seal(OLD, "four", place, "re_four");
 		const hook = await seal(OLD, "one", "resend-inbound/signing-secret", "whsec_one");
 		const now = Date.now();
 		await mail.db.batch([
 			mail.db
 				.prepare(
-					"INSERT INTO provider_key (organization_id, provider, sealed, version, hint, added_at) VALUES ('one', 'resend', ?1, NULL, '_one', ?2), ('two', 'resend', ?3, 'kept', '_two', ?2), ('three', 'resend', ?4, NULL, 'hree', ?2)",
+					"INSERT INTO provider_key (organization_id, provider, sealed, version, hint, added_at) VALUES ('one', 'resend', ?1, NULL, '_one', ?2), ('two', 'resend', ?3, ?5, '_two', ?2), ('three', 'resend', ?4, NULL, 'hree', ?2), ('four', 'resend', ?6, ?7, 'four', ?2)",
 				)
-				.bind(one, now, two, three),
+				.bind(one, now, two, three, `${now}.kept`, four, `${now - 1000}.before`),
 			mail.db
 				.prepare(
 					"INSERT INTO resend_inbound (organization_id, channel, webhook_id, sealed_secret, created_at) VALUES ('one', ?1, 'wh_1', ?2, ?3)",
@@ -93,13 +96,15 @@ describe("a changed SECRETS_KEY", () => {
 			one: await keyRow("one"),
 			two: await keyRow("two"),
 			three: await keyRow("three"),
+			four: await keyRow("four"),
 		};
 		expect(await open(NEW, "one", place, after.one?.sealed ?? "")).toBe("re_one");
 		expect(await open(NEW, "two", place, after.two?.sealed ?? "")).toBe("re_two");
 		// A send that may have gone is tried again only with the same version of the key.
-		expect(after.one?.version).toBe(await digest(one));
-		expect(after.two?.version).toBe("kept");
+		expect(after.one?.version).toBe(`${now}.${await digest(one)}`);
+		expect(after.two?.version).toBe(`${now}.kept`);
 		expect(after.three).toEqual({ sealed: three, version: null });
+		expect(after.four?.version).toBe(`${now}.${await digest(four)}`);
 		const inbound = await mail.db
 			.prepare("SELECT sealed_secret AS sealed FROM resend_inbound WHERE organization_id = 'one'")
 			.first<{ sealed: string }>();
@@ -108,7 +113,7 @@ describe("a changed SECRETS_KEY", () => {
 		);
 		// Once the previous key is gone, only what wasn't sealed again is lost.
 		await expect(open(OLD, "one", place, after.one?.sealed ?? "")).rejects.toThrow();
-		expect(secretsLogs().at(-1)).toEqual({ resealed: 3, unopened: 1, left: 1 });
+		expect(secretsLogs().at(-1)).toEqual({ resealed: 4, unopened: 1, left: 1 });
 
 		// The next run has nothing more it can do, and still says one is left.
 		await mail.runScheduled(1);

@@ -45,11 +45,12 @@ describe("sealerFor", () => {
 		it("opens values under the previous key, and seals new ones under the current", async () => {
 			const old = await (await sealer("w")).seal("provider-keys/resend", "re_old");
 			const both = await rotated("w");
-			expect(both.isCurrent(old)).toBe(false);
 			expect(await both.open("provider-keys/resend", old)).toBe("re_old");
 			const again = await both.seal("provider-keys/resend", "re_old");
-			expect(both.isCurrent(again)).toBe(true);
-			expect(again.split(".")[1]).not.toBe(old.split(".")[1]);
+			// Each names its key, which the daily run goes by.
+			const newId = (await (await sealer("w", NEW)).seal("p", "x")).split(".")[1];
+			expect(again.split(".")[1]).toBe(newId);
+			expect(old.split(".")[1]).not.toBe(newId);
 			// Once the previous key is gone, what it sealed doesn't open, and what was sealed again does.
 			const only = await sealer("w", NEW);
 			await expect(only.open("provider-keys/resend", old)).rejects.toThrow(
@@ -64,8 +65,20 @@ describe("sealerFor", () => {
 			const v1 = `v1.${iv}.${data}`;
 			expect(await (await sealer("w")).open("provider-keys/resend", v1)).toBe("re_v1");
 			expect(await (await rotated("w")).open("provider-keys/resend", v1)).toBe("re_v1");
-			expect((await rotated("w")).isCurrent(v1)).toBe(false);
 			await expect((await sealer("w", NEW)).open("provider-keys/resend", v1)).rejects.toThrow(
+				"A secret could not be opened",
+			);
+		});
+
+		it("doesn't open a value that names a key it doesn't have, whatever it holds", async () => {
+			const sealed = await (await sealer("w")).seal("provider-keys/resend", "re_x");
+			const [, , iv, data] = sealed.split(".");
+			const unknown = `v2.AAAAAAAAAAA.${iv}.${data}`;
+			await expect((await rotated("w")).open("provider-keys/resend", unknown)).rejects.toThrow(
+				"A secret could not be opened",
+			);
+			// Nor under the key that sealed it, when the value names another.
+			await expect((await sealer("w")).open("provider-keys/resend", unknown)).rejects.toThrow(
 				"A secret could not be opened",
 			);
 		});

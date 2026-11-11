@@ -171,9 +171,11 @@ From then on, everything new is encrypted under the new key, and what is under t
 opens. The daily Cron Trigger encrypts the workspaces' Resend keys and webhook secrets again under
 the new key, and the Worker's log says how many with a `secrets:` line, as
 `{"resealed":3,"unopened":0,"left":0}`. Mail already in R2 stays under the old key for now, so
-**keep `SECRETS_KEY_PREVIOUS` set**: removing it loses that mail. An `unopened` count is a secret
-that neither key opens, which only adding that workspace's key again mends. Setting a new key
-without `SECRETS_KEY_PREVIOUS` loses everything under the old one, as losing it does.
+**keep `SECRETS_KEY_PREVIOUS` set**: removing it loses that mail, and so does changing the key a
+second time, as there is room for one previous key only. An `unopened` count is a secret that
+neither key opens, which only adding that workspace's key again mends. Setting a new key without
+`SECRETS_KEY_PREVIOUS` loses everything under the old one, as losing it does, and mail that
+arrives before `SECRETS_KEY_PREVIOUS` is set can be searched by its headers only.
 
 R2 storage and Durable Object storage are billed past what the plan includes: see
 [R2 pricing](https://developers.cloudflare.com/r2/pricing/) and

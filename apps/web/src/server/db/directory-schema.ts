@@ -292,10 +292,10 @@ export const providerKey = sqliteTable(
 		provider: text("provider", { enum: KEYED_PROVIDERS }).notNull(),
 		sealed: text("sealed").notNull(),
 		/**
-		 * Names this saving of the key, and stays when the key is sealed again under a new
-		 * `SECRETS_KEY`, as a send that may have gone can only be tried again with the same key. Null
-		 * for keys saved before it: those are named by a digest of `sealed`, which sealing again sets
-		 * here first.
+		 * Names this saving of the key (`<added_at>.<id>`, see `keyVersion`), and stays when the key
+		 * is sealed again under a new `SECRETS_KEY`, as a send that may have gone can only be tried
+		 * again with the same key. Null for keys saved before it: those are named by a digest of
+		 * `sealed`, which sealing again sets here first.
 		 */
 		version: text("version"),
 		/** The key's last four characters. */

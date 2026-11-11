@@ -44,12 +44,13 @@ export async function saveProviderKey(
 ): Promise<{ ok: true; info: ProviderKeyInfo } | { ok: false; error: string }> {
 	const sealer = await sealerFor(secrets, workspaceId);
 	if (!isSealer(sealer)) return { ok: false, error: sealer.unavailable };
+	const addedAt = new Date();
 	const values = {
 		sealed: await sealer.seal(place(provider), key),
-		version: savingId(),
+		version: versionColumn(addedAt, savingId()),
 		hint: key.slice(-4),
 		addedBy,
-		addedAt: new Date(),
+		addedAt,
 	};
 	await db
 		.insert(schema.providerKey)
@@ -94,7 +95,11 @@ export async function openProviderKey(
 ): Promise<OpenedKey> {
 	const { providerKey } = schema;
 	const row = await db
-		.select({ sealed: providerKey.sealed, version: providerKey.version })
+		.select({
+			sealed: providerKey.sealed,
+			version: providerKey.version,
+			addedAt: providerKey.addedAt,
+		})
 		.from(providerKey)
 		.where(and(eq(providerKey.organizationId, workspaceId), eq(providerKey.provider, provider)))
 		.get();
@@ -107,17 +112,38 @@ export async function openProviderKey(
 	} catch {
 		return { ok: false, code: "key_unreadable" };
 	}
-	return { ok: true, key, version: row.version ?? (await sealedDigest(row.sealed)) };
+	return { ok: true, key, version: await keyVersion(row) };
 }
 
 /** A new saving's version: 12 random bytes, in hex like the digests before it. */
 const savingId = () => hex(crypto.getRandomValues(new Uint8Array(12)));
 
 /**
- * The version of a key saved before versions were kept: each sealing was new, so the digest of its
- * sealed value named that saving. Sealing it again keeps this as its version.
+ * What `version` keeps for the saving of a key named `id`: the id with the saving's time, so that a
+ * key saved again by code that doesn't know the column, which leaves it as it was, isn't taken for
+ * the one before, as after a rollback.
  */
-export async function sealedDigest(sealed: string): Promise<string> {
+export const versionColumn = (addedAt: Date, id: string) => `${addedAt.getTime()}.${id}`;
+
+/**
+ * What names this saving of a key, which each try of a send notes (`outgoing.key_version`). A key
+ * saved before versions were kept, or saved again without one, is named by the digest of its
+ * sealed value, as each sealing was new then. Sealing it again under a new `SECRETS_KEY` keeps the
+ * name, written into `version`.
+ */
+export async function keyVersion(row: {
+	sealed: string;
+	version: string | null;
+	addedAt: Date;
+}): Promise<string> {
+	const parts = row.version?.split(".") ?? [];
+	const [at, id] = parts;
+	return parts.length === 2 && id && at === String(row.addedAt.getTime())
+		? id
+		: sealedDigest(row.sealed);
+}
+
+async function sealedDigest(sealed: string): Promise<string> {
 	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(sealed));
 	return hex(new Uint8Array(digest).slice(0, 12));
 }

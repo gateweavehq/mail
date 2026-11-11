@@ -1,7 +1,7 @@
 import { and, eq, gt, isNotNull, type SQL, type SQLWrapper, sql } from "drizzle-orm";
 import type { Database } from "./db";
 import { schema } from "./db";
-import { place, sealedDigest } from "./providers/keys";
+import { keyVersion, place, versionColumn } from "./providers/keys";
 import { SECRET_PLACE } from "./resend-inbound";
 import { isSealer, type Sealer, sealerFor } from "./secrets";
 import { type SecretsKeySettings, secretsKeys } from "./secrets-key";
@@ -73,6 +73,7 @@ export async function resealSecrets(
 				provider: providerKey.provider,
 				sealed: providerKey.sealed,
 				version: providerKey.version,
+				addedAt: providerKey.addedAt,
 			})
 			.from(providerKey)
 			.where(
@@ -93,7 +94,7 @@ export async function resealSecrets(
 			if (sealed === null) continue;
 			const written = await db
 				.update(providerKey)
-				.set({ sealed, version: row.version ?? (await sealedDigest(row.sealed)) })
+				.set({ sealed, version: versionColumn(row.addedAt, await keyVersion(row)) })
 				.where(
 					and(
 						eq(providerKey.organizationId, row.workspaceId),

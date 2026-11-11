@@ -665,9 +665,11 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
       didn't go. The message keeps its key and ends `uncertain`, as it does when its tries run out
       or its key is gone. Resend also knows an idempotency key only in the account that sent it,
       so each try notes which saving of the workspace's key it used (`outgoing.key_version`: the
-      row's `version`, set new each time a key is put in, or a digest of the sealed value for one
-      put in before versions were kept), which sealing it again leaves as it was, and after a try that may have gone, a different one stops it
-      as `uncertain` (`resend:key_changed`). Someone who then sends it again takes the new key.
+      row's `version`, new each time a key is put in, or a digest of the sealed value for one put
+      in before versions were kept; `keyVersion`), which sealing it again leaves as it was. The
+      column keeps it with the saving's `added_at`, so a key put in by code that doesn't know the
+      column, as after a rollback, isn't taken for the one before. After a try that may have gone,
+      a different one stops it as `uncertain` (`resend:key_changed`). Someone who then sends it again takes the new key.
     - **States** (`outgoing.state`). `held` for an agent's message that waits for approval, as
       above. `sending`, then `sent`. `waiting` when Email Service is busy
       (its rate or daily limit): the object's alarm tries again after 15 seconds, 1, 5 and 30

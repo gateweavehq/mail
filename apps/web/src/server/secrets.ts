@@ -27,8 +27,6 @@ export interface Sealer {
 	seal(place: string, plaintext: string): Promise<string>;
 	/** Throws when the value was sealed elsewhere, under another key, or was changed. */
 	open(place: string, sealed: string): Promise<string>;
-	/** Whether a sealed value is already under the current key, so needs no sealing again. */
-	isCurrent(sealed: string): boolean;
 }
 
 const SALT = new TextEncoder().encode("gateweave-mail/secrets/v1");
@@ -104,7 +102,6 @@ export async function sealerFor(
 			// WebCrypto's own error says nothing useful, and nothing about the secret should leak.
 			throw new Error("A secret could not be opened");
 		},
-		isCurrent: (sealed) => sealed.startsWith(`v2.${current.id}.`),
 	};
 }
 
