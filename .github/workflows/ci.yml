@@ -74,7 +74,11 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Install Chromium
-        run: pnpm --filter @gateweave/mail-web exec playwright install --with-deps chromium
+        # With the system libraries it needs. When the runner can't reach Ubuntu's package mirror,
+        # as happens, Chromium alone: the runner's image has Chrome, and so the same libraries.
+        run: |
+          timeout 180 pnpm --filter @gateweave/mail-web exec playwright install --with-deps chromium ||
+            pnpm --filter @gateweave/mail-web exec playwright install chromium
       - name: Build and run the browser tests
         run: pnpm test:e2e
       - name: Upload the Playwright report
