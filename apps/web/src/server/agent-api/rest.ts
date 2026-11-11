@@ -21,8 +21,8 @@ interface Known {
 	operation: Operation;
 	route: Route;
 	pattern: RegExp;
-	/** The names its path takes, in order. */
-	names: string[];
+	/** The names its path takes, in order, with their JSON types, as a query string's are read. */
+	names: { name: string; type: unknown }[];
 	/** The inputs it takes besides its path's, with their JSON types, to read a query string. */
 	taken: { name: string; type: unknown }[];
 }
@@ -34,7 +34,7 @@ const ROUTES: Known[] = OPERATIONS.flatMap((operation) => {
 		operation,
 		route,
 		pattern: new RegExp(`^${route.path.replace(/\{\w+\}/g, "([^/]+)")}$`),
-		names: pathNames(route),
+		names: pathNames(route).map((name) => ({ name, type: properties[name]?.type })),
 		taken: takenBy(operation, route).map((name) => ({ name, type: properties[name]?.type })),
 	}));
 });
@@ -127,8 +127,8 @@ export async function handleApiRequest(request: Request): Promise<Response> {
 
 /**
  * What a request asks, from its path, then its query string for a GET or DELETE or its JSON body
- * for a POST or PATCH: only the inputs its route takes. A query string's numbers and booleans are read as
- * such, as the input has them; anything else is left for the input to refuse.
+ * for a POST or PATCH: only the inputs its route takes. A path's or a query string's numbers and
+ * booleans are read as such, as the input has them; anything else is left for the input to refuse.
  */
 async function inputOf(
 	request: Request,
@@ -136,10 +136,10 @@ async function inputOf(
 	known: Known,
 	found: RegExpExecArray,
 ): Promise<Record<string, unknown> | Response> {
-	const fromPath: Record<string, string> = {};
-	for (const [at, name] of known.names.entries()) {
+	const fromPath: Record<string, unknown> = {};
+	for (const [at, { name, type }] of known.names.entries()) {
 		try {
-			fromPath[name] = decodeURIComponent(found[at + 1] ?? "");
+			fromPath[name] = fromQuery(decodeURIComponent(found[at + 1] ?? ""), type);
 		} catch {
 			return failure("A part of the path isn't encoded as a URL's is.", 400);
 		}

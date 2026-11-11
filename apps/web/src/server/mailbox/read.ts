@@ -21,6 +21,7 @@ import { db } from "../auth";
 import { schema } from "../db";
 import { appOrigin } from "../origin";
 import { replySubject } from "./compose";
+import { fileDownload, type SentFile } from "./download";
 import type { StoredSummary } from "./durable-object";
 import { cleanHtml, framePolicy, MAX_SHOWN_HTML, mayLoadImages } from "./html";
 import { allowsImages } from "./image-senders";
@@ -321,7 +322,7 @@ export type MessageReading = "message.read" | "code.read";
 async function noteRead(
 	box: OpenMailbox,
 	row: { id: string; threadId: string; subject: string | null },
-	reading: MessageReading | null,
+	reading: MessageReading | "attachment.read" | null,
 ) {
 	if (!box.member.keyed || reading === null) return;
 	const { workspaceId, memberId } = box.member.membership;
@@ -467,6 +468,54 @@ export async function originalMessage(
 				"cache-control": "private, no-store",
 			},
 		});
+	});
+}
+
+/**
+ * One of a message's attachments, by its place among them as `attachments` lists them, for a caller
+ * who may read the mailbox; null for anyone else, and for a place that holds nothing.
+ */
+export async function openAttachment(
+	slug: string,
+	mailboxId: string,
+	messageId: string,
+	index: number,
+): Promise<SentFile | null> {
+	if (!Number.isSafeInteger(index) || index < 0) return null;
+	const box = await openMailbox(slug, mailboxId);
+	if (!box) return null;
+	const row = await box.stub.get(messageId);
+	if (!row) return null;
+	const object = await rawMail(env).get(row);
+	if (!object) return null;
+	const email = await PostalMime.parse(object.body);
+	const attachment = email.attachments[index];
+	if (!attachment) return null;
+	await noteRead(box, row, "attachment.read");
+	const { content } = attachment;
+	return {
+		name: attachment.filename,
+		type: attachment.mimeType,
+		bytes:
+			typeof content === "string" ? new TextEncoder().encode(content) : new Uint8Array(content),
+	};
+}
+
+/**
+ * One of a message's attachments as a download, by its place as the path gives it, or a 404 for
+ * anyone who can't see it, the same as for a message that isn't there.
+ */
+export async function messageAttachment(
+	slug: string,
+	mailboxId: string,
+	messageId: string,
+	place: string,
+): Promise<Response> {
+	return orUnopened(false, async () => {
+		const file = /^\d{1,4}$/.test(place)
+			? await openAttachment(slug, mailboxId, messageId, Number(place))
+			: null;
+		return file ? fileDownload(file) : notFound();
 	});
 }
 

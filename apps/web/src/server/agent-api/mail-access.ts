@@ -10,6 +10,7 @@ import type {
 } from "../../lib/mailbox";
 import type { Webhook, WebhookDelivery, WebhookEventType } from "../../lib/webhooks";
 import type { AgentAddressAction } from "../directory/agent-addresses";
+import type { SentFile } from "../mailbox/download";
 import type { OutboxAction } from "../mailbox/send";
 
 // What an agent's operations may do, whether they come over MCP or REST. They reach Mail only
@@ -75,6 +76,11 @@ export interface MailAccess {
 		messageId: string,
 		reading?: "message.read" | "code.read" | null,
 	): Promise<OpenedMessage | null>;
+	/**
+	 * One of a message's attachments, by its place in the message's `attachments`, and notes in the
+	 * agent's log that it took it; null when there is none it may read.
+	 */
+	attachment(mailboxId: string, messageId: string, index: number): Promise<SentFile | null>;
 	/** Lists the addresses it made in a mailbox, with `null`, or makes or ends one. */
 	addresses(mailboxId: string, action: AgentAddressAction | null): Promise<Answer>;
 	outbox(mailboxId: string, action: OutboxAction): Promise<Answer>;

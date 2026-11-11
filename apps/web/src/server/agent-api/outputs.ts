@@ -148,6 +148,13 @@ export const OUTPUTS = {
 		message: messageOutput.optional(),
 		thread: threadOutput.optional(),
 	}),
+	get_attachment: z.looseObject({
+		filename: z.string().nullable().describe("The name its sender gave it; null for none."),
+		contentType: z.string().describe("The type its sender stated, which proves nothing."),
+		size: z.number(),
+		content: z.string().describe("The file's bytes, in Base64."),
+		untrusted: z.string(),
+	}),
 	wait_for_email: z.looseObject({ found: z.boolean(), message: messageOutput.optional() }),
 	get_verification_code: z.looseObject({
 		found: z.boolean(),

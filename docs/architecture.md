@@ -166,7 +166,15 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     `/api/mail/<workspace>/<mailbox>/threads` and `…/threads/<thread>`, beside the messages, newest
     first, at `/api/mail/<workspace>/<mailbox>`. A message is parsed with postal-mime when someone
     opens it. The original downloads from `/api/mail/<workspace>/<mailbox>/<message>/original`, as
-    a file, never as a page. Who reads it is decided per mailbox (below). Anyone else, a
+    a file, never as a page, and so does each attachment on its own, from
+    `…/<message>/attachments/<n>`, its place among the message's attachments from 0
+    (`server/mailbox/download.ts`). A sender chooses a file's bytes, name and type, so it always
+    goes as `attachment` under its name as RFC 6266 has it (in UTF-8, beside an ASCII one), with
+    `nosniff` and a policy of its own, `default-src 'none'; sandbox`. Its stated type goes with it
+    only when no browser runs that type (images, PDF, plain text, office files and the like), and
+    anything else, HTML and SVG among them, as `application/octet-stream`. Its name loses what
+    would make it a path, a hidden file or a control, and the marks that turn text around, which
+    could make `invoice[RLO]fdp.exe` look like a PDF. Nothing previews on Mail's origin. Who reads it is decided per mailbox (below). Anyone else, a
     non-member, or a mailbox of another workspace, gets the same "not found" as a missing one, and
     the mailbox is checked against the caller's workspace in D1 before its object is asked
     anything.
@@ -244,7 +252,8 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     at `/api/agents/<workspace>/<agent>/log`, for owners and admins as the page is, a page of 50 at
     a time, of one kind or all. It notes what the agent did with its key: each message it opened
     (`message.read`, by `readMessage` and the raw and HTML routes) or took only a code from
-    (`code.read`), each search (`mail.searched`, once for its first page and without its words,
+    (`code.read`), each file it took from one (`attachment.read`, by `openAttachment`, for the
+    download route and `get_attachment` alike), each search (`mail.searched`, once for its first page and without its words,
     as the index holds what messages say), what it sent or wrote to wait (`outboxAnswer`), the
     addresses it made and ended, and its webhooks. Those are the routes the MCP tools and the REST API go through, so
     one note covers all three. It notes too what people did to it: making it, renaming it, its
@@ -294,8 +303,8 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     Owners and admins see on the workspace's page which agent made each address, and can remove
     it.
   - **The MCP server and the agent API** (`server/mcp/` at `/mcp`, `server/agent-api/` under
-    `/api/v1`). An agent reaches with its key what the REST routes give it, as fifteen
-    operations: `list_mailboxes`, `search_email`, `read_email`, `wait_for_email`,
+    `/api/v1`). An agent reaches with its key what the REST routes give it, as sixteen
+    operations: `list_mailboxes`, `search_email`, `read_email`, `get_attachment`, `wait_for_email`,
     `get_verification_code`, `send_email`, `reply`, `list_addresses`, `create_address`,
     `end_address`, and for webhooks of its own `list_webhooks`, `create_webhook`, `update_webhook`,
     `delete_webhook` and `test_webhook`. Each is defined

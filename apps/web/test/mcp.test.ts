@@ -408,6 +408,28 @@ describe("an agent's MCP server", () => {
 		expect(read.message.attachments).toEqual([
 			{ name: "data.csv", type: "text/csv", size: 5_000_000 },
 		]);
+		const file = await ok<{ filename: string; contentType: string; content: string }>(
+			mcp,
+			"get_attachment",
+			{ mailbox: space.signUps.id, messageId: held.id, index: 0 },
+		);
+		expect(file).toMatchObject({ filename: "data.csv", contentType: "text/csv" });
+		expect(file.content).toBe(btoa(bytes));
+		expect(
+			await refused(mcp, "get_attachment", {
+				mailbox: space.signUps.id,
+				messageId: held.id,
+				index: 1,
+			}),
+		).toMatch(/^No such message/);
+		// The mailbox it wasn't given is as missing as one that doesn't exist.
+		expect(
+			await refused(mcp, "get_attachment", {
+				mailbox: space.billing.id,
+				messageId: held.id,
+				index: 0,
+			}),
+		).toMatch(/^No mailbox/);
 	});
 
 	it("takes only a working agent key, of the workspace it was made for", async () => {
