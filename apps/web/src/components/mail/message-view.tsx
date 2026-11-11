@@ -4,6 +4,7 @@ import { Button } from "#/components/ui/button";
 import { ConfirmDialog } from "#/components/workspace/confirm-dialog";
 import { isAdminRole, useMyRole } from "#/components/workspace/context";
 import { formatDateTime } from "#/lib/dates";
+import { fileName } from "#/lib/file-names";
 import { changeImageSenders, rememberImageChoice, useImageChoice } from "#/lib/images";
 import {
 	attachmentUrl,
@@ -81,7 +82,8 @@ export function MessageView({
 									download
 									className="min-w-0 break-all underline underline-offset-4 hover:text-foreground"
 								>
-									{attachment.name || "(no name)"}
+									{/* As the download is saved: the sender's name could turn its own text around. */}
+									{attachment.name ? fileName(attachment.name) : "(no name)"}
 								</a>
 								<span className="shrink-0 text-muted-foreground">
 									{attachment.type}, {formatSize(attachment.size)}

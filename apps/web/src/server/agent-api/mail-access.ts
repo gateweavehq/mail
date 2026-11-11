@@ -78,9 +78,15 @@ export interface MailAccess {
 	): Promise<OpenedMessage | null>;
 	/**
 	 * One of a message's attachments, by its place in the message's `attachments`, and notes in the
-	 * agent's log that it took it; null when there is none it may read.
+	 * agent's log that it took it; only its size when it is over `maxBytes`, and null when there is
+	 * none it may read.
 	 */
-	attachment(mailboxId: string, messageId: string, index: number): Promise<SentFile | null>;
+	attachment(
+		mailboxId: string,
+		messageId: string,
+		index: number,
+		maxBytes: number,
+	): Promise<SentFile | { tooLarge: number } | null>;
 	/** Lists the addresses it made in a mailbox, with `null`, or makes or ends one. */
 	addresses(mailboxId: string, action: AgentAddressAction | null): Promise<Answer>;
 	outbox(mailboxId: string, action: OutboxAction): Promise<Answer>;

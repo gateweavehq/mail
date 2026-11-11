@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { fileName } from "../../lib/file-names";
 import { MAX_FILE_NAME } from "../../lib/outbox";
-import { contentDisposition, downloadName, downloadType, fileDownload } from "./download";
+import { contentDisposition, downloadType, fileDownload } from "./download";
 
 describe("a file's download", () => {
 	it("keeps only stated types no browser runs", () => {
@@ -29,17 +30,21 @@ describe("a file's download", () => {
 	});
 
 	it("names it as its sender did, short of a path, a hidden file or reversed text", () => {
-		expect(downloadName("plan.pdf")).toBe("plan.pdf");
-		expect(downloadName("Rapor ğüş.txt")).toBe("Rapor ğüş.txt");
-		expect(downloadName("../../etc/passwd")).toBe("_.._etc_passwd");
-		expect(downloadName("C:\\Windows\\evil.bat")).toBe("C__Windows_evil.bat");
-		expect(downloadName(".bashrc")).toBe("bashrc");
-		expect(downloadName("invoice\u202efdp.exe")).toBe("invoicefdp.exe");
-		expect(downloadName('say "hi"\r\n.txt')).toBe("say _hi___.txt");
-		expect(downloadName(null)).toBe("attachment");
-		expect(downloadName("  ...  ")).toBe("attachment");
+		expect(fileName("plan.pdf")).toBe("plan.pdf");
+		expect(fileName("Rapor ğüş.txt")).toBe("Rapor ğüş.txt");
+		expect(fileName("../../etc/passwd")).toBe("_.._etc_passwd");
+		expect(fileName("C:\\Windows\\evil.bat")).toBe("C__Windows_evil.bat");
+		expect(fileName(".bashrc")).toBe("bashrc");
+		expect(fileName("invoice\u202efdp.exe")).toBe("invoicefdp.exe");
+		expect(fileName('say "hi"\r\n.txt')).toBe("say _hi___.txt");
+		expect(fileName(null)).toBe("attachment");
+		expect(fileName("  ...  ")).toBe("attachment");
+		expect(fileName(". .bashrc")).toBe("bashrc");
+		expect(fileName("..  ..env")).toBe("env");
+		expect(fileName("report\u061c.pdf")).toBe("report.pdf");
+		expect(fileName("notes.txt  ")).toBe("notes.txt");
 		// Cut by character, so one outside the first plane stays whole.
-		const long = downloadName("😀".repeat(MAX_FILE_NAME + 10));
+		const long = fileName("😀".repeat(MAX_FILE_NAME + 10));
 		expect(Array.from(long)).toHaveLength(MAX_FILE_NAME);
 		expect(long).toBe("😀".repeat(MAX_FILE_NAME));
 	});

@@ -473,14 +473,16 @@ export async function originalMessage(
 
 /**
  * One of a message's attachments, by its place among them as `attachments` lists them, for a caller
- * who may read the mailbox; null for anyone else, and for a place that holds nothing.
+ * who may read the mailbox; null for anyone else, and for a place that holds nothing. A file over
+ * `maxBytes` isn't given, only its size, and isn't noted as read.
  */
 export async function openAttachment(
 	slug: string,
 	mailboxId: string,
 	messageId: string,
 	index: number,
-): Promise<SentFile | null> {
+	maxBytes = Number.POSITIVE_INFINITY,
+): Promise<SentFile | { tooLarge: number } | null> {
 	if (!Number.isSafeInteger(index) || index < 0) return null;
 	const box = await openMailbox(slug, mailboxId);
 	if (!box) return null;
@@ -491,14 +493,12 @@ export async function openAttachment(
 	const email = await PostalMime.parse(object.body);
 	const attachment = email.attachments[index];
 	if (!attachment) return null;
-	await noteRead(box, row, "attachment.read");
 	const { content } = attachment;
-	return {
-		name: attachment.filename,
-		type: attachment.mimeType,
-		bytes:
-			typeof content === "string" ? new TextEncoder().encode(content) : new Uint8Array(content),
-	};
+	const bytes =
+		typeof content === "string" ? new TextEncoder().encode(content) : new Uint8Array(content);
+	if (bytes.byteLength > maxBytes) return { tooLarge: bytes.byteLength };
+	await noteRead(box, row, "attachment.read");
+	return { name: attachment.filename, type: attachment.mimeType, bytes };
 }
 
 /**
@@ -515,7 +515,7 @@ export async function messageAttachment(
 		const file = /^\d{1,4}$/.test(place)
 			? await openAttachment(slug, mailboxId, messageId, Number(place))
 			: null;
-		return file ? fileDownload(file) : notFound();
+		return file && "bytes" in file ? fileDownload(file) : notFound();
 	});
 }
 

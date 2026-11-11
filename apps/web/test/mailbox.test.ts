@@ -540,6 +540,13 @@ describe("a message's attachments", () => {
 			NOTES,
 			"page.html",
 		]);
+		// The page names each file as its download will be saved.
+		const messagePage = await mail.fetch(`${origin}/${box.slug}/mailboxes/${box.mailboxId}/${id}`, {
+			headers: owner.headers,
+		});
+		const shown = await messagePage.text();
+		expect(shown).toContain("Rapor _ön_ ğüş 2026.txt");
+		expect(shown).toContain(`/api/mail/${box.slug}/${box.mailboxId}/${id}/attachments/1`);
 
 		const pdf = await mail.fetch(path(0), { headers: owner.headers });
 		expect(pdf.status).toBe(200);

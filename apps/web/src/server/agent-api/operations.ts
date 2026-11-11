@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { MAX_AGENT_ADDRESS_DAYS } from "../../lib/agent-addresses";
+import { fileName } from "../../lib/file-names";
 import {
 	type ListedMessage,
 	MAX_QUERY_SENT,
@@ -8,7 +9,6 @@ import {
 	type ThreadCursor,
 } from "../../lib/mailbox";
 import {
-	MAX_ATTACHMENT_BYTES,
 	MAX_ATTACHMENTS,
 	MAX_FILE_NAME,
 	MAX_HTML,
@@ -119,6 +119,12 @@ const cursorInput = z
 const idInput = z.string().min(1).max(100);
 /** The highest place a file is asked for by: more than any message carries. */
 const MAX_ATTACHMENT_INDEX = 9999;
+/**
+ * The largest file get_attachment gives. An MCP answer carries its Base64 twice, as text and as
+ * structured content, and a name outside Latin-1 makes each of those strings two bytes a character:
+ * past this, one answer would take a good part of the Worker's 128 MB.
+ */
+const MAX_AGENT_FILE = 5 * 1024 * 1024;
 const addressInput = z.string().trim().min(3).max(254).toLowerCase();
 const addressesInput = z.array(addressInput).max(MAX_RECIPIENTS);
 const textInput = z
@@ -352,7 +358,7 @@ const readEmail = operation({
 const getAttachment = operation({
 	name: "get_attachment",
 	title: "Get attachment",
-	description: `Gives one file attached to a message, by its place in read_email's attachments, counted from 0: its name, type and bytes in Base64, as send_email and reply take a file. A file larger than ${MAX_ATTACHMENT_BYTES / (1024 * 1024)} MB is refused. ${UNTRUSTED} A file's name, type and bytes are the sender's too.`,
+	description: `Gives one file attached to a message, by its place in read_email's attachments, counted from 0: its name, type and bytes in Base64, as send_email and reply take a file. A file larger than ${MAX_AGENT_FILE / (1024 * 1024)} MB is refused. ${UNTRUSTED} A file's name, type and bytes are the sender's too.`,
 	input: z.object({
 		mailbox: mailboxInput,
 		messageId: idInput,
@@ -371,17 +377,18 @@ const getAttachment = operation({
 	refusals: [409],
 	async run(access, { mailbox, messageId, index }) {
 		const box = await findMailbox(access, mailbox);
-		const file = await access.attachment(box.id, messageId, index);
-		if (!file)
+		const file = await access.attachment(box.id, messageId, index, MAX_AGENT_FILE);
+		if (!file) {
 			throw new ApiError("No such message in this mailbox, or no file at that place.", 404);
-		if (file.bytes.byteLength > MAX_ATTACHMENT_BYTES) {
+		}
+		if (!("bytes" in file)) {
 			throw new ApiError(
-				`That file is larger than the ${MAX_ATTACHMENT_BYTES / (1024 * 1024)} MB get_attachment gives.`,
+				`That file is ${Math.ceil(file.tooLarge / (1024 * 1024))} MB, larger than the ${MAX_AGENT_FILE / (1024 * 1024)} MB get_attachment gives.`,
 				409,
 			);
 		}
 		return {
-			filename: file.name,
+			filename: fileName(file.name),
 			contentType: file.type,
 			size: file.bytes.byteLength,
 			content: base64Of(file.bytes),

@@ -174,7 +174,7 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     only when no browser runs that type (images, PDF, plain text, office files and the like), and
     anything else, HTML and SVG among them, as `application/octet-stream`. Its name loses what
     would make it a path, a hidden file or a control, and the marks that turn text around, which
-    could make `invoice[RLO]fdp.exe` look like a PDF. Nothing previews on Mail's origin. Who reads it is decided per mailbox (below). Anyone else, a
+    could make `invoice[RLO]fdp.exe` look like a PDF (`lib/file-names.ts`), and the page shows each file by that name, as it will be saved. Nothing previews on Mail's origin. An agent's `get_attachment` gives the same file, by the same name, in Base64, up to 5 MB: an MCP answer carries it twice. Who reads it is decided per mailbox (below). Anyone else, a
     non-member, or a mailbox of another workspace, gets the same "not found" as a missing one, and
     the mailbox is checked against the caller's workspace in D1 before its object is asked
     anything.

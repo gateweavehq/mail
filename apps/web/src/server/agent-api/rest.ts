@@ -172,10 +172,9 @@ async function inputOf(
 
 function fromQuery(value: string, type: unknown): unknown {
 	if (type === "boolean" && (value === "true" || value === "false")) return value === "true";
-	if ((type === "integer" || type === "number") && /^-?\d+(?:\.\d+)?$/.test(value)) {
-		return Number(value);
-	}
-	return value;
+	// An integer only from digits, so that a path's `1.0` is refused as the download route refuses it.
+	const numeral = type === "integer" ? /^-?\d+$/ : type === "number" ? /^-?\d+(?:\.\d+)?$/ : null;
+	return numeral?.test(value) ? Number(value) : value;
 }
 
 /** What a browser asks before it calls a route from another site. */

@@ -149,7 +149,11 @@ export const OUTPUTS = {
 		thread: threadOutput.optional(),
 	}),
 	get_attachment: z.looseObject({
-		filename: z.string().nullable().describe("The name its sender gave it; null for none."),
+		filename: z
+			.string()
+			.describe(
+				'The name to save it under: its sender\'s, without path parts, controls or marks that turn text around; "attachment" when it had none.',
+			),
 		contentType: z.string().describe("The type its sender stated, which proves nothing."),
 		size: z.number(),
 		content: z.string().describe("The file's bytes, in Base64."),

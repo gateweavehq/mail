@@ -187,8 +187,8 @@ export function accessFor(slug: string, key: string): MailAccess {
 			unlessPaused(await openThread(slug, mailboxId, threadId, before)),
 		message: async (mailboxId, messageId, reading) =>
 			unlessPaused(await openMessage(slug, mailboxId, messageId, reading)),
-		attachment: async (mailboxId, messageId, index) =>
-			unlessPaused(await openAttachment(slug, mailboxId, messageId, index)),
+		attachment: async (mailboxId, messageId, index, maxBytes) =>
+			unlessPaused(await openAttachment(slug, mailboxId, messageId, index, maxBytes)),
 		addresses: (mailboxId, action: AgentAddressAction | null) =>
 			ask(
 				mailboxPath(mailboxId, "addresses"),
