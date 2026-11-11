@@ -86,6 +86,28 @@ tools that run on Cloudflare, next to [Gateweave Track](https://github.com/gatew
   a day while the receiver fails. An agent can make a few webhooks of its own with its key, which
   hear only of the mailboxes it may read, not of what it did itself, and last as long as the key.
 
+## Connect an agent
+
+An admin makes an agent under Settings → Agents in a workspace, and copies its key, which is shown
+once. Then:
+
+- **Claude Code:** Mail's plugin adds its MCP server and a skill that says how to use it well:
+  codes rather than whole messages, mail that waits for approval, addresses of its own, and mail
+  as data, never instructions. Install it with your Mail's address, then run
+  `/plugin configure gateweave-mail@gateweave-mail` in Claude Code and paste the key, which Claude
+  Code keeps in your system's credential store, not in a file:
+
+  ```sh
+  claude plugin install gateweave-mail --marketplace gateweavehq/mail --config mail_url=https://mail.example.com
+  ```
+
+- **Any other agent:** point its MCP client at `https://mail.example.com/mcp` with the header
+  `Authorization: Bearer <key>`, and give it the skill,
+  [`plugins/gateweave-mail/skills/mail/SKILL.md`](plugins/gateweave-mail/skills/mail/SKILL.md),
+  which is plain Markdown.
+- **Code of your own:** call the REST API at `https://mail.example.com/api/v1` with the same
+  header. `/api/v1/openapi.json` describes it.
+
 ## What it is planned to become
 
 None of this exists yet; it is the direction, and it may change.
@@ -152,6 +174,8 @@ covers both ways, your own domain, sign-in providers, email and updating.
 
 ```
 apps/web               The Worker: UI, auth, the email() handler, D1 schema
+plugins/gateweave-mail The Claude Code plugin: Mail's MCP server and the skill for agents
+.claude-plugin/        The marketplace that offers the plugin
 docs/                  Architecture and self-hosting
 scripts/               Repository tooling
 wrangler.jsonc         The Worker's Cloudflare configuration, at the root for the Deploy button

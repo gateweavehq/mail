@@ -1,0 +1,11 @@
+{
+	"mcpServers": {
+		"mail": {
+			"type": "http",
+			"url": "${user_config.mail_url}/mcp",
+			"headers": {
+				"Authorization": "Bearer ${user_config.mail_key}"
+			}
+		}
+	}
+}

@@ -11,7 +11,8 @@
 			"!pnpm-lock.yaml",
 			"!**/routeTree.gen.ts",
 			"!**/worker-configuration.d.ts",
-			"!**/migrations/meta"
+			"!**/migrations/meta",
+			"!**/SKILL.md"
 		]
 	},
 	"formatter": {

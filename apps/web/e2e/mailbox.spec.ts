@@ -782,11 +782,13 @@ test("an admin makes an agent, gives it a mailbox, and its key reads the mail un
 	await page.getByRole("button", { name: "Create agent" }).click();
 	const key = await page.getByLabel("Agent key").inputValue();
 	expect(key).toMatch(/^gwm_/);
-	// The MCP server the page names takes the key.
+	// The MCP server the page names takes the key, and the plugin's command is for this Mail, with
+	// no key in it.
 	const mcpUrl = new URL("/mcp", page.url()).href;
+	await expect(page.getByText(mcpUrl, { exact: true })).toBeVisible();
 	await expect(
 		page.getByText(
-			`claude mcp add --transport http gateweave-mail ${mcpUrl} --header "Authorization: Bearer ${key}"`,
+			`claude plugin install gateweave-mail --marketplace gateweavehq/mail --config mail_url=${new URL(page.url()).origin}`,
 		),
 	).toBeVisible();
 	const started = await request.post(mcpUrl, {

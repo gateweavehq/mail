@@ -1,0 +1,13 @@
+{
+	"name": "gateweave-mail",
+	"description": "Gateweave Mail's plugin for Claude Code: a skill for agents and Mail's MCP server, connected with an agent's key.",
+	"owner": { "name": "Gateweave", "url": "https://gateweave.com" },
+	"plugins": [
+		{
+			"name": "gateweave-mail",
+			"source": "./plugins/gateweave-mail",
+			"category": "productivity",
+			"tags": ["email", "agents", "mcp"]
+		}
+	]
+}

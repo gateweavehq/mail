@@ -422,6 +422,16 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     "verify", in the subject or a line of the text, or one set apart in the lines after, or else
     the only line in the message that is a code alone; null rather than a guess. Its patterns run
     in time linear in the text, as a stranger writes the text.
+
+    How an agent should use all this is a skill, `plugins/gateweave-mail/skills/mail/SKILL.md`,
+    plain Markdown any agent can follow, which the Claude Code plugin beside it carries with the
+    MCP server. The plugin asks for Mail's address and the key when it is installed, and keeps the
+    key in the system's credential store (`userConfig`, `sensitive`), so it is in no file. The
+    repository's `.claude-plugin/marketplace.json` offers the plugin, so
+    `claude plugin install gateweave-mail --marketplace gateweavehq/mail` installs it, whichever
+    Mail it is for. `agent-api/skill.test.ts` holds the skill to the operations: every tool it
+    names exists, every tool is in it, each route it gives is that tool's, and the inputs it
+    tells an agent to pass are ones the tools take.
   - **Webhooks** (`server/webhooks/`, ported from Track). A webhook posts each message a
     mailbox receives, and what becomes of mail it sends, to a URL of the workspace's, such as an
     agent's trigger, so that an agent hears of mail without waiting for it. Owners and admins
