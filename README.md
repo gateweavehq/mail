@@ -74,7 +74,9 @@ tools that run on Cloudflare, next to [Gateweave Track](https://github.com/gatew
   and what it wrote that waits to be tried again waits for a person instead. Each agent has a
   page of its own that shows what it wrote, what of that waits for approval, and what came to
   the addresses it made, and a log of what it did with its keys, each message it read included,
-  and what people changed about it, kept for 90 days.
+  and what people changed about it, kept for 90 days. The workspace's home lists its agents
+  first, for owners and admins: each one's addresses, what it sent, held and read in the last
+  day, and the last thing it did.
 - **Webhooks.** Mail posts each message a mailbox receives to a URL of yours, such as an agent's
   trigger, signed per [Standard Webhooks](https://www.standardwebhooks.com), with who sent it and
   what it is about but not what it says. It tells of mail you send too: held for approval,

@@ -5,10 +5,12 @@ import { Button } from "#/components/ui/button";
 import { Checkbox } from "#/components/ui/checkbox";
 import { Input } from "#/components/ui/input";
 import { Label } from "#/components/ui/label";
+import { AgentsAtAGlance } from "#/components/workspace/agents-glance";
 import { ConfirmDialog } from "#/components/workspace/confirm-dialog";
 import { isAdminRole, useMyRole, useWorkspace } from "#/components/workspace/context";
 import { accessSummary, MailboxAccessDialog } from "#/components/workspace/mailbox-access";
 import { Notice } from "#/components/workspace/notice";
+import { getAgentsAtAGlance } from "#/lib/agents";
 import { formatShortDate } from "#/lib/dates";
 import {
 	changeDirectory,
@@ -20,14 +22,22 @@ import {
 import { useDocumentTitle } from "#/lib/title";
 
 export const Route = createFileRoute("/$workspace/")({
-	loader: ({ params }) => getDirectory({ data: params.workspace }),
+	loader: async ({ params }) => {
+		// The agents are for owners and admins, and null for anyone else. Failing, they leave the
+		// mailboxes be.
+		const [directory, agents] = await Promise.all([
+			getDirectory({ data: params.workspace }),
+			getAgentsAtAGlance({ data: params.workspace }).catch(() => null),
+		]);
+		return { directory, agents };
+	},
 	component: WorkspaceHome,
 });
 
 function WorkspaceHome() {
 	const { name, slug } = useWorkspace();
 	const admin = isAdminRole(useMyRole());
-	const data = Route.useLoaderData();
+	const { directory: data, agents } = Route.useLoaderData();
 	useDocumentTitle("Home");
 
 	if (!data) {
@@ -45,6 +55,8 @@ function WorkspaceHome() {
 			<header className="space-y-1">
 				<h1 className="text-xl font-semibold tracking-tight">{name}</h1>
 			</header>
+
+			{admin && agents && <AgentsAtAGlance key={slug} initial={agents} />}
 
 			{data.mailboxes.length === 0 && (
 				<section className="space-y-3 rounded-lg border p-6">

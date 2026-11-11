@@ -36,6 +36,7 @@ import { Route as ApiWebhooksWorkspaceRouteImport } from './routes/api/webhooks/
 import { Route as WorkspaceMailboxesMailboxIndexRouteImport } from './routes/$workspace/mailboxes.$mailbox.index'
 import { Route as WorkspaceMailboxesMailboxMessageRouteImport } from './routes/$workspace/mailboxes.$mailbox.$message'
 import { Route as WorkspaceSettingsAgentsAgentRouteImport } from './routes/$workspace/settings.agents_.$agent'
+import { Route as ApiAgentsWorkspaceIndexRouteImport } from './routes/api/agents/$workspace.index'
 import { Route as ApiInboundResendChannelRouteImport } from './routes/api/inbound/resend.$channel'
 import { Route as WorkspaceMailboxesMailboxThreadsThreadRouteImport } from './routes/$workspace/mailboxes.$mailbox.threads.$thread'
 import { Route as ApiAgentsWorkspaceAgentIndexRouteImport } from './routes/api/agents/$workspace.$agent.index'
@@ -194,6 +195,11 @@ const WorkspaceSettingsAgentsAgentRoute =
     path: '/agents/$agent',
     getParentRoute: () => WorkspaceSettingsRoute,
   } as any)
+const ApiAgentsWorkspaceIndexRoute = ApiAgentsWorkspaceIndexRouteImport.update({
+  id: '/api/agents/$workspace/',
+  path: '/api/agents/$workspace/',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiInboundResendChannelRoute = ApiInboundResendChannelRouteImport.update({
   id: '/api/inbound/resend/$channel',
   path: '/api/inbound/resend/$channel',
@@ -301,6 +307,7 @@ export interface FileRoutesByFullPath {
   '/$workspace/settings/agents/$agent': typeof WorkspaceSettingsAgentsAgentRoute
   '/api/inbound/resend/$channel': typeof ApiInboundResendChannelRoute
   '/$workspace/mailboxes/$mailbox/': typeof WorkspaceMailboxesMailboxIndexRoute
+  '/api/agents/$workspace/': typeof ApiAgentsWorkspaceIndexRoute
   '/$workspace/mailboxes/$mailbox/threads/$thread': typeof WorkspaceMailboxesMailboxThreadsThreadRoute
   '/api/agents/$workspace/$agent/log': typeof ApiAgentsWorkspaceAgentLogRoute
   '/api/mail/$workspace/$mailbox/addresses': typeof ApiMailWorkspaceMailboxAddressesRoute
@@ -341,6 +348,7 @@ export interface FileRoutesByTo {
   '/$workspace/settings/agents/$agent': typeof WorkspaceSettingsAgentsAgentRoute
   '/api/inbound/resend/$channel': typeof ApiInboundResendChannelRoute
   '/$workspace/mailboxes/$mailbox': typeof WorkspaceMailboxesMailboxIndexRoute
+  '/api/agents/$workspace': typeof ApiAgentsWorkspaceIndexRoute
   '/$workspace/mailboxes/$mailbox/threads/$thread': typeof WorkspaceMailboxesMailboxThreadsThreadRoute
   '/api/agents/$workspace/$agent/log': typeof ApiAgentsWorkspaceAgentLogRoute
   '/api/mail/$workspace/$mailbox/addresses': typeof ApiMailWorkspaceMailboxAddressesRoute
@@ -384,6 +392,7 @@ export interface FileRoutesById {
   '/$workspace/settings/agents_/$agent': typeof WorkspaceSettingsAgentsAgentRoute
   '/api/inbound/resend/$channel': typeof ApiInboundResendChannelRoute
   '/$workspace/mailboxes/$mailbox/': typeof WorkspaceMailboxesMailboxIndexRoute
+  '/api/agents/$workspace/': typeof ApiAgentsWorkspaceIndexRoute
   '/$workspace/mailboxes/$mailbox/threads/$thread': typeof WorkspaceMailboxesMailboxThreadsThreadRoute
   '/api/agents/$workspace/$agent/log': typeof ApiAgentsWorkspaceAgentLogRoute
   '/api/mail/$workspace/$mailbox/addresses': typeof ApiMailWorkspaceMailboxAddressesRoute
@@ -428,6 +437,7 @@ export interface FileRouteTypes {
     | '/$workspace/settings/agents/$agent'
     | '/api/inbound/resend/$channel'
     | '/$workspace/mailboxes/$mailbox/'
+    | '/api/agents/$workspace/'
     | '/$workspace/mailboxes/$mailbox/threads/$thread'
     | '/api/agents/$workspace/$agent/log'
     | '/api/mail/$workspace/$mailbox/addresses'
@@ -468,6 +478,7 @@ export interface FileRouteTypes {
     | '/$workspace/settings/agents/$agent'
     | '/api/inbound/resend/$channel'
     | '/$workspace/mailboxes/$mailbox'
+    | '/api/agents/$workspace'
     | '/$workspace/mailboxes/$mailbox/threads/$thread'
     | '/api/agents/$workspace/$agent/log'
     | '/api/mail/$workspace/$mailbox/addresses'
@@ -510,6 +521,7 @@ export interface FileRouteTypes {
     | '/$workspace/settings/agents_/$agent'
     | '/api/inbound/resend/$channel'
     | '/$workspace/mailboxes/$mailbox/'
+    | '/api/agents/$workspace/'
     | '/$workspace/mailboxes/$mailbox/threads/$thread'
     | '/api/agents/$workspace/$agent/log'
     | '/api/mail/$workspace/$mailbox/addresses'
@@ -540,6 +552,7 @@ export interface RootRouteChildren {
   ApiV1SplatRoute: typeof ApiV1SplatRoute
   ApiWebhooksWorkspaceRoute: typeof ApiWebhooksWorkspaceRoute
   ApiInboundResendChannelRoute: typeof ApiInboundResendChannelRoute
+  ApiAgentsWorkspaceIndexRoute: typeof ApiAgentsWorkspaceIndexRoute
   ApiAgentsWorkspaceAgentLogRoute: typeof ApiAgentsWorkspaceAgentLogRoute
   ApiMailWorkspaceMailboxAddressesRoute: typeof ApiMailWorkspaceMailboxAddressesRoute
   ApiMailWorkspaceMailboxOutboxRoute: typeof ApiMailWorkspaceMailboxOutboxRoute
@@ -744,6 +757,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof WorkspaceSettingsAgentsAgentRouteImport
       parentRoute: typeof WorkspaceSettingsRoute
     }
+    '/api/agents/$workspace/': {
+      id: '/api/agents/$workspace/'
+      path: '/api/agents/$workspace'
+      fullPath: '/api/agents/$workspace/'
+      preLoaderRoute: typeof ApiAgentsWorkspaceIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/inbound/resend/$channel': {
       id: '/api/inbound/resend/$channel'
       path: '/api/inbound/resend/$channel'
@@ -902,6 +922,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiV1SplatRoute: ApiV1SplatRoute,
   ApiWebhooksWorkspaceRoute: ApiWebhooksWorkspaceRoute,
   ApiInboundResendChannelRoute: ApiInboundResendChannelRoute,
+  ApiAgentsWorkspaceIndexRoute: ApiAgentsWorkspaceIndexRoute,
   ApiAgentsWorkspaceAgentLogRoute: ApiAgentsWorkspaceAgentLogRoute,
   ApiMailWorkspaceMailboxAddressesRoute: ApiMailWorkspaceMailboxAddressesRoute,
   ApiMailWorkspaceMailboxOutboxRoute: ApiMailWorkspaceMailboxOutboxRoute,

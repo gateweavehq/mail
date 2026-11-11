@@ -1036,6 +1036,13 @@ test("an admin lets an agent make addresses, and the workspace's page says which
 	await access.getByLabel(`${SORTER} can send`).check();
 	await access.getByRole("button", { name: "Save" }).click();
 	await expect(access).toBeHidden();
+	// The home lists the agent first, for an admin, with what it holds and did.
+	const glance = page
+		.getByRole("list", { name: "Agents" })
+		.getByRole("listitem")
+		.filter({ hasText: SORTER });
+	await expect(glance.getByText("No addresses of its own")).toBeVisible();
+	await expect(glance.getByText("Hasn't used its key yet")).toBeVisible();
 
 	// It makes one with its key, for a sign-up, and mail to it arrives.
 	const made = await request.post(`/api/mail/${slug}/${mailboxId}/addresses`, {
@@ -1061,6 +1068,10 @@ test("an admin lets an agent make addresses, and the workspace's page says which
 		},
 	);
 	expect(delivered.status()).toBe(200);
+
+	// The home, still open, sees it within a look, with no reload: it asks every 15 seconds.
+	await expect(glance.getByText("Holds 1 address")).toBeVisible({ timeout: 20_000 });
+	await expect(glance.getByText(/^Last made an address, /)).toBeVisible();
 
 	// The workspace's page lists it with who made it, and when it ends.
 	await page.reload();
