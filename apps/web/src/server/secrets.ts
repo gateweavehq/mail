@@ -1,4 +1,14 @@
 // Ported from Gateweave Agents (packages/registry/src/secrets.ts), with Mail's own salt.
+import { fromBase64, toBase64 } from "./base64";
+import {
+	keysFor,
+	MIN_KEY_BYTES,
+	type SecretsKey,
+	type SecretsKeySettings,
+	secretsKeys,
+} from "./secrets-key";
+
+export { fromBase64, toBase64 };
 
 /**
  * Secrets Mail keeps for a workspace, such as its Resend key. Each is encrypted with AES-256-GCM
@@ -6,8 +16,11 @@
  * workspace's rows cannot be opened with another's key. The additional data names the secret's
  * place, so a sealed value copied into another row does not open there.
  *
- * Secrets sealed with a `SECRETS_KEY` are lost if it changes. Sealed values start with a version,
- * so a later scheme (or a second key, for rotation) can sit beside this one.
+ * A sealed value names the key it was sealed with (`v2.<key id>.<iv>.<data>`). One sealed before
+ * keys had ids (`v1.<iv>.<data>`) is opened with the current key or the previous one. After the
+ * key changes, with the old one kept as `SECRETS_KEY_PREVIOUS`, the daily run seals each value
+ * again under the new key (`reseal-secrets.ts`). Secrets under a key the deployment no longer has
+ * are lost.
  */
 
 export interface Sealer {
@@ -16,54 +29,78 @@ export interface Sealer {
 	open(place: string, sealed: string): Promise<string>;
 }
 
-const VERSION = "v1";
 const SALT = new TextEncoder().encode("gateweave-mail/secrets/v1");
-const MIN_KEY_BYTES = 32;
 
-/** A sealer for one workspace, or why this deployment cannot keep secrets. */
-export async function sealerFor(
-	secretsKey: string | undefined,
-	scope: string,
-): Promise<Sealer | { unavailable: string }> {
-	const secret = secretsKey ? fromBase64(secretsKey) : null;
-	if (!secret) return { unavailable: "This server has no SECRETS_KEY, so it can't keep keys." };
-	if (secret.length < MIN_KEY_BYTES) {
-		return { unavailable: `This server's SECRETS_KEY is shorter than ${MIN_KEY_BYTES} bytes.` };
-	}
-	const base = await crypto.subtle.importKey("raw", secret, "HKDF", false, ["deriveKey"]);
-	const key = await crypto.subtle.deriveKey(
+/** The key for one workspace's secrets, from one of the deployment's keys. */
+function scopedKey(key: SecretsKey, scope: string): Promise<CryptoKey> {
+	return crypto.subtle.deriveKey(
 		{ name: "HKDF", hash: "SHA-256", salt: SALT, info: new TextEncoder().encode(scope) },
-		base,
+		key.hkdf,
 		{ name: "AES-GCM", length: 256 },
 		false,
 		["encrypt", "decrypt"],
 	);
+}
+
+/** A sealed value's parts, or null when it is no sealed value this server knows. */
+function parse(
+	sealed: string,
+): { id: string | null; iv: Uint8Array<ArrayBuffer>; data: Uint8Array<ArrayBuffer> } | null {
+	const parts = sealed.split(".");
+	const [version] = parts;
+	const [id, iv, data] =
+		version === "v2" && parts.length === 4
+			? [parts[1] ?? null, parts[2], parts[3]]
+			: version === "v1" && parts.length === 3
+				? [null, parts[1], parts[2]]
+				: [];
+	const ivBytes = iv ? fromBase64(iv) : null;
+	const dataBytes = data ? fromBase64(data) : null;
+	if (!ivBytes || !dataBytes || (version === "v2" && !id)) return null;
+	return { id: id ?? null, iv: ivBytes, data: dataBytes };
+}
+
+/** A sealer for one workspace, or why this deployment cannot keep secrets. */
+export async function sealerFor(
+	settings: SecretsKeySettings,
+	scope: string,
+): Promise<Sealer | { unavailable: string }> {
+	if (!settings.SECRETS_KEY) {
+		return { unavailable: "This server has no SECRETS_KEY, so it can't keep keys." };
+	}
+	const keys = await secretsKeys(settings);
+	const current = keys.current;
+	if (!current) {
+		return { unavailable: `This server's SECRETS_KEY is shorter than ${MIN_KEY_BYTES} bytes.` };
+	}
+	const sealing = scopedKey(current, scope);
 	return {
 		async seal(place, plaintext) {
 			const iv = crypto.getRandomValues(new Uint8Array(12));
 			const sealed = await crypto.subtle.encrypt(
 				{ name: "AES-GCM", iv, additionalData: new TextEncoder().encode(place) },
-				key,
+				await sealing,
 				new TextEncoder().encode(plaintext),
 			);
-			return `${VERSION}.${toBase64(iv)}.${toBase64(new Uint8Array(sealed))}`;
+			return `v2.${current.id}.${toBase64(iv)}.${toBase64(new Uint8Array(sealed))}`;
 		},
 		async open(place, sealed) {
-			const [version, iv, data] = sealed.split(".");
-			const ivBytes = iv ? fromBase64(iv) : null;
-			const dataBytes = data ? fromBase64(data) : null;
-			if (version !== VERSION || !ivBytes || !dataBytes) throw new Error("Not a sealed secret");
-			try {
-				const plaintext = await crypto.subtle.decrypt(
-					{ name: "AES-GCM", iv: ivBytes, additionalData: new TextEncoder().encode(place) },
-					key,
-					dataBytes,
-				);
-				return new TextDecoder().decode(plaintext);
-			} catch {
-				// WebCrypto's own error says nothing useful, and nothing about the secret should leak.
-				throw new Error("A secret could not be opened");
+			const parts = parse(sealed);
+			if (!parts) throw new Error("Not a sealed secret");
+			for (const key of keysFor(keys, parts.id)) {
+				try {
+					const plaintext = await crypto.subtle.decrypt(
+						{ name: "AES-GCM", iv: parts.iv, additionalData: new TextEncoder().encode(place) },
+						await scopedKey(key, scope),
+						parts.data,
+					);
+					return new TextDecoder().decode(plaintext);
+				} catch {
+					// Another key may open it, when its seal doesn't say which.
+				}
 			}
+			// WebCrypto's own error says nothing useful, and nothing about the secret should leak.
+			throw new Error("A secret could not be opened");
 		},
 	};
 }
@@ -71,22 +108,3 @@ export async function sealerFor(
 /** Whether this is a sealer rather than the reason there is none. */
 export const isSealer = (value: Sealer | { unavailable: string }): value is Sealer =>
 	!("unavailable" in value);
-
-/** URL-safe base64, unpadded. */
-export function toBase64(bytes: Uint8Array): string {
-	let binary = "";
-	for (const byte of bytes) binary += String.fromCharCode(byte);
-	return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
-}
-
-/** Standard or URL-safe base64, padded or not; null when it is not base64. */
-export function fromBase64(text: string): Uint8Array<ArrayBuffer> | null {
-	const standard = text.trim().replaceAll("-", "+").replaceAll("_", "/").replace(/=+$/, "");
-	if (!/^[A-Za-z0-9+/]*$/.test(standard)) return null;
-	try {
-		const binary = atob(standard.padEnd(Math.ceil(standard.length / 4) * 4, "="));
-		return Uint8Array.from(binary, (char) => char.charCodeAt(0));
-	} catch {
-		return null;
-	}
-}

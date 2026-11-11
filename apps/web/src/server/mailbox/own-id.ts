@@ -13,7 +13,7 @@
  * signed, or under a `BETTER_AUTH_SECRET` since changed, still keep their threads. Only `isOwnId`
  * asks, and it says no to those.
  */
-import { toBase64 } from "../secrets";
+import { toBase64 } from "../base64";
 
 const SALT = new TextEncoder().encode("gateweave-mail/own-id/v1");
 /** 128 bits: enough that a guess never passes, short enough to leave room in `References`. */

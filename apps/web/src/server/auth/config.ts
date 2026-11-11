@@ -43,7 +43,7 @@ export interface AuthConfig {
 	removeMailboxes?: ((workspaceId: string, mailboxIds: string[]) => Promise<void>) | undefined;
 	/** Removes a deleted workspace's webhooks. Each clears itself when it finds the workspace gone. */
 	removeWebhooks?: ((workspaceId: string) => Promise<void>) | undefined;
-	/** What workspaces' provider keys need. Without `secretsKey`, none can be added. */
+	/** What workspaces' provider keys need. Without `secrets`, none can be added. */
 	providers?: ProviderSettings | undefined;
 }
 

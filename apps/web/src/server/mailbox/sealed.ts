@@ -12,20 +12,26 @@
  * are, and the object must be exactly as long as they make it.
  *
  * Mail kept before this, or by a deployment without a `SECRETS_KEY`, has no seal and is read as it
- * is, until the mailbox's alarm seals it (`resealing.ts`). Sealed mail is lost when `SECRETS_KEY`
- * changes. A seal starts with its version, so another
- * scheme, or a second key for rotation, can sit beside this one.
+ * is, until the mailbox's alarm seals it (`resealing.ts`). A seal names the key it was made with
+ * (`v2.<key id>.<salt>`), so mail sealed under the key before the current one opens with
+ * `SECRETS_KEY_PREVIOUS`. A seal from before keys had ids (`v1.<salt>`) opens with either, the
+ * current key tried first. Mail under a key the deployment no longer has is lost.
  */
-import { fromBase64, toBase64 } from "../secrets";
+import { fromBase64, toBase64 } from "../base64";
+import {
+	canSealWith,
+	keysFor,
+	type SecretsKey,
+	type SecretsKeySettings,
+	secretsKeys,
+} from "../secrets-key";
 
 /** How much of a message each sealed chunk holds. */
 export const SEALED_CHUNK = 64 * 1024;
 /** What AES-GCM adds to each chunk. */
 const TAG = 16;
 const STRIDE = SEALED_CHUNK + TAG;
-const VERSION = "v1";
 const SALT_BYTES = 16;
-const MIN_KEY_BYTES = 32;
 const INFO = "gateweave-mail/raw-mail/v1 ";
 const LAST = Uint8Array.of(1);
 const NOT_LAST = Uint8Array.of(0);
@@ -45,8 +51,8 @@ export type RawRef = {
 /**
  * Sealed mail that doesn't open. `no-key`: the server has no `SECRETS_KEY` to open it with, which
  * setting one may mend, so what reads it may try again. `unopened`: it was changed, cut or moved,
- * or `SECRETS_KEY` isn't the one it was sealed with, which trying again won't mend. Its message
- * says which, and never anything of the mail.
+ * or neither the server's `SECRETS_KEY` nor its `SECRETS_KEY_PREVIOUS` is the one it was sealed
+ * with, which trying again won't mend. Its message says which, and never anything of the mail.
  */
 export class SealError extends Error {
 	override name = "SealError";
@@ -70,58 +76,72 @@ function nonce(index: number): Uint8Array<ArrayBuffer> {
 	return iv;
 }
 
-/** The bytes of a `SECRETS_KEY` long enough to seal with, or null. */
-function usable(secretsKey: string | undefined): Uint8Array<ArrayBuffer> | null {
-	const bytes = secretsKey ? fromBase64(secretsKey) : null;
-	return bytes && bytes.length >= MIN_KEY_BYTES ? bytes : null;
-}
-
-/** The HKDF key for the deployment's `SECRETS_KEY`, made once for the isolate. */
-let base: { secretsKey: string; key: Promise<CryptoKey> } | null = null;
-
-function baseKey(secretsKey: string | undefined): Promise<CryptoKey> | null {
-	if (!secretsKey) return null;
-	if (base?.secretsKey !== secretsKey) {
-		const bytes = usable(secretsKey);
-		if (!bytes) return null;
-		base = {
-			secretsKey,
-			key: crypto.subtle.importKey("raw", bytes, "HKDF", false, ["deriveKey"]),
-		};
+/** A seal's parts: the id of the key it was made with, null for seals from before ids, and its salt. */
+function parsed(seal: string): { id: string | null; salt: Uint8Array<ArrayBuffer> } {
+	const parts = seal.split(".");
+	const [version] = parts;
+	const [id, salt] =
+		version === "v2" && parts.length === 3
+			? [parts[1] ?? "", parts[2]]
+			: version === "v1" && parts.length === 2
+				? [null, parts[1]]
+				: [];
+	const saltBytes = salt ? fromBase64(salt) : null;
+	if (id === "" || !saltBytes || saltBytes.length !== SALT_BYTES) {
+		throw new SealError("This mail's seal is of no kind this server knows");
 	}
-	return base.key;
+	return { id: id ?? null, salt: saltBytes };
 }
 
-/** The key one object is sealed with. */
-async function objectKey(
-	secretsKey: string | undefined,
+/** One object's own key, from one of the deployment's keys. */
+function objectKey(
+	key: SecretsKey,
+	object: string,
+	salt: Uint8Array<ArrayBuffer>,
+): Promise<CryptoKey> {
+	return crypto.subtle.deriveKey(
+		{ name: "HKDF", hash: "SHA-256", salt, info: new TextEncoder().encode(INFO + object) },
+		key.hkdf,
+		{ name: "AES-GCM", length: 256 },
+		false,
+		["encrypt", "decrypt"],
+	);
+}
+
+/** The keys an object may open with, the likeliest first: one, unless its seal names none. */
+async function openingKeys(
+	settings: SecretsKeySettings,
 	object: string,
 	seal: string,
-): Promise<CryptoKey> {
-	const key = baseKey(secretsKey);
-	if (!key) {
+): Promise<CryptoKey[]> {
+	const keys = await secretsKeys(settings);
+	if (!keys.current && !keys.previous) {
 		throw new SealError(
 			"This mail is sealed, and the server has no SECRETS_KEY to open it",
 			"no-key",
 		);
 	}
-	const [version, salt, ...rest] = seal.split(".");
-	const saltBytes = salt ? fromBase64(salt) : null;
-	if (version !== VERSION || rest.length > 0 || !saltBytes || saltBytes.length !== SALT_BYTES) {
-		throw new SealError("This mail's seal is of no kind this server knows");
+	const { id, salt } = parsed(seal);
+	const found = keysFor(keys, id);
+	if (found.length === 0) {
+		throw new SealError("This mail is sealed under a SECRETS_KEY this server doesn't have");
 	}
-	return crypto.subtle.deriveKey(
-		{
-			name: "HKDF",
-			hash: "SHA-256",
-			salt: saltBytes,
-			info: new TextEncoder().encode(INFO + object),
-		},
-		await key,
-		{ name: "AES-GCM", length: 256 },
-		false,
-		["encrypt", "decrypt"],
-	);
+	return Promise.all(found.map((key) => objectKey(key, object, salt)));
+}
+
+/** The key new mail is sealed with: the current one, which its seal must name. */
+async function sealingKey(
+	settings: SecretsKeySettings,
+	object: string,
+	seal: string,
+): Promise<CryptoKey> {
+	const { current } = await secretsKeys(settings);
+	if (!current) {
+		throw new SealError("This mail is to be sealed, and the server has no SECRETS_KEY", "no-key");
+	}
+	const { id, salt } = parsed(seal);
+	if (id !== current.id) throw new Error("New mail is sealed only under the current SECRETS_KEY");
+	return objectKey(current, object, salt);
 }
 
 /** Seals mail of exactly `size` bytes, chunk by chunk, as it passes. */
@@ -248,20 +268,21 @@ export interface RawRange {
  */
 export class RawMail {
 	readonly #bucket: R2Bucket;
-	readonly #secretsKey: string | undefined;
+	readonly #keys: SecretsKeySettings;
 
-	constructor(bucket: R2Bucket, secretsKey: string | undefined) {
+	constructor(bucket: R2Bucket, keys: SecretsKeySettings) {
 		this.#bucket = bucket;
-		this.#secretsKey = secretsKey;
+		this.#keys = keys;
 	}
 
 	/**
 	 * A seal for mail about to be written, which its row keeps, or null when this server keeps mail
 	 * as it comes, having no `SECRETS_KEY` long enough to seal with.
 	 */
-	newSeal(): string | null {
-		if (!usable(this.#secretsKey)) {
-			if (this.#secretsKey && !warned) {
+	async newSeal(): Promise<string | null> {
+		const { current } = await secretsKeys(this.#keys);
+		if (!current) {
+			if (this.#keys.SECRETS_KEY && !warned) {
 				warned = true;
 				console.warn(
 					"raw mail: SECRETS_KEY isn't 32 or more bytes of base64, so mail is kept unencrypted",
@@ -269,12 +290,12 @@ export class RawMail {
 			}
 			return null;
 		}
-		return `${VERSION}.${toBase64(crypto.getRandomValues(new Uint8Array(SALT_BYTES)))}`;
+		return `v2.${current.id}.${toBase64(crypto.getRandomValues(new Uint8Array(SALT_BYTES)))}`;
 	}
 
 	/** Whether this server has a `SECRETS_KEY` long enough to seal with. */
 	canSeal(): boolean {
-		return usable(this.#secretsKey) !== null;
+		return canSealWith(this.#keys);
 	}
 
 	/**
@@ -286,7 +307,7 @@ export class RawMail {
 	 */
 	async sealedCopy(from: RawRef, object: string): Promise<string | null> {
 		if (typeof from.seal === "string") throw new Error("This mail is already sealed");
-		const seal = this.newSeal();
+		const seal = await this.newSeal();
 		if (seal === null) return null;
 		const found = await this.get(from);
 		if (!found) throw new SealError("Stored mail is missing");
@@ -319,7 +340,7 @@ export class RawMail {
 		}
 		let key: CryptoKey;
 		try {
-			key = await objectKey(this.#secretsKey, ref.object, ref.seal);
+			key = await sealingKey(this.#keys, ref.object, ref.seal);
 		} catch (error) {
 			if (typeof mail !== "string") await mail.cancel().catch(() => {});
 			throw error;
@@ -336,7 +357,8 @@ export class RawMail {
 	 * A message's mail, or the part of it `range` names, as it was written, and the whole mail's
 	 * size. Null when R2 doesn't have it. Sealed mail that doesn't open throws a `SealError`: under
 	 * another key, or changed at its start, before anything is returned; changed further on, by
-	 * erroring the stream there.
+	 * erroring the stream there. Mail whose seal names no key is opened with each key in turn, read
+	 * from R2 again when the first doesn't open it.
 	 */
 	async get(
 		ref: RawRef,
@@ -346,7 +368,7 @@ export class RawMail {
 			const object = await this.#bucket.get(ref.object, range ? { range } : undefined);
 			return object && { body: object.body, size: object.size };
 		}
-		const key = await objectKey(this.#secretsKey, ref.object, ref.seal);
+		const keys = await openingKeys(this.#keys, ref.object, ref.seal);
 		const count = chunkCount(ref.size);
 		const start = Math.min(range?.offset ?? 0, ref.size);
 		const end = range ? Math.min(ref.size, start + range.length) : ref.size;
@@ -354,25 +376,30 @@ export class RawMail {
 		const last = Math.max(first, Math.min(Math.ceil(end / SEALED_CHUNK) - 1, count - 1));
 		const whole = first === 0 && last === count - 1;
 		const offset = first * STRIDE;
-		const object = await this.#bucket.get(
-			ref.object,
-			whole
-				? undefined
-				: {
-						range: { offset, length: Math.min(sealedSize(ref.size), (last + 1) * STRIDE) - offset },
-					},
-		);
-		if (!object) return null;
-		if (object.size !== sealedSize(ref.size)) {
-			await object.body.cancel().catch(() => {});
-			throw new SealError("Stored mail isn't as long as its message");
+		const length = Math.min(sealedSize(ref.size), (last + 1) * STRIDE) - offset;
+		for (const [at, key] of keys.entries()) {
+			const object = await this.#bucket.get(
+				ref.object,
+				whole ? undefined : { range: { offset, length } },
+			);
+			if (!object) return null;
+			if (object.size !== sealedSize(ref.size)) {
+				await object.body.cancel().catch(() => {});
+				throw new SealError("Stored mail isn't as long as its message");
+			}
+			try {
+				return {
+					body: await started(
+						object.body.pipeThrough(opening(key, ref.size, { first, last, start, end })),
+					),
+					size: ref.size,
+				};
+			} catch (error) {
+				// Its first chunk didn't open under this key: the next may be the one it was sealed with.
+				if (!(error instanceof SealError) || at === keys.length - 1) throw error;
+			}
 		}
-		return {
-			body: await started(
-				object.body.pipeThrough(opening(key, ref.size, { first, last, start, end })),
-			),
-			size: ref.size,
-		};
+		throw new SealError("This mail is sealed under a SECRETS_KEY this server doesn't have");
 	}
 
 	/** Like `get`, all read. Read here rather than by a `Response`, so a `SealError` stays one. */
@@ -399,5 +426,5 @@ export class RawMail {
 }
 
 /** The deployment's raw mail. */
-export const rawMail = (env: { RAW_MAIL: R2Bucket; SECRETS_KEY?: string }) =>
-	new RawMail(env.RAW_MAIL, env.SECRETS_KEY);
+export const rawMail = (env: { RAW_MAIL: R2Bucket } & SecretsKeySettings) =>
+	new RawMail(env.RAW_MAIL, env);

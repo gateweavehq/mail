@@ -153,10 +153,29 @@ pnpm wrangler secret put SECRETS_KEY
 ```
 
 Wrangler never shows a secret again. **Mail encrypted under one `SECRETS_KEY` can't be read under
-another**, so changing or losing it loses that mail, and the workspaces' Resend keys (see
-[Email](#email)) with it. A key shorter than 32 bytes, or not base64, encrypts nothing, and the
-Worker's log says so. Once mail is encrypted, update Mail forward only: a version from before
-encryption can't read it.
+another**, so losing it loses that mail, and the workspaces' Resend keys (see [Email](#email))
+with it. A key shorter than 32 bytes, or not base64, encrypts nothing, and the Worker's log says
+so. Once mail is encrypted, update Mail forward only: a version from before encryption can't read
+it, and one from before key changes can't read what a later version encrypted.
+
+**Changing the key.** To replace `SECRETS_KEY`, as when it may have leaked, keep the old one as
+`SECRETS_KEY_PREVIOUS` first, then set the new one:
+
+```sh
+pnpm wrangler secret put SECRETS_KEY_PREVIOUS   # the key you have now
+openssl rand -base64 32
+pnpm wrangler secret put SECRETS_KEY            # the new one
+```
+
+From then on, everything new is encrypted under the new key, and what is under the old one still
+opens. The daily Cron Trigger encrypts the workspaces' Resend keys and webhook secrets again under
+the new key, and the Worker's log says how many with a `secrets:` line, as
+`{"resealed":3,"unopened":0,"left":0}`. Mail already in R2 stays under the old key for now, so
+**keep `SECRETS_KEY_PREVIOUS` set**: removing it loses that mail, and so does changing the key a
+second time, as there is room for one previous key only. An `unopened` count is a secret that
+neither key opens, which only adding that workspace's key again mends. Setting a new key without
+`SECRETS_KEY_PREVIOUS` loses everything under the old one, as losing it does, and mail that
+arrives before `SECRETS_KEY_PREVIOUS` is set can be searched by its headers only.
 
 R2 storage and Durable Object storage are billed past what the plan includes: see
 [R2 pricing](https://developers.cloudflare.com/r2/pricing/) and
@@ -189,6 +208,7 @@ because `wrangler.jsonc` sets `keep_vars`.
 | `MAILBOX_BYTES`            | How many bytes one mailbox may hold, as a whole number. Unset: 1 GiB.                                              |
 | `SEND_PER_DAY`             | How many messages one workspace may send from its mailboxes a day, as a whole number. Unset: 200.                  |
 | `SECRETS_KEY`              | Encrypts mail in R2 and workspaces' keys: 32 random bytes, base64. See [Where mail is kept](#where-mail-is-kept).  |
+| `SECRETS_KEY_PREVIOUS`     | The previous `SECRETS_KEY`, which only opens what it encrypted. See [Where mail is kept](#where-mail-is-kept).     |
 | `EMAIL_SENDING_ACCOUNT_ID` | Your account ID, with the token below, so that removing a suppression also clears Email Service's own list.        |
 | `EMAIL_SENDING_API_TOKEN`  | An API token for that account with Email Sending: Edit. See [Email](#email), under Suppressions.                   |
 | `LEGAL_NOTICE_URL`         | The address of your legal notice. See [below](#your-legal-pages).                                                  |
@@ -277,8 +297,9 @@ removing it in Resend's dashboard takes it off Mail's when the workspace's mail 
 unless Resend said it again since. A key
 that may only send still sends, but Mail then learns nothing of bounces or complaints, and can't
 take an address off Resend's list: the page says to do that in Resend.
-Keep `SECRETS_KEY` as it is: the keys sealed with it can't be opened with another, and would have
-to be added again. Resend's own limits and quotas apply to that account.
+Change `SECRETS_KEY` only as [Where mail is kept](#where-mail-is-kept) says, keeping the old one as
+`SECRETS_KEY_PREVIOUS`: the keys sealed with it can't be opened with another, and would have to be
+added again. Resend's own limits and quotas apply to that account.
 
 Such a domain can receive through Resend too. In Resend, turn on receiving for the domain and add
 the MX record it shows; as a domain's mail goes to one place, use a subdomain when the domain

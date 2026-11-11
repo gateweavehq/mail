@@ -335,10 +335,12 @@ export async function startMail(
 		bucket,
 		/** The Worker's `BETTER_AUTH_SECRET`, to check what it signs. */
 		secret,
-		/** Runs the Worker's Cron Trigger once, as Cloudflare would. */
-		async runScheduled() {
+		/** Runs the Worker's Cron Trigger once, as Cloudflare would, in one copy of the Worker. */
+		async runScheduled(isolate = 0) {
+			const name = names[isolate];
+			if (!name) throw new Error(`There are only ${names.length} isolates`);
 			// Miniflare's Fetcher type leaves out the scheduled() workerd adds to every Worker stub.
-			const worker = (await mf.getWorker(names[0])) as unknown as {
+			const worker = (await mf.getWorker(name)) as unknown as {
 				scheduled(event: { cron: string; scheduledTime: Date }): Promise<unknown>;
 			};
 			await worker.scheduled({ cron: "29 3 * * *", scheduledTime: new Date() });

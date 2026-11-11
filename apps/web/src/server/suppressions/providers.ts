@@ -5,10 +5,11 @@ import { schema } from "../db";
 import { clearEmailSendingSuppressions, type EmailSendingApi } from "../providers/email-sending";
 import { openProviderKey } from "../providers/keys";
 import { removeResendSuppression } from "../providers/resend";
+import type { SecretsKeySettings } from "../secrets-key";
 
 /** What Mail may reach of the providers' own lists. */
 export interface ProviderLists {
-	secretsKey: string | undefined;
+	secrets: SecretsKeySettings;
 	resendApi: string;
 	/** Null when the deployment gave Mail no token for Email Service's list. */
 	emailSending: EmailSendingApi | null;
@@ -57,7 +58,7 @@ export async function unlistAtProviders(
 	const resend = async (): Promise<ProviderUnlisting[]> => {
 		if (!clear.resend) return [];
 		try {
-			const opened = await openProviderKey(db, lists.secretsKey, workspaceId, "resend");
+			const opened = await openProviderKey(db, lists.secrets, workspaceId, "resend");
 			// Without a key nothing goes through Resend, and its list can't be reached.
 			if (!opened.ok) return [];
 			const outcome = await removeResendSuppression(lists.resendApi, opened.key, address);

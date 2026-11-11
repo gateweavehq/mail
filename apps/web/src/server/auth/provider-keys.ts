@@ -19,6 +19,7 @@ import {
 } from "../providers/keys";
 import { checkResendKey, RESEND_API } from "../providers/resend";
 import { isSealer, sealerFor } from "../secrets";
+import type { SecretsKeySettings } from "../secrets-key";
 import { toRole } from "../workspaces";
 
 /**
@@ -28,8 +29,11 @@ import { toRole } from "../workspaces";
  */
 
 export interface ProviderSettings {
-	/** The deployment's `SECRETS_KEY`, which seals the keys. Without it none can be added. */
-	secretsKey?: string | undefined;
+	/**
+	 * The deployment's `SECRETS_KEY`, which seals the keys, and `SECRETS_KEY_PREVIOUS`. Without the
+	 * first none can be added.
+	 */
+	secrets?: SecretsKeySettings | undefined;
 	/** Resend's API, when it isn't Resend's own. */
 	resendApi?: string | undefined;
 	/**
@@ -83,7 +87,7 @@ export function providerKeys({ db, settings }: { db: Database; settings: Provide
 				async (ctx) => {
 					const { organizationId } = ctx.query;
 					await requireAdmin(organizationId, ctx.context.session.user.id);
-					const sealer = await sealerFor(settings.secretsKey, organizationId);
+					const sealer = await sealerFor(settings.secrets ?? {}, organizationId);
 					return ctx.json({
 						unavailable: isSealer(sealer) ? null : sealer.unavailable,
 						key: await providerKeyInfo(db, organizationId, ctx.query.provider),
@@ -104,11 +108,11 @@ export function providerKeys({ db, settings }: { db: Database; settings: Provide
 					const { organizationId, key } = ctx.body;
 					const userId = ctx.context.session.user.id;
 					await requireAdmin(organizationId, userId);
-					const sealer = await sealerFor(settings.secretsKey, organizationId);
+					const sealer = await sealerFor(settings.secrets ?? {}, organizationId);
 					if (!isSealer(sealer)) throw new APIError("BAD_REQUEST", { message: sealer.unavailable });
 					const check = await checkResendKey(api, key);
 					if (!check.ok) throw new APIError("BAD_REQUEST", { message: check.error });
-					const saved = await saveProviderKey(db, settings.secretsKey, {
+					const saved = await saveProviderKey(db, settings.secrets ?? {}, {
 						workspaceId: organizationId,
 						provider: ctx.body.provider,
 						key,
@@ -132,7 +136,7 @@ export function providerKeys({ db, settings }: { db: Database; settings: Provide
 					await requireAdmin(organizationId, ctx.context.session.user.id);
 					const opened = await openProviderKey(
 						db,
-						settings.secretsKey,
+						settings.secrets ?? {},
 						organizationId,
 						ctx.body.provider,
 					);

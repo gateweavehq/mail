@@ -81,7 +81,7 @@ function buildAuth() {
 		removeMailboxes,
 		removeWebhooks,
 		providers: {
-			secretsKey: env.SECRETS_KEY,
+			secrets: env,
 			resendApi: env.RESEND_API_URL,
 			afterKeySet: async (workspaceId) => {
 				const [{ webhookForNewKey }, { appOrigin }] = await Promise.all([

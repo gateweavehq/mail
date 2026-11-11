@@ -65,9 +65,9 @@ const text = (bytes: Uint8Array | null) => Buffer.from(bytes ?? []).toString("la
 
 async function sealedMail(size: number, object = "w/m/a.eml") {
 	const store = memoryBucket();
-	const raw = new RawMail(store.bucket, KEY);
+	const raw = new RawMail(store.bucket, { SECRETS_KEY: KEY });
 	const mail = new Uint8Array(randomBytes(size));
-	const ref: RawRef = { object, size, seal: raw.newSeal() };
+	const ref: RawRef = { object, size, seal: await raw.newSeal() };
 	await raw.put(ref, pieces(mail, 1000));
 	return { ...store, raw, mail, ref };
 }
@@ -75,10 +75,10 @@ async function sealedMail(size: number, object = "w/m/a.eml") {
 describe("sealed raw mail", () => {
 	it("keeps none of the mail in the bucket, and reads it back byte for byte", async () => {
 		const store = memoryBucket();
-		const raw = new RawMail(store.bucket, KEY);
+		const raw = new RawMail(store.bucket, { SECRETS_KEY: KEY });
 		const mail = "From: a@example.org\r\nSubject: The quarterly numbers\r\n\r\nThey are good.\r\n";
-		const ref: RawRef = { object: "w/m/a.eml", size: mail.length, seal: raw.newSeal() };
-		expect(ref.seal).toMatch(/^v1\.[\w-]{22}$/);
+		const ref: RawRef = { object: "w/m/a.eml", size: mail.length, seal: await raw.newSeal() };
+		expect(ref.seal).toMatch(/^v2\.[\w-]{11}\.[\w-]{22}$/);
 		await raw.put(ref, mail);
 		const stored = store.objects.get(ref.object);
 		expect(stored?.length).toBe(sealedSize(mail.length));
@@ -162,10 +162,10 @@ describe("sealed raw mail", () => {
 
 	it("doesn't open one message's mail as another's, or under another name", async () => {
 		const store = memoryBucket();
-		const raw = new RawMail(store.bucket, KEY);
+		const raw = new RawMail(store.bucket, { SECRETS_KEY: KEY });
 		const mail = "From: a@example.org\r\n\r\nSame length.\r\n";
-		const first: RawRef = { object: "w/m/a.eml", size: mail.length, seal: raw.newSeal() };
-		const second: RawRef = { object: "w/m/b.eml", size: mail.length, seal: raw.newSeal() };
+		const first: RawRef = { object: "w/m/a.eml", size: mail.length, seal: await raw.newSeal() };
+		const second: RawRef = { object: "w/m/b.eml", size: mail.length, seal: await raw.newSeal() };
 		await raw.put(first, mail);
 		await raw.put(second, mail);
 		const firstSealed = store.objects.get(first.object) ?? new Uint8Array();
@@ -182,31 +182,102 @@ describe("sealed raw mail", () => {
 
 	it("opens only under the SECRETS_KEY it was sealed with, and says so without one", async () => {
 		const { bucket, ref } = await sealedMail(100);
-		const other = new RawMail(bucket, randomBytes(32).toString("base64"));
+		const other = new RawMail(bucket, { SECRETS_KEY: randomBytes(32).toString("base64") });
 		// Before anything is returned, so a download fails rather than starts.
 		const unopened = await other.get(ref).catch((error: unknown) => error);
 		expect(unopened).toBeInstanceOf(SealError);
 		expect((unopened as SealError).kind).toBe("unopened");
-		const keyless = await new RawMail(bucket, undefined).get(ref).catch((error: unknown) => error);
+		const keyless = await new RawMail(bucket, {}).get(ref).catch((error: unknown) => error);
 		expect(keyless).toBeInstanceOf(SealError);
 		expect((keyless as SealError).kind).toBe("no-key");
 		expect((keyless as SealError).message).toMatch(/no SECRETS_KEY/);
-		await expect(new RawMail(bucket, KEY).get({ ...ref, seal: "v2.x" })).rejects.toThrow(
-			/no kind this server knows/,
-		);
+		await expect(
+			new RawMail(bucket, { SECRETS_KEY: KEY }).get({ ...ref, seal: "v2.x" }),
+		).rejects.toThrow(/no kind this server knows/);
+	});
+
+	describe("after SECRETS_KEY changes", () => {
+		const NEW = randomBytes(32).toString("base64");
+		/** Each read R2 is asked for, to see how many a key that doesn't open costs. */
+		const counted = (bucket: R2Bucket) => {
+			const reads: string[] = [];
+			const wrapped = {
+				get: (key: string, options?: R2GetOptions) => {
+					reads.push(key);
+					return bucket.get(key, options);
+				},
+			} as unknown as R2Bucket;
+			return { reads, wrapped };
+		};
+
+		it("names the key in each seal, and opens mail under the old one with SECRETS_KEY_PREVIOUS", async () => {
+			const { bucket, ref, mail } = await sealedMail(70_000);
+			const rotated = new RawMail(bucket, { SECRETS_KEY: NEW, SECRETS_KEY_PREVIOUS: KEY });
+			expect(text(await rotated.bytes(ref))).toBe(text(mail));
+			// Without the old key it is lost, which nothing can mend.
+			const lost = await new RawMail(bucket, { SECRETS_KEY: NEW }).get(ref).catch((e) => e);
+			expect(lost).toBeInstanceOf(SealError);
+			expect((lost as SealError).kind).toBe("unopened");
+			expect((lost as SealError).message).toMatch(/SECRETS_KEY this server doesn't have/);
+			// New mail goes under the new key, which the seal names.
+			const fresh = await rotated.newSeal();
+			expect(fresh?.split(".")[1]).not.toBe(ref.seal?.split(".")[1]);
+		});
+
+		it("opens a seal from before keys had ids under either key, the current one first", async () => {
+			const { bucket, ref, mail } = await sealedMail(100);
+			const [, , salt] = (ref.seal ?? "").split(".");
+			const old = { ...ref, seal: `v1.${salt}` };
+			const same = counted(bucket);
+			expect(text(await new RawMail(same.wrapped, { SECRETS_KEY: KEY }).bytes(old))).toBe(
+				text(mail),
+			);
+			expect(same.reads).toHaveLength(1);
+			// Sealed under what is now the previous key: read once with each.
+			const both = counted(bucket);
+			const rotated = new RawMail(both.wrapped, { SECRETS_KEY: NEW, SECRETS_KEY_PREVIOUS: KEY });
+			expect(text(await rotated.bytes(old))).toBe(text(mail));
+			expect(both.reads).toHaveLength(2);
+			// And a part of it, as search reads.
+			expect(text(await rotated.bytes(old, { offset: 10, length: 20 }))).toBe(
+				text(mail.subarray(10, 30)),
+			);
+			await expect(new RawMail(bucket, { SECRETS_KEY: NEW }).get(old)).rejects.toThrow(SealError);
+		});
+
+		it("seals new mail only under the current key", async () => {
+			const store = memoryBucket();
+			const before = await new RawMail(store.bucket, { SECRETS_KEY: KEY }).newSeal();
+			const rotated = new RawMail(store.bucket, { SECRETS_KEY: NEW, SECRETS_KEY_PREVIOUS: KEY });
+			await expect(
+				rotated.put({ object: "w/m/a.eml", size: 5, seal: before }, "Hello"),
+			).rejects.toThrow(/only under the current SECRETS_KEY/);
+			expect(store.objects.size).toBe(0);
+		});
+
+		it("takes the previous key as unset when it is the current one", async () => {
+			const { bucket, ref, mail } = await sealedMail(100);
+			const same = new RawMail(bucket, { SECRETS_KEY: KEY, SECRETS_KEY_PREVIOUS: KEY });
+			expect(text(await same.bytes(ref))).toBe(text(mail));
+			expect((await same.newSeal())?.split(".")[1]).toBe(ref.seal?.split(".")[1]);
+		});
 	});
 
 	it("keeps mail as it comes without a SECRETS_KEY to seal with, and reads mail kept so", async () => {
 		const store = memoryBucket();
-		expect(new RawMail(store.bucket, undefined).newSeal()).toBeNull();
-		expect(new RawMail(store.bucket, randomBytes(16).toString("base64")).newSeal()).toBeNull();
-		const plain = new RawMail(store.bucket, undefined);
+		expect(await new RawMail(store.bucket, {}).newSeal()).toBeNull();
+		expect(
+			await new RawMail(store.bucket, {
+				SECRETS_KEY: randomBytes(16).toString("base64"),
+			}).newSeal(),
+		).toBeNull();
+		const plain = new RawMail(store.bucket, {});
 		const mail = "From: a@example.org\r\n\r\nKept as it came.\r\n";
 		const ref: RawRef = { object: "w/m/a.eml", size: mail.length, seal: null };
 		await plain.put(ref, pieces(new TextEncoder().encode(mail), 7));
 		expect(text(store.objects.get(ref.object) ?? null)).toBe(mail);
 		// A server that seals reads what was kept before it did.
-		const sealing = new RawMail(store.bucket, KEY);
+		const sealing = new RawMail(store.bucket, { SECRETS_KEY: KEY });
 		expect(text(await sealing.bytes(ref))).toBe(mail);
 		expect(text(await sealing.bytes(ref, { offset: 5, length: 4 }))).toBe(mail.slice(5, 9));
 		// A row from an object older than sealing, during a deploy, has no seal at all.
@@ -223,18 +294,18 @@ describe("sealed raw mail", () => {
 			},
 		});
 		const ref: RawRef = { object: "w/m/a.eml", size: 5, seal: "v1.AAAAAAAAAAAAAAAAAAAAAA" };
-		await expect(new RawMail(store.bucket, undefined).put(ref, mail)).rejects.toThrow(SealError);
+		await expect(new RawMail(store.bucket, {}).put(ref, mail)).rejects.toThrow(SealError);
 		expect(cancelled).toBe(true);
 		expect(store.objects.size).toBe(0);
 	});
 
 	it("refuses mail that isn't as long as it was said to be", async () => {
 		const store = memoryBucket();
-		const raw = new RawMail(store.bucket, KEY);
+		const raw = new RawMail(store.bucket, { SECRETS_KEY: KEY });
 		const mail = new Uint8Array(randomBytes(SEALED_CHUNK + 10));
 		for (const size of [mail.length - 1, mail.length + 1, SEALED_CHUNK]) {
 			await expect(
-				raw.put({ object: "w/m/a.eml", size, seal: raw.newSeal() }, pieces(mail, 4096)),
+				raw.put({ object: "w/m/a.eml", size, seal: await raw.newSeal() }, pieces(mail, 4096)),
 			).rejects.toThrow();
 		}
 	});
@@ -243,7 +314,7 @@ describe("sealed raw mail", () => {
 		/** Mail of `size` bytes kept as it came, as a row without a seal says. */
 		async function plain(size: number) {
 			const store = memoryBucket();
-			const raw = new RawMail(store.bucket, KEY);
+			const raw = new RawMail(store.bucket, { SECRETS_KEY: KEY });
 			const mail = new Uint8Array(randomBytes(size));
 			const ref: RawRef = { object: "w/m/a.eml", size, seal: null };
 			await raw.put(ref, pieces(mail, 1000));
@@ -254,7 +325,7 @@ describe("sealed raw mail", () => {
 			for (const size of [0, 10, SEALED_CHUNK + 1]) {
 				const { raw, ref, mail, objects } = await plain(size);
 				const seal = await raw.sealedCopy(ref, "w/m/a.sealed.eml");
-				expect(seal).toMatch(/^v1\./);
+				expect(seal).toMatch(/^v2\./);
 				expect(objects.get("w/m/a.eml")).toEqual(mail);
 				expect(objects.get("w/m/a.sealed.eml")?.length).toBe(sealedSize(size));
 				expect(await raw.bytes({ object: "w/m/a.sealed.eml", size, seal })).toEqual(mail);
@@ -263,7 +334,7 @@ describe("sealed raw mail", () => {
 
 		it("does nothing when the server can't seal", async () => {
 			const { ref, objects, bucket } = await plain(10);
-			expect(await new RawMail(bucket, undefined).sealedCopy(ref, "w/m/a.sealed.eml")).toBeNull();
+			expect(await new RawMail(bucket, {}).sealedCopy(ref, "w/m/a.sealed.eml")).toBeNull();
 			expect([...objects.keys()]).toEqual(["w/m/a.eml"]);
 		});
 

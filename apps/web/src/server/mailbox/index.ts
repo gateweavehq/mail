@@ -92,7 +92,7 @@ export async function storeMail(
 		dmarc: judged.dmarc,
 		verifiedDomain: judged.verifiedDomain,
 		cameFor: found.agentMemberId ?? null,
-		seal: raw.newSeal(),
+		seal: await raw.newSeal(),
 	});
 	if (!begun.ok) {
 		await forStoring.cancel();

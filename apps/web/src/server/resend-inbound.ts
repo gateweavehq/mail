@@ -58,7 +58,7 @@ import { removeProviderListed } from "./suppressions";
 export const INBOUND_PATH = "/api/inbound/resend/";
 
 /** Where the webhook's signing secret is sealed, which its sealed value names. */
-const SECRET_PLACE = "resend-inbound/signing-secret";
+export const SECRET_PLACE = "resend-inbound/signing-secret";
 
 /** The largest webhook body read: the event carries addresses and a subject, never content. */
 const MAX_EVENT_BYTES = 256 * 1024;
@@ -115,7 +115,7 @@ export async function ensureWebhook(
 	origin: string,
 	purpose: Purpose,
 ): Promise<SetUp> {
-	const opened = await openProviderKey(db, env.SECRETS_KEY, workspaceId, "resend");
+	const opened = await openProviderKey(db, env, workspaceId, "resend");
 	if (!opened.ok) {
 		return refuse(
 			opened.code === "no_key"
@@ -123,7 +123,7 @@ export async function ensureWebhook(
 				: "The workspace's Resend key can't be read on this server any more. Add it again.",
 		);
 	}
-	const sealer = await sealerFor(env.SECRETS_KEY, workspaceId);
+	const sealer = await sealerFor(env, workspaceId);
 	if (!isSealer(sealer)) return refuse(sealer.unavailable);
 	const { resendInbound } = schema;
 	const check = await checkResendKey(api(), opened.key);
@@ -311,7 +311,7 @@ export async function dropUnusedWebhooks(db: Database, now = Date.now()): Promis
 		.all();
 	for (const { workspaceId, webhookId } of dropped) {
 		if (!webhookId) continue;
-		const opened = await openProviderKey(db, env.SECRETS_KEY, workspaceId, "resend");
+		const opened = await openProviderKey(db, env, workspaceId, "resend");
 		if (opened.ok) await deleteWebhook(api(), opened.key, webhookId);
 	}
 	return dropped.length;
@@ -430,7 +430,7 @@ async function unlistRemoved(
 	// Never after now, so that an event that comes meanwhile still counts as newer.
 	const at = Number.isFinite(time) ? Math.min(time, now) : now;
 	try {
-		const opened = await openProviderKey(db, env.SECRETS_KEY, workspaceId, "resend");
+		const opened = await openProviderKey(db, env, workspaceId, "resend");
 		if (!opened.ok) return answer(204);
 		const sender = await getSentEmailSender(api(), opened.key, source);
 		if (!sender.ok) {
@@ -467,7 +467,7 @@ export async function receiveFromResend(
 	if (read === null) return answer(413);
 	const body = textOf(read);
 
-	const sealer = await sealerFor(env.SECRETS_KEY, row.organizationId);
+	const sealer = await sealerFor(env, row.organizationId);
 	let secret: string;
 	try {
 		if (!isSealer(sealer)) throw new Error(sealer.unavailable);
@@ -598,7 +598,7 @@ async function deliverReceived(
 		).map((domain) => domain.name.toLowerCase()),
 	);
 	if (domains.size === 0) return nobody;
-	const opened = await openProviderKey(db, env.SECRETS_KEY, workspaceId, "resend");
+	const opened = await openProviderKey(db, env, workspaceId, "resend");
 	if (!opened.ok) return later(opened.code);
 	const got = await getReceivedEmail(api(), opened.key, emailId);
 	if (!got.ok) return notGiven(got.failure);

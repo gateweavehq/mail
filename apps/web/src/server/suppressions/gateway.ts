@@ -67,7 +67,7 @@ export async function changeSuppressions(request: Request, slug: string): Promis
 		return answer({ ok: false, error: "It isn't on the list any more.", gone: true }, 404);
 	}
 	const providers = await unlistAtProviders(db, caller.workspaceId, address, clear, {
-		secretsKey: env.SECRETS_KEY,
+		secrets: env,
 		resendApi: env.RESEND_API_URL || RESEND_API,
 		emailSending: emailSendingApi(env),
 	});
