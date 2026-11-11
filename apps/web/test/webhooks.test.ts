@@ -435,6 +435,8 @@ describe("webhooks", () => {
 			},
 			by: writer,
 			recipient: null,
+			// Whoever wrote it said what it is for, which is told as no more than their words.
+			untrusted: expect.stringMatching(/context is what its writer said it is for/),
 		});
 
 		const approved = await outbox(space, world.owner.headers, {

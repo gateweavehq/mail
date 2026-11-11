@@ -83,8 +83,11 @@ export interface SentContext {
 	label: string | null;
 }
 
-// Control characters, and the format characters that can turn text around or hide it.
-const UNSHOWN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
+// Control characters, the format characters that can turn text around or hide it, and the rest
+// that show nothing, such as Hangul fillers and variation selectors.
+const UNSHOWN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/gu;
+// More marks on one character than a script needs, which pile up over the lines around it.
+const PILED = /(\p{M}{4})\p{M}+/gu;
 
 /** A writer's link and label, as they are kept and shown, or why they can't be. */
 export function sentContext(given: { url: string; label?: string | null }): SentContext | string {
@@ -102,7 +105,11 @@ export function sentContext(given: { url: string; label?: string | null }): Sent
 	if (url.username || url.password) {
 		return "The context's url can't carry a user name or password.";
 	}
-	const label = (given.label ?? "").replace(UNSHOWN, " ").replace(/\s+/g, " ").trim();
+	const label = (given.label ?? "")
+		.replace(UNSHOWN, " ")
+		.replace(PILED, "$1")
+		.replace(/\s+/g, " ")
+		.trim();
 	if (label.length > MAX_CONTEXT_LABEL) {
 		return `The context's label can be ${MAX_CONTEXT_LABEL} characters at most.`;
 	}

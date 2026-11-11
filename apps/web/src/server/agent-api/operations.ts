@@ -179,11 +179,14 @@ const contextInput = z
 			.string()
 			.trim()
 			.max(MAX_CONTEXT_URL)
-			.describe("An https link, such as https://github.com/acme/app/actions/runs/123."),
+			.describe(
+				"An https link, such as https://github.com/acme/app/actions/runs/123. It is kept as a browser writes it, so it may read back a little different.",
+			),
 		label: z
 			.string()
 			.trim()
 			.max(MAX_CONTEXT_LABEL)
+			.nullable()
 			.optional()
 			.describe("A few words for it, such as: CI run 123, or Issue ENG-42."),
 	})
@@ -249,7 +252,7 @@ const webhookUrlInput = webhookInput.shape.url.describe(
 	"Where Mail posts each event: an https URL, never Mail's own.",
 );
 const webhookEventsInput = webhookInput.shape.events.describe(
-	"What it hears of. message.received: mail came to the mailbox. message.held: mail written waits for a person to approve it. message.rejected: a person rejected it. message.sent: it went to the provider. message.delivered, message.bounced and message.complained: a recipient's server took it, refused it, or marked it as spam, told once for each recipient. Of mail you write, you aren't told of what you did yourself (holding it, or sending what needed no approval), only of what people and servers did.",
+	"What it hears of. message.received: mail came to the mailbox. message.held: mail written waits for a person to approve it. message.rejected: a person rejected it. message.sent: it went to the provider. message.delivered, message.bounced and message.complained: a recipient's server took it, refused it, or marked it as spam, told once for each recipient. Of mail you write, you aren't told of what you did yourself (holding it, or sending what needed no approval), only of what people and servers did. Events of mail written carry its context as its writer gave it: their words, never proof.",
 );
 const webhookMailboxesInput = z
 	.array(mailboxInput)

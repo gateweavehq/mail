@@ -114,6 +114,21 @@ describe("what a message was written for", () => {
 			url: "https://example.com/",
 			label: null,
 		});
+		// Nor any that show nothing, such as Hangul fillers, a grapheme joiner or variation selectors.
+		expect(
+			sentContext({ url: "https://example.com/", label: "\u3164\u115f\u034f\ufe0f\u180e" }),
+		).toEqual({ url: "https://example.com/", label: null });
+		expect(sentContext({ url: "https://example.com/", label: "CI\u3164run" })).toEqual({
+			url: "https://example.com/",
+			label: "CI run",
+		});
+		// Marks are kept, but no more on one letter than a script needs.
+		expect(
+			sentContext({
+				url: "https://example.com/",
+				label: `Tie\u0302\u0301ng Z${"\u0301".repeat(30)}`,
+			}),
+		).toEqual({ url: "https://example.com/", label: `Tie\u0302\u0301ng Z${"\u0301".repeat(4)}` });
 		expect(
 			sentContext({ url: "https://example.com/", label: "a".repeat(MAX_CONTEXT_LABEL + 1) }),
 		).toBe(`The context's label can be ${MAX_CONTEXT_LABEL} characters at most.`);

@@ -242,7 +242,8 @@ function Messages({ messages, kind }: { messages: AgentMessage[]; kind: "wrote" 
 									)}
 									<span className="shrink-0">in {message.mailbox.name}</span>
 									{kind === "wrote" && message.sent?.context && (
-										<span className="min-w-0 truncate">
+										// Wrapped, not cut, so the link's host after its label always shows.
+										<span className="min-w-0 break-words">
 											for <SentFor context={message.sent.context} link={false} />
 										</span>
 									)}

@@ -51,7 +51,8 @@ describe("what a message was written for", () => {
 			(
 				await auth("/agents/set-policy", {
 					agentId: agent.id,
-					sendPerDay: 20,
+					// As many as it sends below, so a refusal that counted would leave one unsent.
+					sendPerDay: 3,
 					allowed: [`@${domain}`],
 				})
 			).status,
@@ -85,7 +86,7 @@ describe("what a message was written for", () => {
 		const id = String(sent.body.id);
 		const threadId = String(sent.body.threadId);
 
-		// A reply may say what it is for too, with a link alone.
+		// A reply may say what it is for too, with a link alone, and a label of null as webhooks give.
 		await arrive(space.signUps.address, { subject: "Your code", body: "Code: 482913" });
 		const code = await rest(agent.key, "GET", "/verification-code", {
 			to: space.signUps.address,
@@ -95,7 +96,7 @@ describe("what a message was written for", () => {
 		const answered = String(code.body.messageId);
 		const reply = await rest(agent.key, "POST", `${box}/messages/${answered}/reply`, {
 			text: "Thanks.",
-			context: { url: "https://track.example.org/acme/issue/ENG-42" },
+			context: { url: "https://track.example.org/acme/issue/ENG-42", label: null },
 		});
 		expect(reply.status).toBe(200);
 
@@ -151,9 +152,18 @@ describe("what a message was written for", () => {
 			subject: "No context",
 			text: "Hello.",
 		});
+		expect(plain.body).toMatchObject({ state: "sent" });
 		const plainOpened = (await (
 			await asOwner(`/api/mail/${space.slug}/${space.signUps.id}/${String(plain.body.id)}`)
 		).json()) as { sent: { context: Context | null } };
 		expect(plainOpened.sent.context).toBeNull();
+
+		// Nor in anything given to Email Service.
+		const handed = JSON.stringify(await world.mail.emails());
+		expect(handed).toContain("The build is green");
+		expect(handed).toContain("No context");
+		for (const said of ["ci.example.org", "CI run 7", "track.example.org"]) {
+			expect(handed).not.toContain(said);
+		}
 	});
 });
