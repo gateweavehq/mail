@@ -103,14 +103,17 @@ export async function agentsAtAGlance(
 		getAuth().api.listAgents({ query: { organizationId: workspaceId }, headers }),
 		agentsRecently(db, workspaceId, new Date(now - GLANCE_HOURS * 60 * 60 * 1000)),
 	]);
-	return agents.map((agent) => ({
-		id: agent.id,
-		name: agent.name,
-		createdAt: agent.createdAt,
-		paused: agent.paused,
-		liveAddresses: agent.liveAddresses,
-		...(recently.get(agent.memberId) ?? { recent: { sent: 0, held: 0, reads: 0 }, last: null }),
-	}));
+	return agents.map((agent) => {
+		const used = agent.keys.flatMap((key) => (key.lastUsedAt === null ? [] : [key.lastUsedAt]));
+		return {
+			id: agent.id,
+			name: agent.name,
+			paused: agent.paused,
+			liveAddresses: agent.liveAddresses,
+			...(recently.get(agent.memberId) ?? { recent: { sent: 0, held: 0, reads: 0 }, last: null }),
+			keyUsedAt: used.length > 0 ? Math.max(...used) : null,
+		};
+	});
 }
 
 /** The same, as the API's answer, for `GET /api/agents/<workspace>`: JSON, or 404. */

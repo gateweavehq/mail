@@ -23,10 +23,11 @@ import { useDocumentTitle } from "#/lib/title";
 
 export const Route = createFileRoute("/$workspace/")({
 	loader: async ({ params }) => {
-		// The agents are for owners and admins, and null for anyone else.
+		// The agents are for owners and admins, and null for anyone else. Failing, they leave the
+		// mailboxes be.
 		const [directory, agents] = await Promise.all([
 			getDirectory({ data: params.workspace }),
-			getAgentsAtAGlance({ data: params.workspace }),
+			getAgentsAtAGlance({ data: params.workspace }).catch(() => null),
 		]);
 		return { directory, agents };
 	},
@@ -55,7 +56,7 @@ function WorkspaceHome() {
 				<h1 className="text-xl font-semibold tracking-tight">{name}</h1>
 			</header>
 
-			{admin && agents && <AgentsAtAGlance initial={agents} />}
+			{admin && agents && <AgentsAtAGlance key={slug} initial={agents} />}
 
 			{data.mailboxes.length === 0 && (
 				<section className="space-y-3 rounded-lg border p-6">

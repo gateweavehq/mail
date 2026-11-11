@@ -1,15 +1,16 @@
 import { Link } from "@tanstack/react-router";
 import { Bot } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useWorkspace } from "#/components/workspace/context";
-import { AGENT_LOG_DAYS, agentLogVerb } from "#/lib/agent-log";
+import { agentLogVerb } from "#/lib/agent-log";
 import { type AgentGlance, GLANCE_HOURS, getAgentsAtAGlance } from "#/lib/agents";
 import { formatDateTime, formatRelative } from "#/lib/dates";
 
 /** How often the home looks at the agents again while it is in sight, as an agent's page does. */
 const REFRESH_MS = 15_000;
 
-const DAY_MS = 24 * 60 * 60 * 1000;
+// A key used this much after the last thing logged was used for something the log doesn't note.
+const UNLOGGED_USE_MS = 60_000;
 
 const many = (count: number, one: string, more = `${one}s`) =>
 	`${count} ${count === 1 ? one : more}`;
@@ -28,20 +29,28 @@ export function recentSummary({ sent, held, reads }: AgentGlance["recent"]): str
 /**
  * The workspace's agents, for an owner or admin: each one's name, whether it is paused, the
  * addresses it holds and what it did of late, with a link to its page. It looks again every so
- * often while in sight, asking for the agents only, so the rest of the home stays as it is.
+ * often while in sight, asking for the agents only, so the rest of the home stays as it is. Keyed
+ * by the workspace where it is used, so another's home starts from its own.
  */
 export function AgentsAtAGlance({ initial }: { initial: AgentGlance[] }) {
 	const { slug } = useWorkspace();
 	const [agents, setAgents] = useState<AgentGlance[] | null>(initial);
+	// Each answer counts only if nothing newer came since it was asked for: a look that set out
+	// before the page's own reload, or before a later look, is left.
+	const latest = useRef(0);
 	// The page's own reload, as after a change to a mailbox, brings them too.
-	useEffect(() => setAgents(initial), [initial]);
+	useEffect(() => {
+		latest.current += 1;
+		setAgents(initial);
+	}, [initial]);
 	useEffect(() => {
 		let gone = false;
 		const look = async () => {
 			if (document.visibilityState !== "visible") return;
+			const asked = ++latest.current;
 			try {
 				const fresh = await getAgentsAtAGlance({ data: slug });
-				if (!gone) setAgents(fresh);
+				if (!gone && asked === latest.current) setAgents(fresh);
 			} catch {
 				// Offline or a deploy: the next look tries again, and what is shown stays.
 			}
@@ -88,14 +97,25 @@ export function AgentsAtAGlance({ initial }: { initial: AgentGlance[] }) {
 	);
 }
 
-/** The last thing an agent did, and when, or that it did nothing its log still keeps. */
-function lastSummary({ last, createdAt }: AgentGlance) {
-	if (!last) {
-		const old = createdAt < Date.now() - AGENT_LOG_DAYS * DAY_MS;
-		return `Hasn't used its key ${old ? `in ${AGENT_LOG_DAYS} days` : "yet"}`;
+/** The last thing an agent did, and when, then its key's use since, which the log doesn't note. */
+function lastSummary({ last, keyUsedAt }: AgentGlance) {
+	const lines = [];
+	if (last) {
+		const verb = agentLogVerb({ action: last.action, detail: null });
+		lines.push(
+			<p key="last" title={formatDateTime(last.at)}>
+				{`Last ${verb}, ${formatRelative(last.at)}`}
+			</p>,
+		);
 	}
-	const verb = agentLogVerb({ action: last.action, detail: null });
-	return <span title={formatDateTime(last.at)}>{`Last ${verb}, ${formatRelative(last.at)}`}</span>;
+	if (keyUsedAt !== null && keyUsedAt > (last?.at ?? 0) + UNLOGGED_USE_MS) {
+		lines.push(
+			<p key="key" title={formatDateTime(keyUsedAt)}>
+				{`Used its key ${formatRelative(keyUsedAt)}`}
+			</p>,
+		);
+	}
+	return lines.length > 0 ? lines : <p>Hasn't used its key yet</p>;
 }
 
 function AgentGlanceRow({ agent }: { agent: AgentGlance }) {
@@ -132,7 +152,7 @@ function AgentGlanceRow({ agent }: { agent: AgentGlance }) {
 						? `Holds ${many(agent.liveAddresses, "address", "addresses")}`
 						: "No addresses of its own"}
 				</p>
-				<p>{lastSummary(agent)}</p>
+				{lastSummary(agent)}
 			</div>
 		</li>
 	);

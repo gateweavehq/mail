@@ -41,7 +41,6 @@ export const GLANCE_HOURS = 24;
 export interface AgentGlance {
 	id: string;
 	name: string;
-	createdAt: number;
 	paused: AgentInfo["paused"];
 	/** How many addresses it holds now. */
 	liveAddresses: number;
@@ -55,6 +54,11 @@ export interface AgentGlance {
 	};
 	/** The last thing it did with its key, while its log keeps it: null for none. */
 	last: { at: number; action: AgentLogAction } | null;
+	/**
+	 * When one of its keys was last used for anything, refused or not, as the log notes only what
+	 * changed or read something: an agent waiting for mail, or paused and trying, shows here.
+	 */
+	keyUsedAt: number | null;
 }
 
 /**

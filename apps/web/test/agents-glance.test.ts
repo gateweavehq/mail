@@ -20,11 +20,11 @@ type Space = Awaited<ReturnType<typeof workspace>>;
 interface Glance {
 	id: string;
 	name: string;
-	createdAt: number;
 	paused: { at: number; by: string | null } | null;
 	liveAddresses: number;
 	recent: { sent: number; held: number; reads: number };
 	last: { at: number; action: string } | null;
+	keyUsedAt: number | null;
 }
 
 const glanceUrl = (space: Space) => `${origin}/api/agents/${space.slug}`;
@@ -36,9 +36,12 @@ async function glance(space: Space): Promise<Glance[]> {
 	return ((await response.json()) as { agents: Glance[] }).agents;
 }
 
-/** Entries written straight to an agent's log, each `[action, hours ago, by the agent]`. */
+/**
+ * Entries written straight to an agent's log, each `[action, hours ago, by the agent]`, as of a
+ * workspace's, which may be another than the agent's.
+ */
 async function logged(
-	space: Space,
+	space: { workspaceId: string },
 	agent: { memberId: string },
 	entries: [action: string, hoursAgo: number, byAgent?: boolean][],
 ) {
@@ -66,8 +69,10 @@ describe("the agents at a glance", () => {
 		const space = await workspace();
 		// The last one made is the one given the mailbox.
 		const idle = await agentOf(space);
+		const trying = await agentOf(space);
 		const busy = await agentOf(space);
-		const theirs = await agentOf(await workspace());
+		const elsewhere = await workspace();
+		const theirs = await agentOf(elsewhere);
 
 		await logged(space, busy, [
 			["message.sent", 1],
@@ -80,12 +85,20 @@ describe("the agents at a glance", () => {
 			// Too long ago to count.
 			["message.sent", 25],
 			["message.read", 30],
-			// What people did isn't the agent's, however recent.
+			// What people did isn't the agent's, however recent, whatever it says.
 			["message.approved", 0.5, false],
 			["policy.changed", 0.1, false],
+			["message.sent", 0.2, false],
 		]);
-		// What another workspace's agent did is its own.
-		await logged(space, theirs, [["message.sent", 1]]);
+		// Entries of another workspace are its own, whoever's they say they are.
+		await logged(elsewhere, busy, [
+			["message.sent", 1],
+			["message.read", 0.05],
+		]);
+		await logged(elsewhere, theirs, [
+			["message.sent", 1],
+			["message.held", 2],
+		]);
 		// And the agent does something with its key, which is now the last thing it did.
 		const made = await world.mail.fetch(
 			`${origin}/api/v1/mailboxes/${space.signUps.id}/addresses`,
@@ -97,9 +110,15 @@ describe("the agents at a glance", () => {
 		);
 		expect(made.status).toBe(200);
 		expect((await auth("/agents/pause", { agentId: idle.id })).status).toBe(200);
+		// A paused agent that keeps trying uses its key, which its log doesn't note.
+		expect((await auth("/agents/pause", { agentId: trying.id })).status).toBe(200);
+		const refused = await world.mail.fetch(`${origin}/api/v1/mailboxes`, {
+			headers: { authorization: `Bearer ${trying.key}` },
+		});
+		expect(refused.status).toBe(403);
 
 		const agents = await glance(space);
-		expect(agents.map((agent) => agent.id).sort()).toEqual([busy.id, idle.id].sort());
+		expect(agents.map((agent) => agent.id).sort()).toEqual([busy.id, idle.id, trying.id].sort());
 		const shown = agents.find((agent) => agent.id === busy.id);
 		expect(shown).toMatchObject({
 			paused: null,
@@ -115,6 +134,14 @@ describe("the agents at a glance", () => {
 			recent: { sent: 0, held: 0, reads: 0 },
 			// Pausing it was a person's doing.
 			last: null,
+			keyUsedAt: null,
+		});
+		const still = agents.find((agent) => agent.id === trying.id);
+		expect(still).toMatchObject({ recent: { sent: 0, held: 0, reads: 0 }, last: null });
+		expect(Date.now() - (still?.keyUsedAt ?? 0)).toBeLessThan(60_000);
+		expect((await glance(elsewhere)).find((agent) => agent.id === theirs.id)).toMatchObject({
+			recent: { sent: 1, held: 1, reads: 0 },
+			last: { action: "message.sent" },
 		});
 
 		// The home shows them, from the server, before any script runs.
@@ -130,7 +157,10 @@ describe("the agents at a glance", () => {
 		expect(html?.[0]).toContain("In the last day: 2 sent, 1 held for approval, 4 reads");
 		expect(html?.[0]).toContain("Last made an address, just now");
 		expect(html?.[0]).toContain("Hasn&#x27;t used its key yet");
-		expect(html?.[0]).toContain("Paused");
+		expect(html?.[0]).toContain("Used its key just now");
+		// Its key was used as it made the address, which the log noted.
+		expect(html?.[0]?.match(/Used its key/g)).toHaveLength(1);
+		expect(html?.[0]?.match(/>Paused</g)).toHaveLength(2);
 	});
 
 	it("is shown to nobody but the workspace's owners and admins", async () => {
