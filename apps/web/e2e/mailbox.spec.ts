@@ -1,4 +1,5 @@
 import { createHmac } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { createServer, type IncomingHttpHeaders } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { APIRequestContext, Page } from "@playwright/test";
@@ -336,6 +337,14 @@ test("a message's formatting and files go with it, and its copy shows them", asy
 	await expect(message.locator("li")).toHaveText(["one!", "two"]);
 	const attachments = copy.getByRole("region", { name: "Attachments" });
 	await expect(attachments.getByRole("listitem")).toHaveText([/plan\.pdf/]);
+	// The file downloads by itself, as it went, and the page stays where it was.
+	const saved = page.waitForEvent("download");
+	await attachments.getByRole("link", { name: "plan.pdf" }).click();
+	const file = await saved;
+	expect(file.suggestedFilename()).toBe("plan.pdf");
+	const path = await file.path();
+	expect(readFileSync(path, "utf8")).toBe("%PDF-1.4\n%%EOF\n");
+	await expect(page.getByRole("heading", { level: 1, name: "The plan" })).toBeVisible();
 	await copy.getByRole("button", { name: "Show as text" }).click();
 	await expect(copy.getByText("Read **this** first and *soon*")).toBeVisible();
 });

@@ -45,7 +45,7 @@ tools that run on Cloudflare, next to [Gateweave Track](https://github.com/gatew
   one that doesn't exist. Mail for one that does is kept in its mailbox, once even when it arrives
   twice, up to 1 GiB per mailbox, and encrypted in R2 when the server has a `SECRETS_KEY`.
 - **Reading mail.** Whoever may read a mailbox sees its threads, newest news first, and reads
-  their messages, with the attachments listed and the original to download. HTML mail shows in a
+  their messages, with each attachment and the original to download. HTML mail shows in a
   sandbox that runs nothing and loads remote images only when asked, or by themselves for a
   sender the reader allowed by its proved domain. Replies join
   the thread of the message they answer, or of other replies to it, when their subject matches.

@@ -238,6 +238,13 @@ export const originalUrl = (workspace: string, mailbox: string, message: string)
 	`${messageUrl(workspace, mailbox, message)}/original`;
 
 /**
+ * Where one of a message's attachments downloads from, by its place in `attachments`. It is always a
+ * download, never a page: see `server/mailbox/download.ts`.
+ */
+export const attachmentUrl = (workspace: string, mailbox: string, message: string, index: number) =>
+	`${messageUrl(workspace, mailbox, message)}/attachments/${index}`;
+
+/**
  * Where a message's HTML is, as a page for a sandboxed frame. Remote images load only with
  * `images`, since loading them tells the sender the message was opened.
  */
