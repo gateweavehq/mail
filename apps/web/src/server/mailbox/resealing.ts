@@ -42,12 +42,12 @@ export const sealedName = (object: string) =>
 	object.endsWith(".eml") ? `${object.slice(0, -4)}.sealed.eml` : `${object}.sealed`;
 
 /**
- * Not those whose copy may still be read to send or send again: they are sealed once their sending
- * is settled.
+ * Not one being tried right now: it is sealed by a later run, once the try is over. Mail waiting to
+ * be sent, approved or sent again is sealed like the rest, as it may wait for good. Each try reads
+ * the copy through the row, and the original outlives the switch by the grace window.
  */
 const NOT_SENDING = `NOT EXISTS (
-	SELECT 1 FROM outgoing
-	WHERE outgoing.message = message.id AND outgoing.state NOT IN ('sent', 'discarded')
+	SELECT 1 FROM outgoing WHERE outgoing.message = message.id AND outgoing.state = 'sending'
 )`;
 
 /**

@@ -152,9 +152,10 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
       deleted, sealed or begun to be sent while its copy was written is left as it is, and the
       copy deleted; a message deleted while the object switches it has its copy deleted too
       (`remove` reads the row again after deleting). A mailbox removed meanwhile has the
-      copy deleted by the run, or by the prefix delete the daily run repeats. Messages with a
-      send in progress, or waiting, held or uncertain, are left until it is settled, as their copy
-      is read to send; pending messages are not stored yet and are never touched. Mail that is
+      copy deleted by the run, or by the prefix delete the daily run repeats. A message being
+      tried right now is left for a later run; one waiting to be sent, approved or sent again is
+      sealed like the rest, as it may wait for good, and each try reads its copy through the row.
+      Pending messages are not stored yet and are never touched. Mail that is
       missing from R2, or isn't the size its row says, gets `seal_failed_at` and is not tried
       again: nothing clears it, as trying again won't mend it, and the message reads as it did
       (to try it again, set the column to NULL in the object's storage). A failure of R2 itself
