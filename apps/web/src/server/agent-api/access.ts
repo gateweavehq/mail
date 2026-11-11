@@ -8,7 +8,13 @@ import { schema } from "../db";
 import { listDirectory } from "../directory";
 import { addressPolicyOf } from "../directory/agent-address-store";
 import { type AgentAddressAction, agentAddressesAnswer } from "../directory/agent-addresses";
-import { listMessages, listThreads, openMessage, openThread } from "../mailbox/read";
+import {
+	listMessages,
+	listThreads,
+	openAttachment,
+	openMessage,
+	openThread,
+} from "../mailbox/read";
 import { type OutboxAction, outboxAnswer } from "../mailbox/send";
 import { appOrigin } from "../origin";
 import { allowAgentWait } from "../rate-limit";
@@ -181,6 +187,8 @@ export function accessFor(slug: string, key: string): MailAccess {
 			unlessPaused(await openThread(slug, mailboxId, threadId, before)),
 		message: async (mailboxId, messageId, reading) =>
 			unlessPaused(await openMessage(slug, mailboxId, messageId, reading)),
+		attachment: async (mailboxId, messageId, index, maxBytes) =>
+			unlessPaused(await openAttachment(slug, mailboxId, messageId, index, maxBytes)),
 		addresses: (mailboxId, action: AgentAddressAction | null) =>
 			ask(
 				mailboxPath(mailboxId, "addresses"),

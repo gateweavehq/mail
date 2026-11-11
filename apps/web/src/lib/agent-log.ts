@@ -17,7 +17,7 @@ export const MAX_LOGGED_DETAIL = 300;
  * An entry names what it was done to, by id, and a message's subject at most, never what it says.
  */
 export const AGENT_LOG_KINDS = {
-	reads: ["message.read", "code.read", "mail.searched"],
+	reads: ["message.read", "code.read", "attachment.read", "mail.searched"],
 	mail: ["message.sent", "message.held", "message.approved", "message.rejected"],
 	addresses: ["address.made", "address.ended"],
 	webhooks: ["webhook.made", "webhook.changed", "webhook.deleted", "webhook.tested"],
@@ -84,6 +84,8 @@ export function agentLogVerb(entry: Pick<AgentLogEntry, "action" | "detail">): s
 			return "read a message";
 		case "code.read":
 			return "read a code in a message";
+		case "attachment.read":
+			return "downloaded a file from a message";
 		case "mail.searched":
 			return "searched a mailbox";
 		case "message.sent":

@@ -605,6 +605,152 @@ describe("reading a message", () => {
 	});
 });
 
+describe("a message's attachments", () => {
+	const PDF = "JVBERi0xLjQK";
+	const NOTES = 'Rapor "ön" ğüş 2026.txt';
+	const PAGE = '<script>alert("mail")</script>';
+
+	/** A message with a PDF, a text file with a name in UTF-8, and an HTML page, and its files' paths. */
+	async function filed() {
+		const box = await mailboxWithAddress();
+		const boundary = "files";
+		const file = (head: string[], body: string) => [
+			`--${boundary}`,
+			...head,
+			"Content-Transfer-Encoding: base64",
+			"",
+			body,
+		];
+		await kept(
+			box.address,
+			message(box.address, {
+				extra: ["MIME-Version: 1.0", `Content-Type: multipart/mixed; boundary="${boundary}"`],
+				body: [
+					`--${boundary}`,
+					"Content-Type: text/plain; charset=utf-8",
+					"",
+					"Files attached.",
+					...file(
+						[
+							'Content-Type: application/pdf; name="plan.pdf"',
+							'Content-Disposition: attachment; filename="plan.pdf"',
+						],
+						PDF,
+					),
+					...file(
+						[
+							"Content-Type: text/plain; charset=utf-8",
+							`Content-Disposition: attachment; filename*=UTF-8''${encodeURIComponent(NOTES)}`,
+						],
+						btoa("notes"),
+					),
+					...file(
+						[
+							'Content-Type: text/html; name="page.html"',
+							'Content-Disposition: attachment; filename="page.html"',
+						],
+						btoa(PAGE),
+					),
+					`--${boundary}--`,
+				].join("\r\n"),
+			}),
+		);
+		const [listed] = (await messages(box.slug, box.mailboxId)).messages;
+		const id = listed?.id ?? "";
+		const path = (place: number | string) =>
+			`${origin}/api/mail/${box.slug}/${box.mailboxId}/${id}/attachments/${place}`;
+		return { box, id, path };
+	}
+
+	const status = async (url: string, headers: Record<string, string> = {}) =>
+		(await mail.fetch(url, { headers })).status;
+
+	it("downloads each file on its own, byte for byte, under the name its sender gave it", async () => {
+		const { box, id, path } = await filed();
+		const opened = await open(box.slug, box.mailboxId, id);
+		expect(opened.attachments.map((attachment) => attachment.name)).toEqual([
+			"plan.pdf",
+			NOTES,
+			"page.html",
+		]);
+		// The page names each file as its download will be saved.
+		const messagePage = await mail.fetch(`${origin}/${box.slug}/mailboxes/${box.mailboxId}/${id}`, {
+			headers: owner.headers,
+		});
+		const shown = await messagePage.text();
+		expect(shown).toContain("Rapor _ön_ ğüş 2026.txt");
+		expect(shown).toContain(`/api/mail/${box.slug}/${box.mailboxId}/${id}/attachments/1`);
+
+		const pdf = await mail.fetch(path(0), { headers: owner.headers });
+		expect(pdf.status).toBe(200);
+		expect(pdf.headers.get("content-type")).toBe("application/pdf");
+		expect(pdf.headers.get("content-disposition")).toBe(
+			`attachment; filename="plan.pdf"; filename*=UTF-8''plan.pdf`,
+		);
+		expect(pdf.headers.get("x-content-type-options")).toBe("nosniff");
+		expect(pdf.headers.get("content-security-policy")).toBe("default-src 'none'; sandbox");
+		expect(pdf.headers.get("cache-control")).toBe("private, no-store");
+		expect(new Uint8Array(await pdf.arrayBuffer())).toEqual(
+			Uint8Array.from(atob(PDF), (char) => char.charCodeAt(0)),
+		);
+
+		// Its quotes can't end the header's value, and its letters go as they are beside an ASCII name.
+		const notes = await mail.fetch(path(1), { headers: owner.headers });
+		expect(notes.headers.get("content-disposition")).toBe(
+			`attachment; filename="Rapor __n_ ___ 2026.txt"; filename*=UTF-8''Rapor%20_%C3%B6n_%20%C4%9F%C3%BC%C5%9F%202026.txt`,
+		);
+		expect(await notes.text()).toBe("notes");
+
+		// A page goes as bytes to save, never as a page of Mail's.
+		const page = await mail.fetch(path(2), { headers: owner.headers });
+		expect(page.status).toBe(200);
+		expect(page.headers.get("content-type")).toBe("application/octet-stream");
+		expect(page.headers.get("content-disposition")).toMatch(/^attachment; filename="page\.html";/);
+		expect(page.headers.get("content-security-policy")).toBe("default-src 'none'; sandbox");
+		expect(await page.text()).toBe(PAGE);
+	});
+
+	it("is found only by those who may read the mailbox, as a missing message is", async () => {
+		const { box, id, path } = await filed();
+		const reader = await join(box.workspaceId);
+		for (const headers of [{}, outsider.headers, reader.headers]) {
+			expect(await status(path(0), headers)).toBe(404);
+		}
+		const theirs = await mailboxWithAddress(outsider);
+		const through = `${origin}/api/mail/${theirs.slug}/${box.mailboxId}/${id}/attachments/0`;
+		expect(await status(through, outsider.headers)).toBe(404);
+
+		// No file at a place, a place that isn't one and no such message all read the same.
+		for (const place of ["3", "-1", "0x1", "1.0", "99999"]) {
+			expect(await status(path(place), owner.headers), place).toBe(404);
+		}
+		const missing = `${origin}/api/mail/${box.slug}/${box.mailboxId}/nope/attachments/0`;
+		expect(await status(missing, owner.headers)).toBe(404);
+
+		await giveAccess(box, { memberIds: [reader.memberId] });
+		expect(await status(path(0), reader.headers)).toBe(200);
+	});
+
+	it("is an agent's with its key once it is given the mailbox, and its log says so", async () => {
+		const { box, id, path } = await filed();
+		const agent = await makeAgent(box.workspaceId);
+		expect(await status(path(0), agent.headers)).toBe(404);
+		await giveAccess(box, { memberIds: [agent.memberId] });
+		const file = await mail.fetch(path(0), { headers: agent.headers });
+		expect(file.status).toBe(200);
+		expect(file.headers.get("content-disposition")).toMatch(/^attachment;/);
+
+		const log = await mail.fetch(`${origin}/api/agents/${box.slug}/${agent.id}/log`, {
+			headers: owner.headers,
+		});
+		expect(log.status).toBe(200);
+		const { entries } = (await log.json()) as { entries: { action: string; target: string }[] };
+		expect(entries).toContainEqual(
+			expect.objectContaining({ action: "attachment.read", target: id }),
+		);
+	});
+});
+
 describe("who sent it", () => {
 	async function verdict(above: string[], extra: string[] = [], from?: string) {
 		const box = await mailboxWithAddress();

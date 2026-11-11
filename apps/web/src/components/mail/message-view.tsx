@@ -4,8 +4,10 @@ import { Button } from "#/components/ui/button";
 import { ConfirmDialog } from "#/components/workspace/confirm-dialog";
 import { isAdminRole, useMyRole } from "#/components/workspace/context";
 import { formatDateTime } from "#/lib/dates";
+import { fileName } from "#/lib/file-names";
 import { changeImageSenders, rememberImageChoice, useImageChoice } from "#/lib/images";
 import {
+	attachmentUrl,
 	deleteMessage,
 	htmlUrl,
 	type OpenedMessage,
@@ -74,7 +76,15 @@ export function MessageView({
 							// biome-ignore lint/suspicious/noArrayIndexKey: see above
 							<li key={index} className="flex items-center gap-2">
 								<Paperclip className="size-4 shrink-0 text-muted-foreground" aria-hidden />
-								<span className="min-w-0 break-all">{attachment.name || "(no name)"}</span>
+								{/* A plain link: the file always downloads, and never opens as a page here. */}
+								<a
+									href={attachmentUrl(workspace, mailbox, message.id, index)}
+									download
+									className="min-w-0 break-all underline underline-offset-4 hover:text-foreground"
+								>
+									{/* As the download is saved: the sender's name could turn its own text around. */}
+									{attachment.name ? fileName(attachment.name) : "(no name)"}
+								</a>
 								<span className="shrink-0 text-muted-foreground">
 									{attachment.type}, {formatSize(attachment.size)}
 								</span>
@@ -82,7 +92,8 @@ export function MessageView({
 						))}
 					</ul>
 					<p className="text-sm text-muted-foreground">
-						Attachments can't be opened on their own yet; they're in the original.
+						Files download to your device. Whoever sent them chose what they hold, so open only what
+						you expect.
 					</p>
 				</section>
 			)}

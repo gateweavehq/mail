@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { MAX_AGENT_ADDRESS_DAYS } from "../../lib/agent-addresses";
+import { fileName } from "../../lib/file-names";
 import {
 	type ListedMessage,
 	MAX_QUERY_SENT,
@@ -116,6 +117,14 @@ const cursorInput = z
 	.max(200)
 	.describe("The next value of the page before, to go on to older mail.");
 const idInput = z.string().min(1).max(100);
+/** The highest place a file is asked for by: more than any message carries. */
+const MAX_ATTACHMENT_INDEX = 9999;
+/**
+ * The largest file get_attachment gives. An MCP answer carries its Base64 twice, as text and as
+ * structured content, and a name outside Latin-1 makes each of those strings two bytes a character:
+ * past this, one answer would take a good part of the Worker's 128 MB.
+ */
+const MAX_AGENT_FILE = 5 * 1024 * 1024;
 const addressInput = z.string().trim().min(3).max(254).toLowerCase();
 const addressesInput = z.array(addressInput).max(MAX_RECIPIENTS);
 const textInput = z
@@ -342,6 +351,48 @@ const readEmail = operation({
 				latest: thread.latest ? messageOf(thread.latest) : null,
 				older: thread.older ? `${thread.older.arrivedAt}.${thread.older.id}` : null,
 			},
+		};
+	},
+});
+
+const getAttachment = operation({
+	name: "get_attachment",
+	title: "Get attachment",
+	description: `Gives one file attached to a message, by its place in read_email's attachments, counted from 0: its name, type and bytes in Base64, as send_email and reply take a file. A file larger than ${MAX_AGENT_FILE / (1024 * 1024)} MB is refused. ${UNTRUSTED} A file's name, type and bytes are the sender's too.`,
+	input: z.object({
+		mailbox: mailboxInput,
+		messageId: idInput,
+		index: z
+			.number()
+			.int()
+			.min(0)
+			.max(MAX_ATTACHMENT_INDEX)
+			.describe("The file's place in the message's attachments, from 0."),
+	}),
+	output: OUTPUTS.get_attachment,
+	hints: { readOnlyHint: true, openWorldHint: false },
+	routes: [
+		{ method: "GET", path: "/mailboxes/{mailbox}/messages/{messageId}/attachments/{index}" },
+	],
+	refusals: [409],
+	async run(access, { mailbox, messageId, index }) {
+		const box = await findMailbox(access, mailbox);
+		const file = await access.attachment(box.id, messageId, index, MAX_AGENT_FILE);
+		if (!file) {
+			throw new ApiError("No such message in this mailbox, or no file at that place.", 404);
+		}
+		if (!("bytes" in file)) {
+			throw new ApiError(
+				`That file is ${Math.ceil(file.tooLarge / (1024 * 1024))} MB, larger than the ${MAX_AGENT_FILE / (1024 * 1024)} MB get_attachment gives.`,
+				409,
+			);
+		}
+		return {
+			filename: fileName(file.name),
+			contentType: file.type,
+			size: file.bytes.byteLength,
+			content: base64Of(file.bytes),
+			untrusted: UNTRUSTED,
 		};
 	},
 });
@@ -662,6 +713,7 @@ export const OPERATIONS: readonly Operation[] = [
 	listMailboxes,
 	searchEmail,
 	readEmail,
+	getAttachment,
 	waitForEmail,
 	getVerificationCode,
 	sendEmail,
@@ -677,6 +729,17 @@ export const OPERATIONS: readonly Operation[] = [
 ];
 
 const iso = (ms: number) => new Date(ms).toISOString();
+
+/** Bytes as standard, padded Base64, as send_email takes a file's, a slice at a time. */
+function base64Of(bytes: Uint8Array): string {
+	const parts: string[] = [];
+	// A multiple of 3, so that only the last slice is padded.
+	const slice = 3 * 8192;
+	for (let at = 0; at < bytes.byteLength; at += slice) {
+		parts.push(btoa(String.fromCharCode(...bytes.subarray(at, at + slice))));
+	}
+	return parts.join("");
+}
 
 function messageCursor(cursor: string | undefined): MessageCursor | null {
 	const parsed = cursorOf(cursor);

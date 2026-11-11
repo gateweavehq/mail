@@ -223,6 +223,39 @@ describe("the agent API", () => {
 		expect(read.message.attachments).toEqual([
 			{ name: "report.pdf", type: "application/pdf", size: 1_800_000 },
 		]);
+		// And back, in the shape a send takes it.
+		const file = await done<{
+			filename: string;
+			contentType: string;
+			size: number;
+			content: string;
+		}>(agent.key, "get_attachment", "GET", `${messages}/${held.id}/attachments/0`);
+		expect(file).toMatchObject({
+			filename: "report.pdf",
+			contentType: "application/pdf",
+			size: 1_800_000,
+		});
+		expect(file.content).toBe(report);
+		expect(await ask(bearer, "GET", `${messages}/${held.id}/attachments/1`)).toMatchObject({
+			status: 404,
+		});
+		expect(await ask(bearer, "GET", `${messages}/${held.id}/attachments/first`)).toMatchObject({
+			status: 400,
+		});
+		expect(await ask(bearer, "GET", `${messages}/${held.id}/attachments/0.0`)).toMatchObject({
+			status: 400,
+		});
+		// A file past what get_attachment gives is refused, saying how large it is.
+		const large = await done<{ id: string }>(agent.key, "send_email", "POST", messages, {
+			to: ["stranger@example.org"],
+			subject: "The data",
+			text: "All of it.",
+			attachments: [{ filename: "data.csv", content: btoa("0123456789".repeat(600_000)) }],
+		});
+		expect(await ask(bearer, "GET", `${messages}/${large.id}/attachments/0`)).toMatchObject({
+			status: 409,
+			body: { error: expect.stringMatching(/^That file is 6 MB, larger than the 5 MB/) },
+		});
 
 		expect(
 			await ask(bearer, "POST", messages, {
