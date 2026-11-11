@@ -89,11 +89,16 @@ export class MailClient {
 		if (address?.protocol !== "https:" && address?.protocol !== "http:") {
 			throw new TypeError("MailClient takes Mail's address, such as https://mail.example.com.");
 		}
-		if (typeof key !== "string" || key.trim() === "") {
+		// Trimmed, as a key read from a file or a variable often ends in a newline, and checked, as
+		// fetch would refuse one a header can't carry with an error that repeats it.
+		const token = typeof key === "string" ? key.trim() : "";
+		if (!/^[!-~]+$/.test(token)) {
 			throw new TypeError("MailClient takes the agent's key.");
 		}
-		this.url = url.replace(/\/+$/, "");
-		this.#key = key;
+		let end = address.href.length;
+		while (address.href[end - 1] === "/") end -= 1;
+		this.url = address.href.slice(0, end);
+		this.#key = token;
 		// Called on its own, the global fetch would lose the `this` browsers and Workers need.
 		this.#fetch = fetch ?? ((input, init) => globalThis.fetch(input, init));
 	}

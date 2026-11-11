@@ -280,6 +280,28 @@ describe("MailClient", () => {
 		expect(() => new MailClient({ url: "https://mail.example.com", key: "" })).toThrow(TypeError);
 	});
 
+	it("trims the key, and refuses one a header can't carry without repeating it", async () => {
+		const asked: Headers[] = [];
+		const client = new MailClient({
+			url: " https://mail.example.com/mail/// ",
+			key: `${KEY}\n`,
+			async fetch(_url, init) {
+				asked.push(new Headers(init.headers));
+				return Response.json({ addresses: [], live: 0 });
+			},
+		});
+		await client.listAddresses({ mailbox: "box" });
+		expect(asked[0]?.get("authorization")).toBe(`Bearer ${KEY}`);
+		expect(client.url).toBe("https://mail.example.com/mail");
+		for (const key of [`${KEY} ${KEY}`, `${KEY}é`, " \n"]) {
+			const refused = await thrown(
+				Promise.resolve().then(() => new MailClient({ url: "https://mail.example.com", key })),
+			);
+			expect(refused).toBeInstanceOf(TypeError);
+			expect(String(refused)).not.toContain(KEY);
+		}
+	});
+
 	it("uses the global fetch unless given one", async () => {
 		const global = vi.fn(async () => Response.json({ addresses: [], live: 0 }));
 		vi.stubGlobal("fetch", global);
