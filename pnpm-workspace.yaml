@@ -1,5 +1,6 @@
 packages:
   - apps/*
+  - packages/*
 
 # Versions shared across workspace packages. Reference them with "catalog:".
 catalog:

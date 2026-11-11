@@ -13,6 +13,13 @@ describe("the agent API's OpenAPI document", () => {
 		expect(document.servers).toEqual([{ url: "https://mail.example.com/api/v1" }]);
 	});
 
+	it("is kept as packages/mail/openapi.json, which the SDK's types are made from", async () => {
+		// After a change, `vitest -u` writes it again; then run `pnpm --filter @gateweave/mail generate`.
+		await expect(`${JSON.stringify(document, null, 2)}\n`).toMatchFileSnapshot(
+			"../../../../../packages/mail/openapi.json",
+		);
+	});
+
 	it("has a route for every MCP tool, each named once", () => {
 		const tools = OPERATIONS.map((operation) => operation.name);
 		expect(new Set(tools).size).toBe(tools.length);

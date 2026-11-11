@@ -264,6 +264,9 @@ importers:
       '@cloudflare/vite-plugin':
         specifier: 1.67.0
         version: 1.67.0(@types/node@26.6.6)(vite@8.3.5(@types/node@26.6.6)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))(workerd@1.20261103.1)(wrangler@4.157.0(@types/node@26.6.6))
+      '@gateweave/mail':
+        specifier: workspace:*
+        version: link:../../packages/mail
       '@modelcontextprotocol/client':
         specifier: 2.4.0
         version: 2.4.0
@@ -324,6 +327,18 @@ importers:
       wrangler:
         specifier: 'catalog:'
         version: 4.157.0(@types/node@26.6.6)
+
+  packages/mail:
+    devDependencies:
+      '@types/node':
+        specifier: 'catalog:'
+        version: 26.6.6
+      typescript:
+        specifier: 'catalog:'
+        version: 7.0.2
+      vitest:
+        specifier: 'catalog:'
+        version: 5.1.0(@types/node@26.6.6)(vite@8.3.5(@types/node@26.6.6)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
 
 packages:
 

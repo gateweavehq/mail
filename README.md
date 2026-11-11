@@ -117,8 +117,11 @@ once. Then:
   `Authorization: Bearer <key>`, and give it the skill,
   [`plugins/gateweave-mail/skills/mail/SKILL.md`](plugins/gateweave-mail/skills/mail/SKILL.md),
   which is plain Markdown.
-- **Code of your own:** call the REST API at `https://mail.example.com/api/v1` with the same
-  header. `/api/v1/openapi.json` describes it.
+- **Code of your own:** [`@gateweave/mail`](packages/mail) is a TypeScript client with a method
+  for each route, typed from the API's document, a check of a webhook's signature, and a command
+  line, `gateweave-mail`, that waits for a sign-in code or sends a message from a script or a CI
+  job. It isn't on npm yet. Or call the REST API at `https://mail.example.com/api/v1` with the same
+  header; `/api/v1/openapi.json` describes it.
 
 ## What it is planned to become
 

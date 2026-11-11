@@ -10,6 +10,8 @@
 			"**",
 			"!pnpm-lock.yaml",
 			"!**/routeTree.gen.ts",
+			"!packages/mail/src/api.gen.ts",
+			"!packages/mail/openapi.json",
 			"!**/worker-configuration.d.ts",
 			"!**/migrations/meta",
 			"!**/SKILL.md"

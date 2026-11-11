@@ -1,0 +1,56 @@
+{
+	"name": "@gateweave/mail",
+	"version": "0.1.0",
+	"private": true,
+	"description": "A TypeScript client and a command line for Gateweave Mail's agent API",
+	"license": "AGPL-3.0-only",
+	"type": "module",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/gateweavehq/mail.git",
+		"directory": "packages/mail"
+	},
+	"engines": {
+		"node": ">=22"
+	},
+	"exports": {
+		".": "./src/index.ts",
+		"./cli": "./src/run.ts",
+		"./openapi.json": "./openapi.json"
+	},
+	"bin": {
+		"gateweave-mail": "./dist/cli.js"
+	},
+	"files": [
+		"dist",
+		"openapi.json"
+	],
+	"publishConfig": {
+		"exports": {
+			".": {
+				"types": "./dist/index.d.ts",
+				"default": "./dist/index.js"
+			},
+			"./cli": {
+				"types": "./dist/run.d.ts",
+				"default": "./dist/run.js"
+			},
+			"./openapi.json": "./openapi.json"
+		},
+		"types": "./dist/index.d.ts",
+		"bin": {
+			"gateweave-mail": "./dist/cli.js"
+		}
+	},
+	"scripts": {
+		"build": "tsc -p tsconfig.build.json",
+		"typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.sdk.json",
+		"test": "vitest run",
+		"generate": "node scripts/generate.mjs"
+	},
+	"devDependencies": {
+		"@types/node": "catalog:",
+		"typescript": "catalog:",
+		"vitest": "catalog:"
+	}
+}
