@@ -294,7 +294,7 @@ describe("a workspace's Resend key", () => {
 			.bind(box.workspaceId)
 			.first<{ sealed: string; hint: string }>();
 		expect(row?.hint).toBe("wxyz");
-		expect(row?.sealed).toMatch(/^v1\./);
+		expect(row?.sealed).toMatch(/^v2\.[A-Za-z0-9_-]{11}\./);
 		expect(row?.sealed).not.toContain("SendingOnly");
 
 		const checked = await auth("/providers/check-key", {

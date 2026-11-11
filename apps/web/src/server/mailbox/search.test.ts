@@ -103,7 +103,7 @@ describe("searchable", () => {
 			{
 				get: async () => ({ size: raw.length, body: new Blob([raw]).stream() }),
 			} as unknown as R2Bucket,
-			undefined,
+			{},
 		);
 
 	it("makes look-alike forms plain, so that plain words and pasted ones both find them", async () => {
@@ -208,7 +208,7 @@ describe("searchable", () => {
 						throw new TypeError("not mail");
 					},
 				} as unknown as R2Bucket,
-				undefined,
+				{},
 			),
 			{ object: "w/m/x.eml", size: 10, seal: null, subject: "Lunch", from: "a@example.org" },
 		).catch((error: unknown) => error);
@@ -231,7 +231,7 @@ describe("searchable", () => {
 
 		it("finds it by its headers under the server's key, as trying again won't open it", async () => {
 			const found = await searchable(
-				new RawMail(changed, randomBytes(32).toString("base64")),
+				new RawMail(changed, { SECRETS_KEY: randomBytes(32).toString("base64") }),
 				sealed,
 			);
 			expect(found).toEqual({
@@ -243,7 +243,7 @@ describe("searchable", () => {
 		});
 
 		it("throws without a key, for the mailbox to try again once one is set", async () => {
-			const found = await searchable(new RawMail(changed, undefined), sealed).catch(
+			const found = await searchable(new RawMail(changed, {}), sealed).catch(
 				(error: unknown) => error,
 			);
 			expect(found).toBeInstanceOf(SealError);

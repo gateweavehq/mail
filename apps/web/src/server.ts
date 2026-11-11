@@ -6,6 +6,7 @@ import { directoryIn, receiveDeliveryEvents } from "./server/delivery-events";
 import { findAddress } from "./server/directory";
 import { receiveMail } from "./server/inbound";
 import { finishRemovals, mailboxStub, storeMail } from "./server/mailbox";
+import { resealSecrets } from "./server/reseal-secrets";
 import { dropUnusedWebhooks } from "./server/resend-inbound";
 import { newNonce, withSecurityHeaders } from "./server/security-headers";
 
@@ -56,10 +57,16 @@ export default {
 		const handled = await receiveDeliveryEvents(batch, directoryIn(db), mailboxStub);
 		(handled.failed ? console.error : console.log)(`delivery events: ${JSON.stringify(handled)}`);
 	},
-	// Clears what is past its time, once a day, and finishes the removal of mailboxes' mail.
+	// Clears what is past its time, once a day, finishes the removal of mailboxes' mail, and seals
+	// workspaces' secrets again under the current SECRETS_KEY after it changed.
 	async scheduled() {
 		await pruneExpired(db);
 		await finishRemovals(db);
 		await dropUnusedWebhooks(db);
+		const secrets = await resealSecrets(db, env);
+		// Counts only. While `left` isn't 0, SECRETS_KEY_PREVIOUS is still needed.
+		if (secrets && (secrets.resealed > 0 || secrets.left > 0)) {
+			(secrets.unopened > 0 ? console.error : console.log)(`secrets: ${JSON.stringify(secrets)}`);
+		}
 	},
 } satisfies ExportedHandler<Cloudflare.Env>;

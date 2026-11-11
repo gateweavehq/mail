@@ -30,6 +30,8 @@ BETTER_AUTH_SECRET=
 # Optional: encrypts the keys workspaces keep here, such as a Resend key, which can't be added
 # without it. 32 random bytes, base64: openssl rand -base64 32. `pnpm dev:setup` fills one in.
 # SECRETS_KEY=
+# When changing it, the key before, which then only opens what it encrypted (docs/self-hosting.md).
+# SECRETS_KEY_PREVIOUS=
 
 # Optional: your account id and an API token with Email Sending: Edit, so that removing an address
 # from a workspace's suppressions also takes it off Email Service's own list, for that workspace's

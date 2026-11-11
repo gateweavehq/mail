@@ -37,9 +37,16 @@ declare namespace Cloudflare {
 		SEND_PER_DAY?: string;
 		/**
 		 * At least 32 random bytes, base64 (`openssl rand -base64 32`). Seals the keys workspaces keep
-		 * here, such as a Resend key, which can't be added without it. Changing it loses them.
+		 * here, such as a Resend key, which can't be added without it, and raw mail in R2. To change
+		 * it, keep the old one as `SECRETS_KEY_PREVIOUS` until what it sealed is sealed again.
 		 */
 		SECRETS_KEY?: string;
+		/**
+		 * The `SECRETS_KEY` before the current one. It only opens what is still sealed under it: the
+		 * daily run seals workspaces' secrets again under the current key, and raw mail stays as it
+		 * was sealed, so keep it set.
+		 */
+		SECRETS_KEY_PREVIOUS?: string;
 		/** Resend's API. `https://api.resend.com` when unset. The browser tests point it at a stand-in. */
 		RESEND_API_URL?: string;
 		/**

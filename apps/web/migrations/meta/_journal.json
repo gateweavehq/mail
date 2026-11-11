@@ -155,6 +155,13 @@
       "when": 1794246961490,
       "tag": "0021_image_sender",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "6",
+      "when": 1794393859705,
+      "tag": "0022_provider_key_version",
+      "breakpoints": true
     }
   ]
 }

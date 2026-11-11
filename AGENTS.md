@@ -147,8 +147,9 @@ These are load-bearing. Breaking one breaks users' data or security, usually sil
     the state it was found in, and the message's own id goes in its `References`, so its thread
     doesn't depend on the `Message-ID` the provider gives it.
 15. **A workspace's provider key never leaves the server.** It is sealed with `SECRETS_KEY` and the
-    workspace's id (`apps/web/src/server/secrets.ts`) before it is written, opened only to send or
-    to check it with Resend, and pages see only its last four characters. Never log it, return it
+    workspace's id (`apps/web/src/server/secrets.ts`) before it is written (sealing it again under
+    a new key keeps its `version`), opened only to send or to check it with Resend, and pages see
+    only its last four characters. Never log it, return it
     or put it in an error. Putting one in takes an owner or admin with a recent sign-in.
 16. **Resend's webhook admits only what the workspace's secret signed.** A delivery to
     `/api/inbound/resend/<channel>` carries no session: the channel finds the workspace, and the
@@ -204,9 +205,10 @@ These are load-bearing. Breaking one breaks users' data or security, usually sil
     its access. Secrets are shown once and never logged.
 19. **Raw mail is read and written only through `RawMail`**
     (`apps/web/src/server/mailbox/sealed.ts`). A message's row says how its object is sealed
-    (`message.seal`), and only `RawMail` opens it with `SECRETS_KEY`; never read or write an
-    object in `RAW_MAIL` directly, though deleting one by name is fine. Sealed mail stays as it was
-    written, so a change to the format is a new seal version beside `v1`, never a change to it. The
+    (`message.seal`), and only `RawMail` opens it with `SECRETS_KEY` or `SECRETS_KEY_PREVIOUS`;
+    never read or write an object in `RAW_MAIL` directly, though deleting one by name is fine.
+    Sealed mail stays as it was written, so a change to the format is a new seal version beside
+    `v1` and `v2`, never a change to one. The
     mailbox's alarm seals mail kept as it came (`resealing.ts`): the copy is written and opened
     first, the row switches to it (object and seal) in one synchronous step, and only then, after a
     grace window (`stale_at`), is the original deleted. Keep that order.

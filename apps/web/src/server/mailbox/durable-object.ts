@@ -649,7 +649,7 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 	async send(sending: Sending): Promise<Sent> {
 		const sql = this.ctx.storage.sql;
 		const raw = rawMail(this.env);
-		const seal = raw.newSeal();
+		const seal = await raw.newSeal();
 		// The same draft again, as when its answer was lost: what became of it, not a second send.
 		const earlier = this.drafted(sending.draft);
 		if (earlier) return earlier;
@@ -1031,7 +1031,7 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			// Read at each try, so a key replaced or removed meanwhile is the one that counts.
 			opened = await openProviderKey(
 				createDb(this.env.DB),
-				this.env.SECRETS_KEY,
+				this.env,
 				row.workspaceId ?? "",
 				"resend",
 			);

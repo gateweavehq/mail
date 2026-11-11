@@ -116,15 +116,22 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     in its additional data, and the object must be exactly as long as the row's size makes it, so
     nothing can be reordered, cut or added. Everything reads and writes raw mail through
     `RawMail`, and mail with no seal, kept before sealing or without a `SECRETS_KEY`, is read as it
-    is.
+    is. A seal (`v2.<key id>.<salt>`) names the key it was made with (`secrets-key.ts`: a keyed
+    digest of the key, which says nothing of it), so mail under the key before the current one
+    opens with `SECRETS_KEY_PREVIOUS`, and one under a key the server doesn't have fails at once.
+    A seal from before keys had ids (`v1.<salt>`) is opened with the current key, then the
+    previous, reading the object again for the second. New mail is sealed only under the current
+    key, which its seal must name.
     - **Versions side by side.** The Worker picks the seal and the object keeps it (`begin`), and
       the mail is sealed only with the seal the object gave back, so a Worker and an object of
       different versions during a deploy never write mail its row can't read. A row from an
       object older than sealing has no `seal` at all, which reads as none. Code older than sealing
-      reads sealed mail as if it were plain, so it shows garbled there: roll back only to a
-      version that reads seals.
+      reads sealed mail as if it were plain, so it shows garbled there, and code older than key
+      ids finds a `v2` seal of no kind it knows and marks the mail as not opening: roll back only
+      to a version that reads the seals written since.
     - **Mail that doesn't open** (`SealError`): `unopened` when it was changed or moved, or
-      `SECRETS_KEY` isn't the one it was sealed with, which trying again won't mend; `no-key` when
+      neither `SECRETS_KEY` nor `SECRETS_KEY_PREVIOUS` is the one it was sealed with, which trying
+      again won't mend; `no-key` when
       the server has none, which setting one may. The first chunk is opened before anything is
       returned, so a download fails before it starts rather than part way. Its thread still shows,
       without it opened; the message, its HTML and its original answer 500 and say it can't be
@@ -162,8 +169,10 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
       is counted per message (`seal_tries`) and tried again after a minute; the fifth marks it as
       mail that doesn't open, with a log line that names only the kind of error. Search and the duplicate check (`body_hash`) work on the
       plaintext and are unaffected.
-    - Sealed mail stays as it was written, so another scheme or a key for rotation would be a new
-      seal version beside `v1`.
+    - Sealed mail stays as it was written, so another scheme would be a new seal version beside
+      `v1` and `v2`. After `SECRETS_KEY` changes, mail stays under the key it was sealed with, so
+      the old one has to stay as `SECRETS_KEY_PREVIOUS`; sealing it again under the new key is
+      still to come.
   - **The same message twice is kept once.** A delivery's key is a hash of the mailbox and
     whichever of the message's `Message-ID`, `From`, `Date` and `Subject` it has. When one
     finishes and a stored message has the same key, their bodies are compared, and the copy goes
@@ -634,7 +643,13 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
       in `provider_key`, sealed with AES-256-GCM under a key that HKDF derives from `SECRETS_KEY`
       and the workspace's id, with its place as additional data (`secrets.ts`, as Agents seals its
       keys). No page gets it back, only its last four characters, and without `SECRETS_KEY` no key
-      can be added. A domain can be set to Resend only while the workspace has a key, and a message
+      can be added. The sealed value names the key it was sealed with (`v2.<key id>.…`; one from
+      before ids, `v1.…`, opens with either key), and after `SECRETS_KEY` changes, the daily run
+      seals each workspace secret in D1 again under the new one (`reseal-secrets.ts`: Resend keys
+      and inbound webhooks' signing secrets, up to 500 a run, read in pages so that values which
+      don't open never hold up the rest, each written only if it is still the value that was
+      read), logging `secrets:` with what it resealed, what neither key opened, and
+      what is left under another key. A domain can be set to Resend only while the workspace has a key, and a message
       from it is refused when it is written if the key has gone since, before anything is counted.
       Each message keeps the way it was written with (`outgoing.provider`), and the object reads and
       opens the key from D1 at each try, so one replaced or removed meanwhile is the one that
@@ -649,8 +664,9 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
       before it looks for what the idempotency key sent, so a refusal then doesn't say that try
       didn't go. The message keeps its key and ends `uncertain`, as it does when its tries run out
       or its key is gone. Resend also knows an idempotency key only in the account that sent it,
-      so each try notes which saving of the workspace's key it used (`outgoing.key_version`, a
-      digest of the sealed value), and after a try that may have gone, a different one stops it
+      so each try notes which saving of the workspace's key it used (`outgoing.key_version`: the
+      row's `version`, set new each time a key is put in, or a digest of the sealed value for one
+      put in before versions were kept), which sealing it again leaves as it was, and after a try that may have gone, a different one stops it
       as `uncertain` (`resend:key_changed`). Someone who then sends it again takes the new key.
     - **States** (`outgoing.state`). `held` for an agent's message that waits for approval, as
       above. `sending`, then `sent`. `waiting` when Email Service is busy
