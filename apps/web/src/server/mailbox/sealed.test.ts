@@ -238,4 +238,49 @@ describe("sealed raw mail", () => {
 			).rejects.toThrow();
 		}
 	});
+
+	describe("sealing mail kept as it came", () => {
+		/** Mail of `size` bytes kept as it came, as a row without a seal says. */
+		async function plain(size: number) {
+			const store = memoryBucket();
+			const raw = new RawMail(store.bucket, KEY);
+			const mail = new Uint8Array(randomBytes(size));
+			const ref: RawRef = { object: "w/m/a.eml", size, seal: null };
+			await raw.put(ref, pieces(mail, 1000));
+			return { ...store, raw, mail, ref };
+		}
+
+		it("writes a sealed copy under another name, which reads the same, and leaves the original", async () => {
+			for (const size of [0, 10, SEALED_CHUNK + 1]) {
+				const { raw, ref, mail, objects } = await plain(size);
+				const seal = await raw.sealedCopy(ref, "w/m/a.sealed.eml");
+				expect(seal).toMatch(/^v1\./);
+				expect(objects.get("w/m/a.eml")).toEqual(mail);
+				expect(objects.get("w/m/a.sealed.eml")?.length).toBe(sealedSize(size));
+				expect(await raw.bytes({ object: "w/m/a.sealed.eml", size, seal })).toEqual(mail);
+			}
+		});
+
+		it("does nothing when the server can't seal", async () => {
+			const { ref, objects, bucket } = await plain(10);
+			expect(await new RawMail(bucket, undefined).sealedCopy(ref, "w/m/a.sealed.eml")).toBeNull();
+			expect([...objects.keys()]).toEqual(["w/m/a.eml"]);
+		});
+
+		it("refuses mail that is missing or isn't the size its row says, as one that doesn't open", async () => {
+			const { raw, ref, objects } = await plain(10);
+			await expect(raw.sealedCopy({ ...ref, size: 11 }, "w/m/a.sealed.eml")).rejects.toThrow(
+				SealError,
+			);
+			await expect(
+				raw.sealedCopy({ ...ref, object: "w/m/none.eml" }, "w/m/none.sealed.eml"),
+			).rejects.toThrow(SealError);
+			expect([...objects.keys()]).toEqual(["w/m/a.eml"]);
+		});
+
+		it("doesn't seal what is sealed", async () => {
+			const { raw, ref } = await sealedMail(10);
+			await expect(raw.sealedCopy(ref, "w/m/b.eml")).rejects.toThrow();
+		});
+	});
 });

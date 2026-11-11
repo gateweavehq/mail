@@ -251,6 +251,18 @@ const VERSION_12 = `
 ALTER TABLE message ADD COLUMN seal TEXT;
 `;
 
+// Sealing mail kept as it came, from the alarm (`resealing.ts`). `stale_object` is the object a
+// message's sealed copy replaced, which the alarm deletes and then forgets, so that a stop between
+// the switch and the delete leaves nothing behind for good. `seal_failed_at` marks mail that
+// doesn't open, which the alarm doesn't try again.
+const VERSION_13 = `
+ALTER TABLE message ADD COLUMN stale_object TEXT;
+ALTER TABLE message ADD COLUMN seal_failed_at INTEGER;
+CREATE INDEX message_unsealed ON message (arrived_at DESC, id DESC)
+	WHERE state = 'stored' AND seal IS NULL AND seal_failed_at IS NULL;
+CREATE INDEX message_stale ON message (id) WHERE stale_object IS NOT NULL;
+`;
+
 /** Each brings the schema from the version before it. Append only: objects keep what they ran. */
 export const MIGRATIONS: ((sql: SqlStorage) => void)[] = [
 	(sql) => sql.exec(VERSION_1),
@@ -282,6 +294,7 @@ export const MIGRATIONS: ((sql: SqlStorage) => void)[] = [
 	(sql) => sql.exec(VERSION_10),
 	(sql) => sql.exec(VERSION_11),
 	(sql) => sql.exec(VERSION_12),
+	(sql) => sql.exec(VERSION_13),
 ];
 
 /** What migrating needs of a Durable Object's storage. */

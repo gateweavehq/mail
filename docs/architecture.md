@@ -131,6 +131,30 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
       opened; a reply to it is threaded by the id in its row; search finds it by its headers, or
       tries again for `no-key`; and a copy whose files are waiting is refused as
       `mail:copy_unread`, or left uncertain when a try may have gone, or tried again for `no-key`.
+    - **Mail kept as it came is sealed later** (`resealing.ts`), once the deployment has a usable
+      `SECRETS_KEY`: from the mailbox object's alarm, which runs this last so the deliveries,
+      sends and indexing it also does never wait behind it. Each run takes at most 5 stored
+      messages, the newest first, and stops short of 32 MiB of mail (by the rows' sizes; a message
+      over that alone is still taken, by itself): mail streams through, so memory stays flat, and
+      a run is a few seconds of R2 and AES-GCM at most. It sets the alarm again while some remain,
+      and the object does the same when it starts and finds some. A message's sealed copy is
+      written under its own name with `.sealed` before `.eml` (so under the mailbox's prefix, and
+      known to the mailbox without an entry of its own: `deletePrefix`, deleting a message and
+      removing a mailbox all cover it), and opened at its start. Then, in one synchronous step,
+      the row takes the copy's name and seal and keeps the original's name in `stale_object`;
+      only after that is the original deleted and the name forgotten, and a stop in between leaves
+      a row that names an object that opens, and an original the next run deletes. A message
+      deleted, sealed or begun to be sent while its copy was written is left as it is, and the
+      copy deleted; a message deleted while the object switches it has its copy deleted too
+      (`remove` reads the row again after deleting). A mailbox removed meanwhile has the
+      copy deleted by the run, or by the prefix delete the daily run repeats. Messages with a
+      send in progress, or waiting, held or uncertain, are left until it is settled, as their copy
+      is read to send; pending messages are not stored yet and are never touched. Mail that is
+      missing from R2, or isn't the size its row says, gets `seal_failed_at` and is not tried
+      again: nothing clears it, as trying again won't mend it, and the message reads as it did
+      (to try it again, set the column to NULL in the object's storage). A failure of R2 itself
+      is tried again after a minute. Search and the duplicate check (`body_hash`) work on the
+      plaintext and are unaffected.
     - Sealed mail stays as it was written, so another scheme or a key for rotation would be a new
       seal version beside `v1`.
   - **The same message twice is kept once.** A delivery's key is a hash of the mailbox and

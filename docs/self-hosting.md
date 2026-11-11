@@ -140,8 +140,9 @@ alone, since it belongs to the workspace.
 
 **Encryption.** With `SECRETS_KEY` set, each message is encrypted (AES-256-GCM) before it reaches
 R2, under a key of its own that comes from `SECRETS_KEY`, so the bucket, or a copy of it, gives
-nobody the mail itself; R2 still shows each object's name and size. Set it before mail arrives:
-mail kept without it stays as it came, and is read as it is. Make 32 random bytes, keep them
+nobody the mail itself; R2 still shows each object's name and size. Mail kept without it, or
+before encryption, is read as it is until a key is set, and then each mailbox encrypts it in the
+background, a few messages at a time, with no action from you. Make 32 random bytes, keep them
 somewhere safe, such as a password manager, and give them to the Worker:
 
 ```sh

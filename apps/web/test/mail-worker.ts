@@ -60,6 +60,7 @@ interface TestBucket {
 	list(options: { prefix: string }): Promise<{ objects: { key: string }[] }>;
 	get(key: string): Promise<{ arrayBuffer(): Promise<ArrayBuffer> } | null>;
 	put(key: string, value: string | ArrayBuffer): Promise<unknown>;
+	delete(key: string): Promise<void>;
 }
 
 /** The address Mail sends from in tests. */
