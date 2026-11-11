@@ -47,6 +47,7 @@ describe("migrate", () => {
 			{ version: 10 },
 			{ version: 11 },
 			{ version: 12 },
+			{ version: 13 },
 		]);
 	});
 
@@ -223,6 +224,48 @@ describe("migrate", () => {
 		db.prepare("DELETE FROM message WHERE id = 'one'").run();
 
 		expect(found()).toEqual([]);
+	});
+
+	it("makes mail kept as it came, from before version 13, wait to be sealed", () => {
+		const { db, storage: store } = storage();
+		store.transactionSync(() => {
+			store.sql.exec("CREATE TABLE schema_migration (version INTEGER PRIMARY KEY) STRICT");
+			for (let version = 0; version < 12; version++) {
+				MIGRATIONS[version]?.(store.sql);
+				store.sql.exec("INSERT INTO schema_migration (version) VALUES (?)", version + 1);
+			}
+		});
+		db.prepare(
+			`INSERT INTO message (id, state, delivery_key, object, size, arrived_at, envelope_from,
+				envelope_to)
+			VALUES ('old', 'stored', 'key', 'w/m/old.eml', 10, 1, 'a@x', 'b@y')`,
+		).run();
+
+		migrate(store);
+
+		expect(
+			db
+				.prepare(
+					"SELECT seal, stale_object, stale_at, seal_tries, seal_failed_at FROM message WHERE id = 'old'",
+				)
+				.all(),
+		).toEqual([
+			{ seal: null, stale_object: null, stale_at: null, seal_tries: 0, seal_failed_at: null },
+		]);
+		// The alarm finds such mail, and what it has marked or sealed, by indexes of their own.
+		const plan = (
+			db
+				.prepare(
+					`EXPLAIN QUERY PLAN SELECT id FROM message INDEXED BY message_unsealed
+					WHERE state = 'stored' AND seal IS NULL AND seal_failed_at IS NULL
+					ORDER BY arrived_at DESC, id DESC LIMIT 6`,
+				)
+				.all() as { detail: string }[]
+		)
+			.map((row) => row.detail)
+			.join(" ");
+		expect(plan).toContain("message_unsealed");
+		expect(plan).not.toMatch(/TEMP B-TREE/);
 	});
 
 	it("leaves an object as it was when a migration fails", () => {

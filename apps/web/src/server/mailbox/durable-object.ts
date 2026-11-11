@@ -23,6 +23,14 @@ import {
 import { listed, type SentFacts, writeSentEvent } from "./events";
 import { base64Size, bytesOfBase64 } from "./files";
 import { indexBatch } from "./indexing";
+import {
+	dropStale,
+	oldestStale,
+	type Resealed,
+	resealBatch,
+	type Sealer,
+	sealedName,
+} from "./resealing";
 import { LINKED_THREADS, migrate } from "./schema";
 import { type RawRef, rawMail, SealError } from "./sealed";
 import { ftsQuery, searchable } from "./search";
@@ -84,6 +92,15 @@ const INDEX_DELAY_MS = 1000;
 
 /** How long indexing waits after R2 failed to give it a message's mail. */
 const INDEX_RETRY_MS = 60_000;
+
+/**
+ * How long after mail kept as it came is found, or after a run sealed some of it, the alarm seals
+ * more, so that a mailbox that has just woken answers what woke it first.
+ */
+const RESEAL_DELAY_MS = 2000;
+
+/** How long sealing waits after R2 failed it. */
+const RESEAL_RETRY_MS = 60_000;
 
 /** How many events one round hands to the workspace's webhooks. */
 const EVENT_BATCH = 100;
@@ -366,6 +383,42 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			.exec("SELECT 1 FROM message WHERE state = 'stored' AND search_id IS NULL LIMIT 1")
 			.toArray();
 		if (waiting.length > 0) void ctx.blockConcurrencyWhile(() => this.#indexSoon());
+		// Mail kept as it came is sealed once the deployment has a key, and the originals of what was
+		// sealed are deleted when their window has passed, as after a stop between the two. So a
+		// mailbox seals its old mail as it wakes, which any mail, read or alarm does.
+		const sealAt = this.#sealingDue();
+		if (sealAt !== null) void ctx.blockConcurrencyWhile(() => this.#alarmBy(sealAt));
+	}
+
+	/**
+	 * When the alarm next has mail to seal, or originals of sealed mail to delete, or null when it
+	 * has neither.
+	 */
+	#sealingDue(): number | null {
+		const sql = this.ctx.storage.sql;
+		const stale = oldestStale(this.ctx.storage);
+		const unsealed =
+			rawMail(this.env).canSeal() &&
+			sql
+				.exec(
+					`SELECT 1 FROM message INDEXED BY message_unsealed
+					WHERE state = 'stored' AND seal IS NULL AND seal_failed_at IS NULL LIMIT 1`,
+				)
+				.toArray().length > 0;
+		const times = [
+			stale === null ? null : Math.max(stale + PENDING_MS, Date.now()),
+			unsealed ? Date.now() + RESEAL_DELAY_MS : null,
+		].filter((at): at is number => at !== null);
+		return times.length > 0 ? Math.min(...times) : null;
+	}
+
+	/** What the alarm seals mail with. */
+	#sealer(): Sealer {
+		const raw = rawMail(this.env);
+		return {
+			copy: (from, object) => raw.sealedCopy(from, object),
+			remove: (objects) => this.env.RAW_MAIL.delete(objects),
+		};
 	}
 
 	/** Gives a message a place in R2, or says the mailbox is full. */
@@ -1327,7 +1380,10 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 	async remove(id: string, by: string | null = null): Promise<boolean> {
 		const sql = this.ctx.storage.sql;
 		const row = sql
-			.exec<{ object: string }>("SELECT object FROM message WHERE id = ? AND state = 'stored'", id)
+			.exec<{ object: string; stale: string | null }>(
+				"SELECT object, stale_object AS stale FROM message WHERE id = ? AND state = 'stored'",
+				id,
+			)
 			.toArray()[0];
 		if (!row) return false;
 		// One that isn't sent is discarded before anything is awaited, a state no try starts from:
@@ -1346,16 +1402,32 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			return was === "held";
 		});
 		if (rejected) await this.#tellSoon();
-		await this.env.RAW_MAIL.delete(row.object);
-		this.ctx.storage.transactionSync(() => {
-			// Read again: another message may have merged its thread while R2 was deleting.
-			const now = sql
-				.exec<{ threadId: string }>("SELECT thread_id AS threadId FROM message WHERE id = ?", id)
-				.toArray()[0];
-			sql.exec("DELETE FROM message WHERE id = ?", id);
-			if (now) this.#refreshThread(now.threadId);
-		});
-		return true;
+		// The mail's own object, the original a sealed copy replaced, and a copy being written.
+		const objects = (object: string, stale: string | null) => [
+			object,
+			sealedName(object),
+			...(stale ? [stale] : []),
+		];
+		await this.env.RAW_MAIL.delete(objects(row.object, row.stale));
+		for (;;) {
+			const moved = this.ctx.storage.transactionSync(() => {
+				// Read again: another message may have merged its thread while R2 was deleting, and the
+				// alarm may have switched the message to its sealed copy.
+				const now = sql
+					.exec<{ threadId: string; object: string; stale: string | null }>(
+						`SELECT thread_id AS threadId, object, stale_object AS stale FROM message WHERE id = ?`,
+						id,
+					)
+					.toArray()[0];
+				if (now && now.object !== row.object) return now;
+				sql.exec("DELETE FROM message WHERE id = ?", id);
+				if (now) this.#refreshThread(now.threadId);
+				return null;
+			});
+			if (!moved) return true;
+			row.object = moved.object;
+			await this.env.RAW_MAIL.delete(objects(moved.object, moved.stale));
+		}
 	}
 
 	/**
@@ -1493,6 +1565,33 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 	}
 
 	/**
+	 * Seals a few messages' mail kept as it came, and deletes the originals of what was sealed
+	 * `PENDING_MS` ago. Last in the alarm, and never throws, so that what it can't do holds up none
+	 * of the rest. Says too when the next original is due, or null.
+	 */
+	async #sealSome(canSeal: boolean): Promise<{ sealed: Resealed; staleAt: number | null }> {
+		try {
+			const sealer = this.#sealer();
+			const stale = await dropStale(this.ctx.storage, sealer, Date.now() - PENDING_MS);
+			const sealed = canSeal ? await resealBatch(this.ctx.storage, sealer) : "done";
+			const oldest = oldestStale(this.ctx.storage);
+			return {
+				sealed: stale === "failed" && sealed === "done" ? "failed" : sealed,
+				// Not when R2 just failed to delete them: that retries after a minute, not at once.
+				staleAt: oldest === null || stale === "failed" ? null : oldest + PENDING_MS,
+			};
+		} catch (error) {
+			// The storage, not R2, which the run handles: as when the mailbox was removed meanwhile.
+			// No alarm is set for it, so a removed mailbox isn't woken again; the next start finds
+			// what is left.
+			console.error("mailbox: sealing mail failed", {
+				name: error instanceof Error ? error.name : "unknown",
+			});
+			return { sealed: "done", staleAt: null };
+		}
+	}
+
+	/**
 	 * Removes deliveries that never said they arrived, with whatever part of them reached R2, and
 	 * indexes stored messages for search.
 	 */
@@ -1558,6 +1657,7 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 		for (const { id } of due) if (!taken.has(id)) await this.#tryNow(id, "due");
 		const raw = rawMail(this.env);
 		const indexed = await indexBatch(this.ctx.storage, (message) => searchable(raw, message));
+		const { sealed, staleAt } = await this.#sealSome(raw.canSeal());
 		const next = sql
 			.exec<{ at: number | null }>(
 				"SELECT min(arrived_at) AS at FROM message WHERE state = 'pending'",
@@ -1576,6 +1676,12 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			sends.sending === null ? null : sends.sending + STALE_SENDING_MS,
 			indexed === "more" ? Date.now() : indexed === "failed" ? Date.now() + INDEX_RETRY_MS : null,
 			told === "more" ? Date.now() : told === "failed" ? Date.now() + EVENT_RETRY_MS : null,
+			sealed === "more"
+				? Date.now() + RESEAL_DELAY_MS
+				: sealed === "failed"
+					? Date.now() + RESEAL_RETRY_MS
+					: null,
+			staleAt,
 			await this.ctx.storage.getAlarm(),
 		].filter((at): at is number => at !== null);
 		if (times.length > 0) await this.ctx.storage.setAlarm(Math.min(...times));

@@ -12,7 +12,8 @@
  * are, and the object must be exactly as long as they make it.
  *
  * Mail kept before this, or by a deployment without a `SECRETS_KEY`, has no seal and is read as it
- * is. Sealed mail is lost when `SECRETS_KEY` changes. A seal starts with its version, so another
+ * is, until the mailbox's alarm seals it (`resealing.ts`). Sealed mail is lost when `SECRETS_KEY`
+ * changes. A seal starts with its version, so another
  * scheme, or a second key for rotation, can sit beside this one.
  */
 import { fromBase64, toBase64 } from "../secrets";
@@ -269,6 +270,36 @@ export class RawMail {
 			return null;
 		}
 		return `${VERSION}.${toBase64(crypto.getRandomValues(new Uint8Array(SALT_BYTES)))}`;
+	}
+
+	/** Whether this server has a `SECRETS_KEY` long enough to seal with. */
+	canSeal(): boolean {
+		return usable(this.#secretsKey) !== null;
+	}
+
+	/**
+	 * Writes a sealed copy of mail kept as it came, under `object`, and gives the seal its row must
+	 * take to read it. The original is left as it is. The copy is read back at its start before this
+	 * returns, so a row never names an object that doesn't open. Null when this server can't seal.
+	 * Throws a `SealError` when the original is missing or isn't the size its row says, which
+	 * trying again won't mend; any other error is R2's, and may be tried again.
+	 */
+	async sealedCopy(from: RawRef, object: string): Promise<string | null> {
+		if (typeof from.seal === "string") throw new Error("This mail is already sealed");
+		const seal = this.newSeal();
+		if (seal === null) return null;
+		const found = await this.get(from);
+		if (!found) throw new SealError("Stored mail is missing");
+		if (found.size !== from.size) {
+			await found.body.cancel().catch(() => {});
+			throw new SealError("Stored mail isn't as long as its message");
+		}
+		const copy = { object, size: from.size, seal };
+		await this.put(copy, found.body);
+		const check = await this.get(copy);
+		if (!check) throw new Error("The sealed copy isn't in R2");
+		await check.body.cancel().catch(() => {});
+		return seal;
 	}
 
 	/** Writes a message's mail, which must be exactly `ref.size` bytes, sealed when it has a seal. */

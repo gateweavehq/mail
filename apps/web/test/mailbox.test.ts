@@ -362,14 +362,19 @@ describe("raw mail in R2", () => {
 		expect(threads.map((thread) => thread.subject)).toEqual(["Notes"]);
 	});
 
+	// The mailbox's alarm seals such mail within seconds, so this reads it at once, before then.
 	it("reads mail kept as it came, before sealing, beside sealed mail", async () => {
 		const box = await mailboxWithAddress();
 		const before = message(box.address, { subject: "Before", body: "Kept as it came." });
 		expect((await mail.deliver("sender@example.org", box.address, before, 1)).status).toBe(200);
+		const [plain] = (await messages(box.slug, box.mailboxId)).messages;
+		expect((await inBucket(box, plain?.id)).toString("latin1")).toBe(before);
+		expect((await open(box.slug, box.mailboxId, plain?.id ?? "")).text.trim()).toBe(
+			"Kept as it came.",
+		);
 		const after = message(box.address, { subject: "After", body: "Kept sealed." });
 		await kept(box.address, after);
-		const [sealed, plain] = (await messages(box.slug, box.mailboxId)).messages;
-		expect((await inBucket(box, plain?.id)).toString("latin1")).toBe(before);
+		const [sealed] = (await messages(box.slug, box.mailboxId)).messages;
 		expect((await inBucket(box, sealed?.id)).toString("latin1")).not.toContain("Kept");
 		for (const [listed, raw, text] of [
 			[plain, before, "Kept as it came."],
@@ -382,6 +387,134 @@ describe("raw mail in R2", () => {
 			);
 			expect(await original.text()).toBe(raw);
 		}
+	});
+});
+
+/**
+ * Mail kept as it came, which the second copy of the Worker writes and the mailbox, which has a
+ * `SECRETS_KEY`, seals from its alarm a few messages at a time.
+ */
+describe("sealing mail kept as it came", () => {
+	const sealedKey = (box: { workspaceId: string; mailboxId: string }, id: string) =>
+		`${box.workspaceId}/${box.mailboxId}/${id}.sealed.eml`;
+	const prefixOf = (box: { workspaceId: string; mailboxId: string }) =>
+		`${box.workspaceId}/${box.mailboxId}/`;
+
+	/** Delivers mail the key-less copy keeps as it came, and says which message it is. */
+	async function keptPlain(box: Awaited<ReturnType<typeof mailboxWithAddress>>, subject: string) {
+		const raw = message(box.address, { subject, body: `The text of ${subject}.` });
+		expect((await mail.deliver("sender@example.org", box.address, raw, 1)).status).toBe(200);
+		const found = (await messages(box.slug, box.mailboxId)).messages.find(
+			(one) => one.subject === subject,
+		);
+		if (!found) throw new Error("expected the message");
+		return { id: found.id, raw };
+	}
+
+	const sealedFailures = () =>
+		mail.logs.filter((log) => log.message.includes("can't be sealed")).length;
+
+	it("seals it under a new name in the mailbox's prefix, reads the same, and keeps the original for a while", async () => {
+		const box = await mailboxWithAddress();
+		const { id, raw } = await keptPlain(box, "Old harbour plans");
+		const old = `${prefixOf(box)}${id}.eml`;
+		// The original stays for a window of 15 minutes, so a page that read the row just before
+		// the switch still finds its object. A unit test has it deleted after.
+		await expect
+			.poll(() => objects(prefixOf(box)), { timeout: 15_000 })
+			.toEqual([old, sealedKey(box, id)].sort());
+		const original = await mail.bucket.get(old);
+		expect(Buffer.from((await original?.arrayBuffer()) ?? new ArrayBuffer(0)).toString()).toBe(raw);
+		const stored = Buffer.from(
+			(await (await mail.bucket.get(sealedKey(box, id)))?.arrayBuffer()) ?? new ArrayBuffer(0),
+		);
+		expect(stored.length).toBeGreaterThan(raw.length);
+		expect(stored.toString("latin1")).not.toContain("harbour");
+		const downloaded = await mail.fetch(
+			`${origin}/api/mail/${box.slug}/${box.mailboxId}/${id}/original`,
+			{ headers: owner.headers },
+		);
+		expect(await downloaded.text()).toBe(raw);
+		expect((await open(box.slug, box.mailboxId, id)).text.trim()).toBe(
+			"The text of Old harbour plans.",
+		);
+		// Search, which reads plaintext, finds it.
+		const found = await mail.fetch(
+			`${origin}/api/mail/${box.slug}/${box.mailboxId}/threads?q=harbour`,
+			{ headers: owner.headers },
+		);
+		expect(((await found.json()) as { threads: unknown[] }).threads).toHaveLength(1);
+	});
+
+	it("goes with the message, and with the mailbox, once sealed", async () => {
+		const box = await mailboxWithAddress();
+		const first = await keptPlain(box, "First");
+		const second = await keptPlain(box, "Second");
+		await expect
+			.poll(() => objects(prefixOf(box)), { timeout: 15_000 })
+			.toEqual(
+				[
+					`${prefixOf(box)}${first.id}.eml`,
+					`${prefixOf(box)}${second.id}.eml`,
+					sealedKey(box, first.id),
+					sealedKey(box, second.id),
+				].sort(),
+			);
+		const deleted = await mail.fetch(
+			`${origin}/api/mail/${box.slug}/${box.mailboxId}/${first.id}`,
+			{ method: "DELETE", headers: owner.headers },
+		);
+		expect(deleted.status).toBe(200);
+		// Its sealed copy and its original, still waiting out its window, both go at once.
+		expect(await objects(prefixOf(box))).toEqual(
+			[`${prefixOf(box)}${second.id}.eml`, sealedKey(box, second.id)].sort(),
+		);
+		await directory(box.slug, owner.headers, { action: "remove-mailbox", id: box.mailboxId });
+		expect(await objects(prefixOf(box))).toEqual([]);
+	});
+
+	it("marks mail that is missing or the wrong size, and doesn't try it again", async () => {
+		const box = await mailboxWithAddress();
+		const missing = await keptPlain(box, "Missing");
+		const short = await keptPlain(box, "Short");
+		const before = sealedFailures();
+		// Before the alarm, a second after, reaches them.
+		await mail.bucket.put(`${prefixOf(box)}${short.id}.eml`, "not as long as it was");
+		await mail.bucket.delete(`${prefixOf(box)}${missing.id}.eml`);
+		await expect.poll(sealedFailures, { timeout: 15_000 }).toBe(before + 2);
+		// A later run, for another message, leaves them be.
+		const later = await keptPlain(box, "Later");
+		await expect
+			.poll(() => objects(sealedKey(box, later.id)), { timeout: 15_000 })
+			.toEqual([sealedKey(box, later.id)]);
+		expect(sealedFailures()).toBe(before + 2);
+		expect(await objects(prefixOf(box))).toEqual(
+			[
+				`${prefixOf(box)}${short.id}.eml`,
+				`${prefixOf(box)}${later.id}.eml`,
+				sealedKey(box, later.id),
+			].sort(),
+		);
+	});
+
+	it("takes several runs for many messages, a few each", async () => {
+		const box = await mailboxWithAddress();
+		const count = 13;
+		for (let n = 0; n < count; n++) await keptPlain(box, `Many ${n}`);
+		let seen: number[] = [];
+		const until = Date.now() + 30_000;
+		for (;;) {
+			const keys = await objects(prefixOf(box));
+			const done = keys.filter((key) => key.endsWith(".sealed.eml")).length;
+			if (seen.at(-1) !== done) seen.push(done);
+			if (done === count) break;
+			if (Date.now() > until) throw new Error(`only ${done} sealed after 30 s`);
+			await new Promise((resolve) => setTimeout(resolve, 50));
+		}
+		seen = seen.filter((done) => done > 0);
+		// Never more than a run's batch between two looks, and not all in one.
+		expect(Math.max(...seen.map((done, at) => done - (seen[at - 1] ?? 0)))).toBeLessThanOrEqual(5);
+		expect(seen.length).toBeGreaterThanOrEqual(3);
 	});
 });
 
@@ -963,7 +1096,9 @@ function auth(path: string, person: Asker, body?: unknown) {
 
 /** An agent in the workspace, made by its owner, and the key it was given. */
 async function makeAgent(workspaceId: string, name = "Sorter") {
-	const response = await auth("/agents/create", owner, { organizationId: workspaceId, name });
+	// From an address of its own each time, as making agents is limited to a few a minute.
+	const maker = { headers: { ...owner.headers, "cf-connecting-ip": `192.0.2.${++counter % 250}` } };
+	const response = await auth("/agents/create", maker, { organizationId: workspaceId, name });
 	expect(response.status).toBe(200);
 	const { agent, key } = (await response.json()) as {
 		agent: { id: string; memberId: string };
