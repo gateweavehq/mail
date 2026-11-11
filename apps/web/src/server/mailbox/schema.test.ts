@@ -244,8 +244,14 @@ describe("migrate", () => {
 		migrate(store);
 
 		expect(
-			db.prepare("SELECT seal, stale_object, seal_failed_at FROM message WHERE id = 'old'").all(),
-		).toEqual([{ seal: null, stale_object: null, seal_failed_at: null }]);
+			db
+				.prepare(
+					"SELECT seal, stale_object, stale_at, seal_tries, seal_failed_at FROM message WHERE id = 'old'",
+				)
+				.all(),
+		).toEqual([
+			{ seal: null, stale_object: null, stale_at: null, seal_tries: 0, seal_failed_at: null },
+		]);
 		// The alarm finds such mail, and what it has marked or sealed, by indexes of their own.
 		const plan = (
 			db
