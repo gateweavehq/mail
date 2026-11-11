@@ -1096,7 +1096,9 @@ function auth(path: string, person: Asker, body?: unknown) {
 
 /** An agent in the workspace, made by its owner, and the key it was given. */
 async function makeAgent(workspaceId: string, name = "Sorter") {
-	const response = await auth("/agents/create", owner, { organizationId: workspaceId, name });
+	// From an address of its own each time, as making agents is limited to a few a minute.
+	const maker = { headers: { ...owner.headers, "cf-connecting-ip": `192.0.2.${++counter % 250}` } };
+	const response = await auth("/agents/create", maker, { organizationId: workspaceId, name });
 	expect(response.status).toBe(200);
 	const { agent, key } = (await response.json()) as {
 		agent: { id: string; memberId: string };
