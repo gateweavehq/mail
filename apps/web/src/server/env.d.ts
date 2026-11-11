@@ -42,9 +42,9 @@ declare namespace Cloudflare {
 		 */
 		SECRETS_KEY?: string;
 		/**
-		 * The `SECRETS_KEY` before the current one. It only opens what is still sealed under it: the
-		 * daily run seals workspaces' secrets again under the current key, and raw mail stays as it
-		 * was sealed, so keep it set.
+		 * The `SECRETS_KEY` before the current one. It only opens what is still sealed under it, which
+		 * the daily run and the mailboxes' alarms seal again under the current key. It can go once
+		 * the daily run's `secrets:` and `raw mail:` lines both say none is left.
 		 */
 		SECRETS_KEY_PREVIOUS?: string;
 		/** Resend's API. `https://api.resend.com` when unset. The browser tests point it at a stand-in. */

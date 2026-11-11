@@ -5,9 +5,12 @@ import {
 	RESEAL_BATCH,
 	RESEAL_BYTES,
 	RESEAL_TRIES,
+	rekeyedName,
 	resealBatch,
+	resealStatus,
 	type Sealer,
 	sealedName,
+	waitsUnderPrevious,
 } from "./resealing";
 import { migrate } from "./schema";
 import { SealError } from "./sealed";
@@ -287,5 +290,162 @@ describe("resealBatch", () => {
 		expect(await dropStale(box.storage, r2.sealer, at)).toBe("done");
 		expect(box.row("m0")?.stale).toBeNull();
 		expect([...r2.objects]).toEqual(["w/b/m0.sealed.eml"]);
+	});
+});
+
+describe("after SECRETS_KEY changes", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	const KEYS = { current: "CURRENTKEY1", previous: "PREVIOUSKEY" };
+	const SALT = "AAAAAAAAAAAAAAAAAAAAAA";
+
+	/** A mailbox whose messages are sealed as `seals` says, in order, m0 the oldest; null is none. */
+	function sealedBox(seals: (string | null)[]) {
+		const box = mailbox(seals.length);
+		seals.forEach((seal, n) => {
+			box.db.prepare("UPDATE message SET seal = ? WHERE id = ?").run(seal, `m${n}`);
+		});
+		const extra = (id: string) =>
+			box.db
+				.prepare("SELECT rekey_failed AS failed, seal_tries AS tries FROM message WHERE id = ?")
+				.get(id) as { failed: string | null; tries: number };
+		return { ...box, extra };
+	}
+
+	/** R2 that seals each copy under the current key, as `RawMail` does. */
+	function current(box: ReturnType<typeof sealedBox>) {
+		const r2 = bucket(box);
+		const copy = r2.sealer.copy;
+		r2.sealer.copy = async (from, object) => {
+			await copy(from, object);
+			return `v2.${KEYS.current}.${SALT}`;
+		};
+		return r2;
+	}
+
+	it("names the copy with the message's id and the key's, beside the mail", () => {
+		expect(rekeyedName("w/b/m0.sealed.eml", "m0", "KEY")).toBe("w/b/m0.KEY.eml");
+		expect(rekeyedName("w/b/m0.OLD.eml", "m0", "KEY")).toBe("w/b/m0.KEY.eml");
+	});
+
+	it("seals again mail under the previous key, or sealed before ids, after mail kept as it came", async () => {
+		const box = sealedBox([
+			`v1.${SALT}`,
+			`v2.${KEYS.previous}.${SALT}`,
+			`v2.${KEYS.current}.${SALT}`,
+			`v2.SOMEOTHERKY.${SALT}`,
+			null,
+		]);
+		const r2 = current(box);
+		expect(await resealBatch(box.storage, r2.sealer, KEYS)).toBe("done");
+		// The one kept as it came first, then those under the previous key; the rest are left.
+		expect(r2.calls.copy).toEqual(["w/b/m4.eml", "w/b/m0.eml", "w/b/m1.eml"]);
+		expect(box.row("m0")).toMatchObject({
+			object: `w/b/m0.${KEYS.current}.eml`,
+			seal: `v2.${KEYS.current}.${SALT}`,
+			stale: "w/b/m0.eml",
+		});
+		expect(box.row("m1")?.object).toBe(`w/b/m1.${KEYS.current}.eml`);
+		expect(box.row("m4")?.object).toBe("w/b/m4.sealed.eml");
+		for (const id of ["m2", "m3"]) expect(box.row(id)?.object).toBe(`w/b/${id}.eml`);
+		expect(resealStatus(box.storage, KEYS)).toEqual({ left: 0, unopened: 1 });
+		// A second run finds nothing more.
+		expect(waitsUnderPrevious(box.storage, KEYS)).toBe(false);
+	});
+
+	it("leaves sealed mail be without a previous key", async () => {
+		const box = sealedBox([`v1.${SALT}`, `v2.${KEYS.previous}.${SALT}`, null]);
+		const r2 = current(box);
+		const keys = { current: KEYS.current, previous: null };
+		expect(waitsUnderPrevious(box.storage, keys)).toBe(false);
+		expect(await resealBatch(box.storage, r2.sealer, keys)).toBe("done");
+		expect(r2.calls.copy).toEqual(["w/b/m2.eml"]);
+	});
+
+	it("waits for an original to go before sealing a message again", async () => {
+		const box = sealedBox([`v2.${KEYS.previous}.${SALT}`]);
+		box.db
+			.prepare(
+				"UPDATE message SET stale_object = 'w/b/m0.before.eml', stale_at = 1 WHERE id = 'm0'",
+			)
+			.run();
+		const r2 = current(box);
+		expect(await resealBatch(box.storage, r2.sealer, KEYS)).toBe("done");
+		expect(r2.calls.copy).toEqual([]);
+		// It still needs the previous key.
+		expect(resealStatus(box.storage, KEYS)).toEqual({ left: 1, unopened: 0 });
+	});
+
+	it("marks mail that opens with neither key, until another previous key", async () => {
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		const box = sealedBox([`v1.${SALT}`]);
+		const r2 = current(box);
+		r2.hooks.copy = () => {
+			throw new SealError("Doesn't open");
+		};
+		expect(await resealBatch(box.storage, r2.sealer, KEYS)).toBe("done");
+		expect(box.extra("m0").failed).toBe(KEYS.previous);
+		expect(box.row("m0")).toMatchObject({ object: "w/b/m0.eml", seal: `v1.${SALT}` });
+		expect(resealStatus(box.storage, KEYS)).toEqual({ left: 0, unopened: 1 });
+		expect(await resealBatch(box.storage, r2.sealer, KEYS)).toBe("done");
+		expect(r2.calls.copy).toEqual(["w/b/m0.eml"]);
+		// Its copy is deleted, under the current key's name.
+		expect(r2.calls.remove).toEqual([[`w/b/m0.${KEYS.current}.eml`]]);
+
+		// Under another previous key it is tried again, and once sealed, the mark goes.
+		const other = { current: KEYS.current, previous: "ANOTHERKEY1" };
+		expect(waitsUnderPrevious(box.storage, other)).toBe(true);
+		r2.hooks.copy = undefined;
+		expect(await resealBatch(box.storage, r2.sealer, other)).toBe("done");
+		expect(box.extra("m0").failed).toBeNull();
+		expect(box.row("m0")?.object).toBe(`w/b/m0.${KEYS.current}.eml`);
+	});
+
+	it("counts a delivery on its way under another key as still needing the previous key", () => {
+		const box = sealedBox([`v2.${KEYS.current}.${SALT}`, `v2.${KEYS.previous}.${SALT}`]);
+		box.db.prepare("UPDATE message SET state = 'pending' WHERE id = 'm1'").run();
+		expect(resealStatus(box.storage, KEYS)).toEqual({ left: 1, unopened: 0 });
+		box.db.prepare("UPDATE message SET seal = ? WHERE id = 'm1'").run(`v2.${KEYS.current}.${SALT}`);
+		expect(resealStatus(box.storage, KEYS)).toEqual({ left: 0, unopened: 0 });
+	});
+
+	it("stops trying mail R2 fails on, until the daily run asks again", async () => {
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		const box = sealedBox([`v2.${KEYS.previous}.${SALT}`]);
+		const r2 = current(box);
+		r2.hooks.copy = () => {
+			throw new TypeError("R2 is down");
+		};
+		for (let n = 0; n < RESEAL_TRIES; n++) {
+			expect(await resealBatch(box.storage, r2.sealer, KEYS)).toBe("failed");
+		}
+		expect(box.extra("m0")).toEqual({ failed: null, tries: RESEAL_TRIES });
+		// Not marked as mail that doesn't open, and not tried again for now.
+		expect(box.row("m0")?.failed).toBeNull();
+		expect(waitsUnderPrevious(box.storage, KEYS)).toBe(false);
+		expect(await resealBatch(box.storage, r2.sealer, KEYS)).toBe("done");
+		expect(r2.calls.copy).toHaveLength(RESEAL_TRIES);
+		// Asking counts it as still needing the previous key, and has it tried again.
+		expect(resealStatus(box.storage, KEYS)).toEqual({ left: 1, unopened: 0 });
+		expect(box.extra("m0").tries).toBe(0);
+		r2.hooks.copy = undefined;
+		expect(await resealBatch(box.storage, r2.sealer, KEYS)).toBe("done");
+		expect(box.row("m0")?.object).toBe(`w/b/m0.${KEYS.current}.eml`);
+		expect(box.extra("m0").tries).toBe(0);
+	});
+
+	it("leaves a message whose seal changed while its copy was written", async () => {
+		const box = sealedBox([`v2.${KEYS.previous}.${SALT}`]);
+		const r2 = current(box);
+		r2.hooks.written = () => {
+			box.db
+				.prepare("UPDATE message SET seal = ? WHERE id = 'm0'")
+				.run(`v2.${KEYS.current}.BBBBBBBBBBBBBBBBBBBBBB`);
+		};
+		expect(await resealBatch(box.storage, r2.sealer, KEYS)).toBe("done");
+		expect(box.row("m0")?.object).toBe("w/b/m0.eml");
+		expect([...r2.objects]).toEqual(["w/b/m0.eml"]);
 	});
 });

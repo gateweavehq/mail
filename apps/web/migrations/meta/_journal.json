@@ -162,6 +162,13 @@
       "when": 1794393859705,
       "tag": "0022_provider_key_version",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "6",
+      "when": 1794396916697,
+      "tag": "0023_mailbox_sealed_under",
+      "breakpoints": true
     }
   ]
 }

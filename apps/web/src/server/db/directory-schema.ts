@@ -74,6 +74,12 @@ export const mailbox = sqliteTable(
 		 * mailbox only when it is given that one.
 		 */
 		everyone: integer("everyone", { mode: "boolean" }).default(false).notNull(),
+		/**
+		 * The current and previous keys' ids (`keysDone`) with which the mailbox last told the daily
+		 * run it holds nothing that needs the previous key. Null until then, and again once it stores
+		 * mail under another key. See `resealMailboxes`.
+		 */
+		sealedUnder: text("sealed_under"),
 		createdAt: createdAt(),
 	},
 	(table) => [index("mailbox_organization_id_idx").on(table.organizationId)],

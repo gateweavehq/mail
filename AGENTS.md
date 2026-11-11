@@ -208,8 +208,8 @@ These are load-bearing. Breaking one breaks users' data or security, usually sil
     (`message.seal`), and only `RawMail` opens it with `SECRETS_KEY` or `SECRETS_KEY_PREVIOUS`;
     never read or write an object in `RAW_MAIL` directly, though deleting one by name is fine.
     Sealed mail stays as it was written, so a change to the format is a new seal version beside
-    `v1` and `v2`, never a change to one. The
-    mailbox's alarm seals mail kept as it came (`resealing.ts`): the copy is written and opened
+    `v1` and `v2`, never a change to one. The mailbox's alarm seals mail kept as it came, and
+    seals again mail under `SECRETS_KEY_PREVIOUS` (`resealing.ts`): the copy is written and opened
     first, the row switches to it (object and seal) in one synchronous step, and only then, after a
     grace window (`stale_at`), is the original deleted. Keep that order.
 

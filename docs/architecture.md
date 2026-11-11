@@ -145,7 +145,8 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
       over that alone is still taken, by itself): mail streams through, so memory stays flat, and
       a run is a few seconds of R2 and AES-GCM at most. It sets the alarm again while some remain.
       A mailbox seals its old mail as it wakes: the object looks when it starts, which any mail,
-      read or alarm does, so a mailbox nobody uses keeps its old mail as it came until then. A message's sealed copy is
+      read, alarm or the daily run asking does, so a mailbox nobody uses keeps its old mail as it
+      came until then. A message's sealed copy is
       written under its own name with `.sealed` before `.eml` (so under the mailbox's prefix, and
       known to the mailbox without an entry of its own: `deletePrefix`, deleting a message and
       removing a mailbox all cover it), and opened at its start. Then, in one synchronous step,
@@ -169,10 +170,27 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
       is counted per message (`seal_tries`) and tried again after a minute; the fifth marks it as
       mail that doesn't open, with a log line that names only the kind of error. Search and the duplicate check (`body_hash`) work on the
       plaintext and are unaffected.
+    - **Mail under the previous key is sealed again** the same way, from the same run, once mail
+      kept as it came has had its turn: with `SECRETS_KEY_PREVIOUS` set, rows whose seal names it,
+      or names no key (`v1`), found as ranges of `message_sealed`. The copy is named with the
+      message's id and the current key's (`<id>.<key id>.eml`), so each change of key writes a name
+      of its own, which deleting the message also covers for the current and previous keys. A
+      message whose original still waits out its window is left until it is deleted. Mail that
+      opens with neither key, or is missing, gets `rekey_failed`, the previous key's id, so that
+      another `SECRETS_KEY_PREVIOUS` has it tried again (a switch clears it); R2 failing five
+      times stops tries until the daily run next asks. Without a previous key, sealed mail is left as it is.
+    - **The daily run asks mailboxes** (`resealMailboxes`) while the deployment has a previous
+      key: up to 200 a run, at random among those D1 doesn't know are done
+      (`mailbox.sealed_under`: the current and previous keys' ids, `keysDone`, once a mailbox said
+      it had none left, so another previous key has them all asked again). Asking
+      (`resealStatus`) counts what is still under the previous key, deliveries on their way under
+      another key included, and what opens with neither; it resets R2's tries and sets the alarm,
+      so a mailbox nobody uses gets its turn too. A mailbox that stores a delivery a Worker sealed
+      under another key, as during a deploy, sets its `sealed_under` back to NULL. The run logs
+      `raw mail:` with the counts, which, with `secrets:`, say when the previous key can go. An
+      object's start doesn't look for this work, so a wake costs nothing more.
     - Sealed mail stays as it was written, so another scheme would be a new seal version beside
-      `v1` and `v2`. After `SECRETS_KEY` changes, mail stays under the key it was sealed with, so
-      the old one has to stay as `SECRETS_KEY_PREVIOUS`; sealing it again under the new key is
-      still to come.
+      `v1` and `v2`.
   - **The same message twice is kept once.** A delivery's key is a hash of the mailbox and
     whichever of the message's `Message-ID`, `From`, `Date` and `Subject` it has. When one
     finishes and a stored message has the same key, their bodies are compared, and the copy goes
