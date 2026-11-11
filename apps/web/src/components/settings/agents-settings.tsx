@@ -50,6 +50,10 @@ function failure(
 	return error.message || fallback;
 }
 
+/** The skill for agents, as plain Markdown, which the plugin carries too. */
+const SKILL_URL =
+	"https://github.com/gateweavehq/mail/blob/main/plugins/gateweave-mail/skills/mail/SKILL.md";
+
 /** A key just made, shown once. */
 interface NewKey {
 	agentName: string;
@@ -181,7 +185,8 @@ function KeyReveal({
 		}
 	}
 	const mcpUrl = new URL("/mcp", apiUrl).href;
-	const mcpCommand = `claude mcp add --transport http gateweave-mail ${mcpUrl} --header "Authorization: Bearer ${newKey.secret}"`;
+	// The key isn't in it: Claude Code asks for it, and keeps it with its own sign-in.
+	const pluginCommand = `claude plugin install gateweave-mail --marketplace gateweavehq/mail --config mcp_url=${mcpUrl}`;
 	const restUrl = `${apiUrl}/v1`;
 	const command = `curl -H "Authorization: Bearer ${newKey.secret}" ${restUrl}/mailboxes`;
 
@@ -211,22 +216,42 @@ function KeyReveal({
 					the key as{" "}
 					<code className="font-mono text-xs text-foreground">Authorization: Bearer …</code>. Its
 					tools read and wait for mail, give sign-in codes, send and make addresses, as this agent
-					may. With Claude Code, for example:
+					may.
+				</p>
+				<p>
+					In Claude Code, Mail's plugin adds them, with a{" "}
+					<a
+						href={SKILL_URL}
+						target="_blank"
+						rel="noreferrer"
+						className="text-foreground underline underline-offset-4"
+					>
+						skill
+					</a>{" "}
+					that says how to use them well, which other agents can follow too. Install it with:
 				</p>
 				<div className="flex items-start gap-2">
 					<pre className="min-w-0 flex-1 overflow-x-auto rounded-md border bg-background p-2 font-mono text-xs text-foreground">
-						{mcpCommand}
+						{pluginCommand}
 					</pre>
 					<Button
 						variant="ghost"
 						size="icon"
 						className="size-8"
-						aria-label="Copy the MCP command"
-						onClick={() => copy(mcpCommand, "Command")}
+						aria-label="Copy the plugin command"
+						onClick={() => copy(pluginCommand, "Command")}
 					>
 						<Copy />
 					</Button>
 				</div>
+				<p>
+					Then run{" "}
+					<code className="font-mono text-xs text-foreground">
+						/plugin configure gateweave-mail@gateweave-mail
+					</code>{" "}
+					in Claude Code and paste the key. Claude Code keeps it with its own sign-in, not in its
+					settings.
+				</p>
 				<p>
 					Or its own code calls the API at{" "}
 					<code className="font-mono text-xs text-foreground break-all">{restUrl}</code> with the

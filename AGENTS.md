@@ -28,6 +28,8 @@ Read [docs/architecture.md](docs/architecture.md) before changing auth or the `e
 | Path              | What lives there                                                            |
 | ----------------- | --------------------------------------------------------------------------- |
 | `apps/web`        | The Worker: TanStack Start UI, Better Auth, rate limiting, email, `email()` |
+| `plugins/`        | The Claude Code plugin, with the skill that tells agents how to use Mail    |
+| `.claude-plugin/` | The marketplace that offers the plugin                                      |
 | `docs/`           | Architecture and self-hosting                                               |
 | `scripts/`        | Repository tooling (`doctor`, `update-copy`)                                |
 | `.claude/skills/` | Step-by-step playbooks for recurring tasks (plain Markdown, any agent)      |
@@ -131,7 +133,8 @@ These are load-bearing. Breaking one breaks users' data or security, usually sil
     (`apps/web/src/server/agent-api/`) admit only a working key, never a session. Both are made
     from one list of operations (`agent-api/operations.ts`), which call the same functions as the
     REST routes, with the request's own key, never around them: they add no access rules of their
-    own, and must not widen theirs. Change an operation there, never one transport alone. What
+    own, and must not widen theirs. Change an operation there, never one transport alone, and
+    the skill for agents (`plugins/gateweave-mail/skills/mail/SKILL.md`) with it. What
     they hand an agent from a message is marked as the sender's words, beside the proved domain,
     and `get_verification_code` hands over only the code and the From's domain.
 14. **A message that may have gone is never sent again by itself.** Email Service has no
