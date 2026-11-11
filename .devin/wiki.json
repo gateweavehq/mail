@@ -1,0 +1,149 @@
+{
+	"repo_notes": [
+		{
+			"content": "Gateweave Mail is open-source mailboxes for people and AI agents, on Cloudflare, with no server to run. It ships as one Worker: TanStack Start UI, Better Auth, an email() handler for incoming mail, a Mailbox Durable Object per mailbox with its index in SQLite, raw mail in R2, a Webhooks Durable Object per workspace, D1 for accounts and the address directory, and a queue() handler for delivery events. It is early: aliases and transactional sending are planned, not built. AGENTS.md is the source of truth for how the project is built, and docs/architecture.md explains every design decision, including measured facts about what Cloudflare does with mail: follow them, cite them, and prefer their wording over guesses.",
+			"author": "Maintainers"
+		},
+		{
+			"content": "The invariants in AGENTS.md are load-bearing and should appear wherever they apply: workspaces are private and every server function checks membership first (currentMember); admin rights come from isAdminRole, never from comparing a role with member; a workspace always keeps an owner (database triggers); the email() handler has about 2 seconds of CPU, so it only looks up and refuses, or stores, and parsing happens when someone opens a message; delivery is at least once, so handling a message twice must change nothing; on an internal failure the handler throws (a 421 retry) and setReject is only for a real refusal; mail is untrusted input and only dmarc=pass in Cloudflare's own Authentication-Results proves a sender's domain; a message's HTML is shown only in a sandboxed frame under its own policy; a mailbox's Durable Object has no public route and mail is read only through openMailbox and canReadMailbox; an agent's key (gwm_...) is decided by itself, never by cookies, and its mail to anyone its policy does not name is held for a person; a message that may have gone is never sent again by itself; a workspace's provider key is sealed and never leaves the server; Resend's webhook and delivery events are data checked by signature and by whose mailbox sent the mail; webhooks tell of what happened once; raw mail is read and written only through RawMail.",
+			"author": "Maintainers"
+		},
+		{
+			"content": "Packages: apps/web (the Worker, with server code in src/server: directory, mailbox, agent-api, mcp, providers for Email Service and Resend, suppressions, webhooks, auth, secrets), packages/mail (@gateweave/mail, a TypeScript SDK and a CLI for the agent API, whose types are generated from the OpenAPI document), plugins/gateweave-mail (the Claude Code plugin and the skill that tells agents how to use Mail), .claude-plugin (the marketplace that offers it). The agent operations are defined once in apps/web/src/server/agent-api/operations.ts and made into both the MCP tools at /mcp and the REST routes under /api/v1. Generated files (routeTree.gen.ts, worker-configuration.d.ts, auth-schema.ts, packages/mail/openapi.json, packages/mail/src/api.gen.ts, apps/web/migrations/) should be referenced, not documented line by line. Auth, rate limiting, email and UI primitives were copied from Gateweave Agents, which took them from Gateweave Track.",
+			"author": "Maintainers"
+		}
+	],
+	"pages": [
+		{
+			"title": "Overview",
+			"purpose": "What Gateweave Mail is, what runs where (one Worker, D1, a Mailbox Durable Object per mailbox, R2, a Webhooks object per workspace, the email() and queue() handlers), what exists today and what is only planned, how to run it locally (pnpm dev on port 4750) and self-host it (docs/self-hosting.md)."
+		},
+		{
+			"title": "Repository Layout",
+			"purpose": "The Worker in apps/web, the SDK and CLI in packages/mail, the plugin and marketplace, how the pieces fit, and the commands in AGENTS.md (check, typecheck, test, test:e2e, verify, deploy).",
+			"parent": "Overview"
+		},
+		{
+			"title": "Invariants",
+			"purpose": "Each invariant from AGENTS.md, why it exists, where the code enforces it, and what breaks if it is violated.",
+			"parent": "Overview"
+		},
+		{
+			"title": "Architecture",
+			"purpose": "The shape of the Worker: server functions as the API, Better Auth and D1, rate limits in a Durable Object, the daily cron, security headers, and what a deployment without its database or secret serves."
+		},
+		{
+			"title": "Authentication and Accounts",
+			"purpose": "Better Auth accounts and sessions, signing in through an OpenID Connect provider (discovery, linking never assumed, back-channel logout) and GitHub, changing a name or password, and deleting an account.",
+			"parent": "Architecture"
+		},
+		{
+			"title": "Workspaces, Members and Roles",
+			"purpose": "Workspaces as Better Auth organizations, members and invitations, isAdminRole in apps/web/src/lib/roles.ts, owner triggers that keep a workspace's owner, and currentMember with its not-found answer to non-members.",
+			"parent": "Architecture"
+		},
+		{
+			"title": "Database and Migrations",
+			"purpose": "The D1 schema (Better Auth tables, the directory, outgoing mail, suppressions, agents), each Durable Object's SQLite schema, Drizzle Kit, append-only migrations, custom migrations such as the owner triggers, and the schema-change skill.",
+			"parent": "Architecture"
+		},
+		{
+			"title": "Address Directory and Domains",
+			"purpose": "D1's directory of proved domains, mailboxes and addresses, proving a domain with a TXT record at _gateweave-mail.<domain>, one holder per domain, triggers across workspaces, how ending addresses keep their name for 30 days, and the directory gateway.",
+			"parent": "Architecture"
+		},
+		{
+			"title": "Receiving Mail: the email() Handler",
+			"purpose": "apps/web/src/server/inbound.ts: the lookup on the primary, refusing unknown addresses with setReject, storing known ones, throwing for a retry, CPU and at-least-once limits, and Cloudflare's measured behavior in docs/architecture.md."
+		},
+		{
+			"title": "Resend as Provider",
+			"purpose": "Receiving through Resend's webhook for a domain whose MX is Resend's, how the workspace's webhook is made, signature checks by Svix, taking only the recipient the envelope names, and sending through Resend with idempotency keys.",
+			"parent": "Receiving Mail: the email() Handler"
+		},
+		{
+			"title": "Mailboxes",
+			"purpose": "The Mailbox Durable Object per mailbox: the SQLite index, raw mail in R2 under <workspace>/<mailbox>/, pending objects and the alarm that cleans them, the 1 GiB limit, dedupe of the same message, and removal."
+		},
+		{
+			"title": "Sealed Raw Mail",
+			"purpose": "RawMail in apps/web/src/server/mailbox/sealed.ts: AES-256-GCM per object derived from SECRETS_KEY, seal versions, resealing under SECRETS_KEY_PREVIOUS, and mail that does not open.",
+			"parent": "Mailboxes"
+		},
+		{
+			"title": "Threads, Reading and Search",
+			"purpose": "How a message joins a thread, the mailbox and thread pages, search, who may read a mailbox (canReadMailbox, openMailbox), and showing the From header and the proved sender domain.",
+			"parent": "Mailboxes"
+		},
+		{
+			"title": "Message HTML and Images",
+			"purpose": "A message's HTML as a page of its own under its own policy (framePolicy), the sandboxed frame without scripts, images a reader allows, and downloading the original.",
+			"parent": "Mailboxes"
+		},
+		{
+			"title": "Sending Mail",
+			"purpose": "Replying and writing new mail (send.ts, compose.ts, delivery.ts): the copy written before anything is called, HTML and files, drafts sent once, threading by the message's own id, outgoing states including uncertain, and Send again.",
+			"parent": "Mailboxes"
+		},
+		{
+			"title": "Delivery Events and Suppressions",
+			"purpose": "The queue() handler and Resend's events as data (DELIVERY_RANK), recording only in the sending mailbox, and each workspace's suppression list, who sees it, and how removing an entry clears a provider's list.",
+			"parent": "Sending Mail"
+		},
+		{
+			"title": "Email Providers",
+			"purpose": "Sending through Cloudflare Email Service or Resend (apps/web/src/server/providers), which domains use which, sealed workspace provider keys (SECRETS_KEY), and what Email Service does with a message and its files.",
+			"parent": "Sending Mail"
+		},
+		{
+			"title": "Agents",
+			"purpose": "Agent members made by an admin, an agent's key (gwm_...) and currentCaller, mailbox grants, agent_policy and held mail awaiting a person, pausing an agent, the agent's page, activity log and the agents at a glance."
+		},
+		{
+			"title": "Agent Addresses",
+			"purpose": "Addresses an agent makes for itself within agent_address_policy: reserved names, removed addresses, limits checked in the statement that adds the row, and ending only addresses it made.",
+			"parent": "Agents"
+		},
+		{
+			"title": "MCP Server and Agent API",
+			"purpose": "The operations defined once in agent-api/operations.ts and served as MCP tools at /mcp and REST routes under /api/v1 with an OpenAPI document, key-only access, and how mail from senders is marked as the sender's words.",
+			"parent": "Agents"
+		},
+		{
+			"title": "TypeScript SDK and CLI",
+			"purpose": "@gateweave/mail in packages/mail: the SDK and CLI for the agent API, types generated from openapi.json, webhook signature verification, and how the generator is kept in step with the Worker's operations.",
+			"parent": "Agents"
+		},
+		{
+			"title": "Claude Code Plugin",
+			"purpose": "plugins/gateweave-mail and the marketplace in .claude-plugin: the skill that tells agents how to use Mail, and the rule to change it together with the operations.",
+			"parent": "Agents"
+		},
+		{
+			"title": "Webhooks",
+			"purpose": "Webhooks of a workspace and of an agent: events written in the mailbox's own transaction, one Webhooks object per workspace queueing each event once, Standard Webhooks signatures, body shapes, pausing, and the public-hosts-only fetch rule."
+		},
+		{
+			"title": "Security Model",
+			"purpose": "Mail as untrusted input and dmarc=pass as the only proof of a sender, Content Security Policy and headers, Durable Objects with no public route, sealed secrets, key handling, and rate limiting (the RateLimiter Durable Object).",
+			"parent": "Architecture"
+		},
+		{
+			"title": "Web App",
+			"purpose": "apps/web: TanStack Start routes, server functions that import server modules dynamically, shared UI primitives, the composer, and legal page links."
+		},
+		{
+			"title": "What Cloudflare Does With Mail",
+			"purpose": "The measured facts in docs/architecture.md: one catch-all rule per zone, routing rule limits and delay, SMTP answers, the CPU limit, retries, Cloudflare's headers and Email Service's behavior with files.",
+			"parent": "Receiving Mail: the email() Handler"
+		},
+		{
+			"title": "Testing",
+			"purpose": "The test suites and where they run: Worker tests through Miniflare with a stand-in for Email Service and deliver() into email(), packages/mail tests in Node, sdk.test.ts against the Worker, and Playwright e2e against the production build."
+		},
+		{
+			"title": "Deployment and Self-Hosting",
+			"purpose": "The Deploy button, wrangler.jsonc at the root, where the database and mail live, settings (domain, legal pages, email and Resend, OIDC provider), onboarding sending domains, deleting an account, updating, and releases."
+		}
+	]
+}
