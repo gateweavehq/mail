@@ -227,25 +227,37 @@ describe("resealBatch", () => {
 		expect([...r2.objects].sort()).toEqual(["w/b/m0.eml", "w/b/m0.sealed.eml", "w/b/m1.eml"]);
 	});
 
-	it("leaves a message as it is when it began being sent while its copy was written", async () => {
+	it("leaves a message as it is when a try to send it began while its copy was written", async () => {
 		const box = mailbox(1);
 		const r2 = bucket(box);
 		r2.hooks.written = () => {
 			box.db.prepare("UPDATE message SET sent_by = 'member' WHERE id = 'm0'").run();
 			box.db
-				.prepare("INSERT INTO outgoing (message, state, request) VALUES ('m0', 'waiting', '{}')")
+				.prepare("INSERT INTO outgoing (message, state, request) VALUES ('m0', 'sending', '{}')")
 				.run();
 		};
 		expect(await resealBatch(box.storage, r2.sealer)).toBe("done");
 		expect(box.row("m0")).toMatchObject({ object: "w/b/m0.eml", seal: null, stale: null });
 		expect([...r2.objects]).toEqual(["w/b/m0.eml"]);
-		// Not picked while it waits to be sent, but once it is sent.
+		// Not picked while the try goes on, but once it is over, whatever became of it.
 		r2.hooks.written = undefined;
 		expect(await resealBatch(box.storage, r2.sealer)).toBe("done");
 		expect(box.sealed()).toEqual([]);
-		box.db.prepare("UPDATE outgoing SET state = 'sent' WHERE message = 'm0'").run();
+		box.db.prepare("UPDATE outgoing SET state = 'refused' WHERE message = 'm0'").run();
 		expect(await resealBatch(box.storage, r2.sealer)).toBe("done");
 		expect(box.sealed()).toEqual(["m0"]);
+	});
+
+	it("seals mail that waits to be sent, approved or sent again, as it may wait for good", async () => {
+		const states = ["waiting", "held", "refused", "uncertain", "sent", "discarded"];
+		const box = mailbox(states.length);
+		const r2 = bucket(box);
+		const insert = box.db.prepare(
+			"INSERT INTO outgoing (message, state, request) VALUES (?, ?, '{}')",
+		);
+		for (const [n, state] of states.entries()) insert.run(`m${n}`, state);
+		while ((await resealBatch(box.storage, r2.sealer)) === "more") {}
+		expect(box.sealed()).toEqual(ids(0, states.length - 1));
 	});
 
 	it("deletes its copy when the mailbox went away while it was written", async () => {
