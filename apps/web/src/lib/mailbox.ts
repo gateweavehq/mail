@@ -1,7 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import type { Delivery } from "./delivery";
-import type { SendStatus } from "./outbox";
+import type { SendStatus, SentContext } from "./outbox";
 
 /** Someone named in a message's headers. The name is decoded; either part may be empty. */
 export interface Person {
@@ -47,6 +47,8 @@ export interface SentInfo {
 	deliveries: Delivery[];
 	/** How many addresses it went to, counted once each; 0 when that isn't known. */
 	recipients: number;
+	/** What its writer said it was for: their own words, never proof. */
+	context: SentContext | null;
 }
 
 /** A message an agent wrote that waits for a person to approve it. */

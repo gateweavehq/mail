@@ -2,6 +2,7 @@ import { Link } from "@tanstack/react-router";
 import { ArrowLeft, Bot, Clock, ShieldCheck } from "lucide-react";
 import type { ReactNode } from "react";
 import { senderName } from "#/components/mail/message-view";
+import { SentFor } from "#/components/mail/sent-context";
 import { sentLabel } from "#/components/mail/sent-status";
 import { AgentLog } from "#/components/settings/agent-log";
 import { PauseButton, PausedNote } from "#/components/settings/agents-settings";
@@ -240,6 +241,11 @@ function Messages({ messages, kind }: { messages: AgentMessage[]; kind: "wrote" 
 										</span>
 									)}
 									<span className="shrink-0">in {message.mailbox.name}</span>
+									{kind === "wrote" && message.sent?.context && (
+										<span className="min-w-0 truncate">
+											for <SentFor context={message.sent.context} link={false} />
+										</span>
+									)}
 									{status && <span className="shrink-0 font-medium text-foreground">{status}</span>}
 								</span>
 							</Link>

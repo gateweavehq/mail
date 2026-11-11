@@ -2,6 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import type { DeliveryState } from "./delivery";
 import type { Person } from "./mailbox";
+import type { SentContext } from "./outbox";
 import { isAdminRole } from "./roles";
 
 /**
@@ -167,6 +168,11 @@ export interface WebhookSentMessage {
 	writtenBy: WebhookActor | null;
 	/** Who approved it, when it waited for approval. */
 	approvedBy: WebhookActor | null;
+	/**
+	 * What its writer said it was for: a link, such as the CI run, issue or pull request behind it,
+	 * and a label. Their own words, never proof. Null when they gave none.
+	 */
+	context: SentContext | null;
 	url: string;
 }
 

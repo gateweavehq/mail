@@ -10,6 +10,8 @@ import {
 } from "../../lib/mailbox";
 import {
 	MAX_ATTACHMENTS,
+	MAX_CONTEXT_LABEL,
+	MAX_CONTEXT_URL,
 	MAX_FILE_NAME,
 	MAX_HTML,
 	MAX_RECIPIENTS,
@@ -170,6 +172,23 @@ const attachmentsInput = z
 	.max(MAX_ATTACHMENTS)
 	.describe(
 		`Files it carries, ${MAX_ATTACHMENTS} at most and 10 MB together. Mail doesn't send kinds of file many mail servers refuse, such as .exe, .js, .bat or .msi.`,
+	);
+const contextInput = z
+	.object({
+		url: z
+			.string()
+			.trim()
+			.max(MAX_CONTEXT_URL)
+			.describe("An https link, such as https://github.com/acme/app/actions/runs/123."),
+		label: z
+			.string()
+			.trim()
+			.max(MAX_CONTEXT_LABEL)
+			.optional()
+			.describe("A few words for it, such as: CI run 123, or Issue ENG-42."),
+	})
+	.describe(
+		"What this message is for: the run, issue or pull request behind it. People in the workspace see it beside the message, and webhooks carry it, as your own words. It never goes into the mail, so put nothing secret in it.",
 	);
 const draftInput = z
 	.uuid()
@@ -469,13 +488,14 @@ const sendEmail = operation({
 			.optional()
 			.describe("One of the mailbox's addresses; the first unless you say."),
 		draftId: draftInput.optional(),
+		context: contextInput.optional(),
 	}),
 	output: OUTPUTS.send_email,
 	hints: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
 	routes: [{ method: "POST", path: "/mailboxes/{mailbox}/messages" }],
 	refusals: [403, 409, 429],
 	maxBody: MAX_SEND_BODY,
-	async run(access, { mailbox, to, cc, subject, text, html, attachments, from, draftId }) {
+	async run(access, { mailbox, to, cc, subject, text, html, attachments, from, draftId, context }) {
 		const box = await findMailbox(access, mailbox);
 		return sent(
 			await access.outbox(box.id, {
@@ -488,6 +508,7 @@ const sendEmail = operation({
 				attachments: attachments ?? [],
 				from: from ?? null,
 				draft: draftId ?? crypto.randomUUID(),
+				context: context ?? null,
 			}),
 		);
 	},
@@ -505,13 +526,14 @@ const reply = operation({
 		html: htmlInput.optional(),
 		attachments: attachmentsInput.optional(),
 		draftId: draftInput.optional(),
+		context: contextInput.optional(),
 	}),
 	output: OUTPUTS.reply,
 	hints: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
 	routes: [{ method: "POST", path: "/mailboxes/{mailbox}/messages/{messageId}/reply" }],
 	refusals: [403, 409, 429],
 	maxBody: MAX_SEND_BODY,
-	async run(access, { mailbox, messageId, text, html, attachments, draftId }) {
+	async run(access, { mailbox, messageId, text, html, attachments, draftId, context }) {
 		const box = await findMailbox(access, mailbox);
 		// Opened for whom to answer, which the agent isn't given: what it sends is what it did.
 		const message = await access.message(box.id, messageId, null);
@@ -530,6 +552,7 @@ const reply = operation({
 				replyTo: message.id,
 				from: reply.from,
 				draft: draftId ?? crypto.randomUUID(),
+				context: context ?? null,
 			}),
 		);
 	},

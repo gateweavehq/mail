@@ -5,6 +5,8 @@ import {
 	canSendAgain,
 	isAddress,
 	MAX_ATTACHMENTS,
+	MAX_CONTEXT_LABEL,
+	MAX_CONTEXT_URL,
 	MAX_FILE_NAME,
 	MAX_HTML,
 	MAX_RECIPIENTS,
@@ -12,6 +14,7 @@ import {
 	MAX_SUBJECT,
 	MAX_TEXT,
 	type SendStatus,
+	sentContext,
 } from "../../lib/outbox";
 import { isAdminRole } from "../../lib/roles";
 import { type Suppression, suppressedRefusal } from "../../lib/suppressions";
@@ -91,6 +94,18 @@ const Action = z.discriminatedUnion("action", [
 		 * same message again, as when its answer was lost, and isn't sent twice.
 		 */
 		draft: z.uuid(),
+		/** What it was written for, as its writer says. Checked by `sentContext`. */
+		context: z
+			.object({
+				url: z.string().max(MAX_CONTEXT_URL * 2),
+				label: z
+					.string()
+					.max(MAX_CONTEXT_LABEL * 4)
+					.nullable()
+					.optional(),
+			})
+			.nullable()
+			.default(null),
 	}),
 	z.object({ action: z.literal("send-again"), message: Id }),
 	z.object({ action: z.literal("discard"), message: Id }),
@@ -243,6 +258,8 @@ export async function outboxAnswer(
 	const html = cleaned?.trim() ? cleaned : null;
 	const files = checkFiles(action.attachments, { html: html !== null });
 	if (!files.ok) return refuse(files.error, 400);
+	const context = action.context ? sentContext(action.context) : null;
+	if (typeof context === "string") return refuse(context, 400);
 	// What a reader without HTML sees, made from the HTML when none was written.
 	const text =
 		action.text.trim() || html === null
@@ -352,6 +369,7 @@ export async function outboxAnswer(
 		provider,
 		draft: action.draft,
 		hold,
+		context,
 	});
 	if (agent && sent.ok) {
 		await noteAgent(db, {
@@ -364,6 +382,7 @@ export async function outboxAnswer(
 			threadId: sent.threadId,
 			subject: message.subject,
 			detail: recipients.join(", "),
+			context,
 		});
 	}
 	return sentAnswer(sent);

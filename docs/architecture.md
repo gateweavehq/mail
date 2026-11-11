@@ -312,7 +312,8 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     (`message.read`, by `readMessage` and the raw and HTML routes) or took only a code from
     (`code.read`), each file it took from one (`attachment.read`, by `openAttachment`, for the
     download route and `get_attachment` alike), each search (`mail.searched`, once for its first page and without its words,
-    as the index holds what messages say), what it sent or wrote to wait (`outboxAnswer`), the
+    as the index holds what messages say), what it sent or wrote to wait (`outboxAnswer`), with
+    what it said that was for, the
     addresses it made and ended, and its webhooks. Those are the routes the MCP tools and the REST API go through, so
     one note covers all three. It notes too what people did to it: making it, renaming it, its
     keys, its policies, pausing and resuming it, its mailboxes (`setMailboxAccess`, by the change
@@ -466,8 +467,8 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
       its thread. Never its text: the receiver reads that with an agent's key, under that agent's
       access. The sender's words come marked as such (`untrusted`), as over the agent API.
       The events about mail the workspace sends carry the workspace, the mailbox, the message
-      (ids, when it was written, its From, To, Cc and subject, who wrote and who approved it, and
-      where people open its thread), `by`, who did what the event tells of (for `message.sent`,
+      (ids, when it was written, its From, To, Cc and subject, who wrote and who approved it, what
+      its writer said it was for, and where people open its thread), `by`, who did what the event tells of (for `message.sent`,
       who sent it again, or else who approved it, or else who wrote it), and `recipient`, for
       a recipient's server: the address, its state, when, and what the server said. Members are
       named as the workspace has them when the event is queued, with whether they are an agent,
@@ -584,6 +585,16 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
       in one transaction, and only then calls the binding. So the copy is in its thread at once,
       says who wrote it (`message.sent_by`, a membership), and counts toward the mailbox's size; a
       full mailbox doesn't send.
+    - **What it was written for** (`context`, schema version 15): its writer may give one https
+      link, such as the CI run, issue or pull request behind it, and a label of up to 100
+      characters, as `context` of `send_email` and `reply` or of the outbox's `send`. `sentContext`
+      (`lib/outbox.ts`) takes only https, without a user name or password, writes the link as the
+      URL parser does (a host in another script as its punycode) and takes control and format
+      characters out of the label, so it can't turn text around. It is kept in `message.context`,
+      shown beside the message ("Its writer said it is for …", with the link's host beside its
+      label), in the rows of the agent's page and its log (`agent_log.context`), and carried by
+      each webhook event about the message, always as the writer's words, as Mail checks nothing
+      else about it. It is never put in the mail.
     - **HTML and files go in the copy, and from it** (`files.ts`). A message carries text, and
       HTML and files when its writer gives them.
       - **The composer writes text, and HTML from it.** What a person types is the text, and

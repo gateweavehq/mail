@@ -9,6 +9,7 @@ import {
 	MAX_LOGGED_DETAIL,
 	MAX_LOGGED_SUBJECT,
 } from "../lib/agent-log";
+import { keptContext, type SentContext } from "../lib/outbox";
 import { withoutCode } from "../lib/verification-code";
 import { type Database, schema } from "./db";
 
@@ -30,6 +31,8 @@ export interface AgentLogNote {
 	/** A message's subject, as people read it, never more of it. */
 	subject?: string | null;
 	detail?: string | null;
+	/** For mail the agent wrote, what it said the mail was for, as `sentContext` made it. */
+	context?: SentContext | null;
 }
 
 // An empty subject stays one, so the page says "(no subject)" and opens its thread.
@@ -59,6 +62,7 @@ export async function noteAgent(
 		// Subjects often carry a sign-in code, which the log never keeps.
 		subject: cut(note.subject == null ? null : withoutCode(note.subject), MAX_LOGGED_SUBJECT),
 		detail: cut(note.detail, MAX_LOGGED_DETAIL),
+		context: note.context ? JSON.stringify(note.context) : null,
 		at,
 	}));
 	try {
@@ -107,6 +111,7 @@ export async function agentLogPage(
 			threadId: agentLog.threadId,
 			subject: agentLog.subject,
 			detail: agentLog.detail,
+			context: agentLog.context,
 		})
 		.from(agentLog)
 		.leftJoin(user, eq(user.id, agentLog.actorUserId))
@@ -144,6 +149,7 @@ export async function agentLogPage(
 				target: row.targetId,
 				subject: row.subject,
 				detail: row.detail,
+				context: keptContext(row.context),
 				thread: row.threadId,
 			}),
 		),

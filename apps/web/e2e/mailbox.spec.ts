@@ -926,6 +926,8 @@ test("an agent's mail to someone its settings don't name waits until a person ap
 			to: ["customer@example.org"],
 			subject: "Your parcel",
 			text: "It left on Monday.",
+			// What it is for, as the agent says: shown beside it, never sent.
+			context: { url: "https://track.example.org/shop/issue/OPS-12", label: "Ticket OPS-12" },
 		},
 	});
 	expect(written.status()).toBe(200);
@@ -946,6 +948,9 @@ test("an agent's mail to someone its settings don't name waits until a person ap
 	await expect(
 		page.getByRole("region", { name: "What it wrote" }).getByRole("link", { name: /^Your parcel/ }),
 	).toContainText("Waiting for approval");
+	await expect(held.getByRole("link", { name: /^Your parcel/ })).toContainText(
+		"for Ticket OPS-12 (track.example.org)",
+	);
 
 	// The mailbox's page says what waits, and a person approves it from its thread.
 	await page.goto(`/${slug}/mailboxes/${mailboxId}`);
@@ -957,6 +962,14 @@ test("an agent's mail to someone its settings don't name waits until a person ap
 	const thread = page.getByRole("list", { name: "Messages in this thread" });
 	const copy = thread.getByRole("article", { name: /Support/ });
 	await expect(copy.getByText("Waiting for approval", { exact: true })).toBeVisible();
+	// Whoever approves it sees what the agent says it is for, as its words, with where it goes.
+	await expect(
+		copy.getByText(/^Its writer said it is for Ticket OPS-12 \(track\.example\.org\)\.$/),
+	).toBeVisible();
+	await expect(copy.getByRole("link", { name: "Ticket OPS-12" })).toHaveAttribute(
+		"href",
+		"https://track.example.org/shop/issue/OPS-12",
+	);
 	await copy.getByRole("button", { name: "Approve and send" }).click();
 	await expect(copy.getByText("Sent", { exact: true })).toBeVisible();
 	await expect(
@@ -986,6 +999,7 @@ test("an agent's mail to someone its settings don't name waits until a person ap
 		`${person.name} approved its message`,
 	);
 	await expect(activity.getByText("Sorter wrote a message that waits for approval")).toBeVisible();
+	await expect(activity.getByRole("link", { name: "Ticket OPS-12" })).toBeVisible();
 	const byPeople = activity.getByRole("button", { name: "Changes by people" });
 	await byPeople.click();
 	await expect(byPeople).toHaveAttribute("aria-pressed", "true");

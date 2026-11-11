@@ -1,5 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
+import { SentFor } from "#/components/mail/sent-context";
 import { Button } from "#/components/ui/button";
 import { useWorkspace } from "#/components/workspace/context";
 import {
@@ -185,7 +186,7 @@ function Entry({ entry, agentName }: { entry: AgentLogEntry; agentName: string }
 					{formatRelative(entry.at)}
 				</time>
 			</span>
-			{(entry.subject !== null || entry.detail || entry.mailbox) && (
+			{(entry.subject !== null || entry.detail || entry.context || entry.mailbox) && (
 				<span className="flex min-w-0 flex-wrap items-baseline gap-x-2 text-xs text-muted-foreground">
 					{entry.subject !== null &&
 						(thread ? (
@@ -200,6 +201,11 @@ function Entry({ entry, agentName }: { entry: AgentLogEntry; agentName: string }
 							<span className="min-w-0 truncate">{entry.subject || "(no subject)"}</span>
 						))}
 					{entry.detail && <span className="min-w-0 break-words">{entry.detail}</span>}
+					{entry.context && (
+						<span className="min-w-0 break-words">
+							said for <SentFor context={entry.context} />
+						</span>
+					)}
 					{entry.mailbox && (
 						<span className="shrink-0">in {entry.mailbox.name ?? "a mailbox since removed"}</span>
 					)}

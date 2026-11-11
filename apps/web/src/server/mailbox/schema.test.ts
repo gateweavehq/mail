@@ -49,6 +49,7 @@ describe("migrate", () => {
 			{ version: 12 },
 			{ version: 13 },
 			{ version: 14 },
+			{ version: 15 },
 		]);
 	});
 

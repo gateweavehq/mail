@@ -165,7 +165,12 @@ function outbox(
 async function written(
 	space: { slug: string; signUps: { id: string } },
 	headers: Record<string, string>,
-	fields: { to: string[]; cc?: string[]; subject: string },
+	fields: {
+		to: string[];
+		cc?: string[];
+		subject: string;
+		context?: { url: string; label?: string };
+	},
 ) {
 	const response = await outbox(space, headers, { action: "send", text: "Hello.", ...fields });
 	expect(response.status).toBe(200);
@@ -409,13 +414,25 @@ describe("webhooks", () => {
 		const path = newPath();
 		await hook(space.slug, path, null, SENT_EVENTS);
 
-		const first = await written(space, key, { to: ["ada@example.org"], subject: "Approve me" });
+		// What it says the mail is for travels with each event about it.
+		const context = { url: "https://ci.example.org/runs/42", label: "CI run 42" };
+		const first = await written(space, key, {
+			to: ["ada@example.org"],
+			subject: "Approve me",
+			context,
+		});
 		expect(first.state).toBe("held");
 		const [held] = await toldAt(path, 1);
 		const writer = { id: agent.memberId, name: expect.stringMatching(/^Signer /), agent: true };
 		expect(held?.type).toBe("message.held");
 		expect(held?.data).toMatchObject({
-			message: { id: first.id, subject: "Approve me", writtenBy: writer, approvedBy: null },
+			message: {
+				id: first.id,
+				subject: "Approve me",
+				writtenBy: writer,
+				approvedBy: null,
+				context,
+			},
 			by: writer,
 			recipient: null,
 		});
@@ -429,7 +446,7 @@ describe("webhooks", () => {
 		const owner = { id: expect.any(String), name: "Owner", agent: false };
 		expect(sent?.type).toBe("message.sent");
 		expect(sent?.data).toMatchObject({
-			message: { id: first.id, writtenBy: writer, approvedBy: owner },
+			message: { id: first.id, writtenBy: writer, approvedBy: owner, context },
 			by: owner,
 		});
 
@@ -451,6 +468,7 @@ describe("webhooks", () => {
 				subject: "Reject me",
 				writtenBy: writer,
 				approvedBy: null,
+				context: null,
 			},
 			by: owner,
 		});
