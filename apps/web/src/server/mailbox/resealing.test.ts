@@ -394,8 +394,21 @@ describe("after SECRETS_KEY changes", () => {
 		// Its copy is deleted, under the current key's name.
 		expect(r2.calls.remove).toEqual([[`w/b/m0.${KEYS.current}.eml`]]);
 
+		// Under another previous key it is tried again, and once sealed, the mark goes.
 		const other = { current: KEYS.current, previous: "ANOTHERKEY1" };
 		expect(waitsUnderPrevious(box.storage, other)).toBe(true);
+		r2.hooks.copy = undefined;
+		expect(await resealBatch(box.storage, r2.sealer, other)).toBe("done");
+		expect(box.extra("m0").failed).toBeNull();
+		expect(box.row("m0")?.object).toBe(`w/b/m0.${KEYS.current}.eml`);
+	});
+
+	it("counts a delivery on its way under another key as still needing the previous key", () => {
+		const box = sealedBox([`v2.${KEYS.current}.${SALT}`, `v2.${KEYS.previous}.${SALT}`]);
+		box.db.prepare("UPDATE message SET state = 'pending' WHERE id = 'm1'").run();
+		expect(resealStatus(box.storage, KEYS)).toEqual({ left: 1, unopened: 0 });
+		box.db.prepare("UPDATE message SET seal = ? WHERE id = 'm1'").run(`v2.${KEYS.current}.${SALT}`);
+		expect(resealStatus(box.storage, KEYS)).toEqual({ left: 0, unopened: 0 });
 	});
 
 	it("stops trying mail R2 fails on, until the daily run asks again", async () => {

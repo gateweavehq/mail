@@ -177,14 +177,18 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
       of its own, which deleting the message also covers for the current and previous keys. A
       message whose original still waits out its window is left until it is deleted. Mail that
       opens with neither key, or is missing, gets `rekey_failed`, the previous key's id, so that
-      another `SECRETS_KEY_PREVIOUS` has it tried again; R2 failing five times stops tries until
-      the daily run next asks. Without a previous key, sealed mail is left as it is.
+      another `SECRETS_KEY_PREVIOUS` has it tried again (a switch clears it); R2 failing five
+      times stops tries until the daily run next asks. Without a previous key, sealed mail is left as it is.
     - **The daily run asks mailboxes** (`resealMailboxes`) while the deployment has a previous
       key: up to 200 a run, at random among those D1 doesn't know are done
-      (`mailbox.sealed_under`, the current key's id once a mailbox said it had none left). Asking
-      (`resealStatus`) counts what is still under the previous key and what opens with neither,
-      resets R2's tries, and sets the alarm, so a mailbox nobody uses gets its turn too. It logs
-      `raw mail:` with the counts, which, with `secrets:`, say when the previous key can go.
+      (`mailbox.sealed_under`: the current and previous keys' ids, `keysDone`, once a mailbox said
+      it had none left, so another previous key has them all asked again). Asking
+      (`resealStatus`) counts what is still under the previous key, deliveries on their way under
+      another key included, and what opens with neither; it resets R2's tries and sets the alarm,
+      so a mailbox nobody uses gets its turn too. A mailbox that stores a delivery a Worker sealed
+      under another key, as during a deploy, sets its `sealed_under` back to NULL. The run logs
+      `raw mail:` with the counts, which, with `secrets:`, say when the previous key can go. An
+      object's start doesn't look for this work, so a wake costs nothing more.
     - Sealed mail stays as it was written, so another scheme would be a new seal version beside
       `v1` and `v2`.
   - **The same message twice is kept once.** A delivery's key is a hash of the mailbox and

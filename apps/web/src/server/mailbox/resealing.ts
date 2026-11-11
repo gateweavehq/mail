@@ -151,7 +151,16 @@ export function resealStatus(
 	for (const [start, end] of [BEFORE_IDS, keyRange(keys.previous)]) {
 		left += count("seal >= ? AND seal < ? AND rekey_failed IS NOT ?", start, end, keys.previous);
 	}
-	return { left, unopened: notCurrent - left };
+	// A delivery still on its way, sealed by a Worker that had another key, as during a deploy.
+	const pending = sql
+		.exec<{ count: number }>(
+			`SELECT count(*) AS count FROM message
+			WHERE state = 'pending' AND seal IS NOT NULL AND (seal < ? OR seal >= ?)`,
+			from,
+			to,
+		)
+		.one().count;
+	return { left: left + pending, unopened: notCurrent - left };
 }
 
 /** What a run needs of R2. */
@@ -320,7 +329,8 @@ export async function resealBatch(
 					.toArray();
 				if (still.length === 0) return false;
 				sql.exec(
-					`UPDATE message SET object = ?, seal = ?, stale_object = ?, stale_at = ?, seal_tries = 0
+					`UPDATE message SET object = ?, seal = ?, stale_object = ?, stale_at = ?, seal_tries = 0,
+						rekey_failed = NULL
 					WHERE id = ?`,
 					copy,
 					seal,

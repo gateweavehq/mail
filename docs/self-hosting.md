@@ -187,7 +187,9 @@ pnpm wrangler secret delete SECRETS_KEY_PREVIOUS
 Until then, **keep `SECRETS_KEY_PREVIOUS` set**: removing it loses what is still under the old
 key, and so does changing the key a second time, as there is room for one previous key only. An
 `unopened` count is a secret or a message that neither key opens, which removing the old key
-doesn't change: a secret is mended only by adding that workspace's key again. Setting a new key
+doesn't change: a secret is mended only by adding that workspace's key again. If `unopened` is
+most of your mail, `SECRETS_KEY_PREVIOUS` is likely not the key you had: put the right one, and
+every mailbox is asked again. Setting a new key
 without `SECRETS_KEY_PREVIOUS` loses everything under the old one, as losing it does, and mail
 that arrives before `SECRETS_KEY_PREVIOUS` is set can be searched by its headers only.
 

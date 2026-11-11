@@ -7,6 +7,7 @@ import { heldWriters } from "../auth/agents";
 import { createDb } from "../db";
 import { openProviderKey } from "../providers/keys";
 import { RESEND_API, type ResendFailure, sendWithResend } from "../providers/resend";
+import { sealedUnderUnknown } from "../reseal-state";
 import { secretsKeys } from "../secrets-key";
 import { suppressedAmong } from "../suppressions";
 import type { MailEvent } from "../webhooks/durable-object";
@@ -389,14 +390,12 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			.exec("SELECT 1 FROM message WHERE state = 'stored' AND search_id IS NULL LIMIT 1")
 			.toArray();
 		if (waiting.length > 0) void ctx.blockConcurrencyWhile(() => this.#indexSoon());
-		// Mail kept as it came is sealed once the deployment has a key, mail under the key before
-		// the current one is sealed again under it, and the originals of what was sealed are deleted
-		// when their window has passed, as after a stop between the two. So a mailbox seals its old
-		// mail as it wakes, which any mail, read, alarm or the daily run does.
-		void ctx.blockConcurrencyWhile(async () => {
-			const sealAt = await this.#sealingDue();
-			if (sealAt !== null) await this.#alarmBy(sealAt);
-		});
+		// Mail kept as it came is sealed once the deployment has a key, and the originals of what was
+		// sealed are deleted when their window has passed, as after a stop between the two. So a
+		// mailbox seals its old mail as it wakes, which any mail, read or alarm does. Mail under the
+		// previous key is sealed again from the same alarm, which the daily run sets.
+		const sealAt = this.#sealingDue();
+		if (sealAt !== null) void ctx.blockConcurrencyWhile(() => this.#alarmBy(sealAt));
 	}
 
 	/** The ids of the deployment's keys, or null when it has no key to seal with. */
@@ -409,19 +408,17 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 	 * When the alarm next has mail to seal, or originals of sealed mail to delete, or null when it
 	 * has neither.
 	 */
-	async #sealingDue(): Promise<number | null> {
+	#sealingDue(): number | null {
 		const sql = this.ctx.storage.sql;
 		const stale = oldestStale(this.ctx.storage);
-		const keys = await this.#keyIds();
 		const unsealed =
-			keys !== null &&
-			(sql
+			rawMail(this.env).canSeal() &&
+			sql
 				.exec(
 					`SELECT 1 FROM message INDEXED BY message_unsealed
 					WHERE state = 'stored' AND seal IS NULL AND seal_failed_at IS NULL LIMIT 1`,
 				)
-				.toArray().length > 0 ||
-				waitsUnderPrevious(this.ctx.storage, keys));
+				.toArray().length > 0;
 		const times = [
 			stale === null ? null : Math.max(stale + PENDING_MS, Date.now()),
 			unsealed ? Date.now() + RESEAL_DELAY_MS : null,
@@ -438,9 +435,32 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 		const keys = await this.#keyIds();
 		if (!keys?.previous) return null;
 		const status = resealStatus(this.ctx.storage, { ...keys, previous: keys.previous });
-		const sealAt = await this.#sealingDue();
-		if (sealAt !== null) await this.#alarmBy(sealAt);
+		if (waitsUnderPrevious(this.ctx.storage, keys)) {
+			await this.#alarmBy(Date.now() + RESEAL_DELAY_MS);
+		}
 		return status;
+	}
+
+	/**
+	 * After a delivery that a Worker sealed under another key than the current one, as during a
+	 * deploy, says to the daily run that this mailbox needs the previous key again, even if it had
+	 * said it didn't. Never throws: the mail is kept either way.
+	 */
+	async #notAllUnderCurrent(id: string): Promise<void> {
+		const seal = this.ctx.storage.sql
+			.exec<{ seal: string | null }>("SELECT seal FROM message WHERE id = ?", id)
+			.toArray()[0]?.seal;
+		if (typeof seal !== "string") return;
+		const keys = await this.#keyIds();
+		const mailboxId = this.ctx.id.name;
+		if (!keys || seal.startsWith(`v2.${keys.current}.`) || !mailboxId) return;
+		try {
+			await sealedUnderUnknown(createDb(this.env.DB), mailboxId);
+		} catch (error) {
+			console.error("mailbox: noting mail under an older key failed", {
+				name: error instanceof Error ? error.name : "unknown",
+			});
+		}
 	}
 
 	/** What the alarm seals mail with. */
@@ -519,7 +539,10 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 		this.#finishing.set(key, turn);
 		try {
 			const result = await turn;
-			if (result === "stored") await this.#indexSoon();
+			if (result === "stored") {
+				await this.#indexSoon();
+				await this.#notAllUnderCurrent(id);
+			}
 			return result;
 		} finally {
 			if (this.#finishing.get(key) === turn) this.#finishing.delete(key);

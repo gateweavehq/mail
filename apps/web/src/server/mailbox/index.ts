@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { asc, eq, isNull, lte, ne, or, sql } from "drizzle-orm";
 import type { Database } from "../db";
 import { schema } from "../db";
+import { keysDone } from "../reseal-state";
 import { type SecretsKeySettings, secretsKeys } from "../secrets-key";
 import {
 	cloudflareVerdict,
@@ -161,8 +162,9 @@ export interface MailboxesResealed {
 
 /**
  * Asks mailboxes about their mail under the key before the current `SECRETS_KEY`, which wakes
- * each to seal it again, and notes in D1 each that has none left (`mailbox.sealed_under`), so
- * that the previous key may go once no mailbox is left. Null when the deployment has no previous
+ * each to seal it again, and notes in D1 each that has none left (`mailbox.sealed_under`, see
+ * `keysDone`), so that the previous key may go once no mailbox is left. A mailbox that stores mail
+ * under another key later, as from a Worker of the version before, takes its note back. Null when the deployment has no previous
  * key. Those asked are picked at random from the rest, so that one that never finishes, as with
  * mail R2 keeps failing on, doesn't keep others from their turn.
  */
@@ -173,7 +175,8 @@ export async function resealMailboxes(
 	const { current, previous } = await secretsKeys(settings);
 	if (!current || !previous) return null;
 	const { mailbox } = schema;
-	const notDone = or(isNull(mailbox.sealedUnder), ne(mailbox.sealedUnder, current.id));
+	const doneWith = keysDone(current.id, previous.id);
+	const notDone = or(isNull(mailbox.sealedUnder), ne(mailbox.sealedUnder, doneWith));
 	const due = await db
 		.select({ id: mailbox.id })
 		.from(mailbox)
@@ -193,11 +196,7 @@ export async function resealMailboxes(
 					done.messages += status.left;
 					done.unopened += status.unopened;
 					if (status.left === 0) {
-						await db
-							.update(mailbox)
-							.set({ sealedUnder: current.id })
-							.where(eq(mailbox.id, id))
-							.run();
+						await db.update(mailbox).set({ sealedUnder: doneWith }).where(eq(mailbox.id, id)).run();
 					}
 				} catch (error) {
 					console.error("mailbox: asking about mail under the previous key failed", {

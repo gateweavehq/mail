@@ -75,9 +75,9 @@ export const mailbox = sqliteTable(
 		 */
 		everyone: integer("everyone", { mode: "boolean" }).default(false).notNull(),
 		/**
-		 * The id of the `SECRETS_KEY` the mailbox's mail was all sealed under when the daily run last
-		 * asked, while the deployment had a previous key: then it needs that key no more. Null until
-		 * then. See `resealMailboxes`.
+		 * The current and previous keys' ids (`keysDone`) with which the mailbox last told the daily
+		 * run it holds nothing that needs the previous key. Null until then, and again once it stores
+		 * mail under another key. See `resealMailboxes`.
 		 */
 		sealedUnder: text("sealed_under"),
 		createdAt: createdAt(),

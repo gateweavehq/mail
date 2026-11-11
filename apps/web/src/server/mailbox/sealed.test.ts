@@ -245,6 +245,27 @@ describe("sealed raw mail", () => {
 			await expect(new RawMail(bucket, { SECRETS_KEY: NEW }).get(old)).rejects.toThrow(SealError);
 		});
 
+		it("copies mail under the previous key, or from before ids, to mail only the current key opens", async () => {
+			const { bucket, ref, mail } = await sealedMail(70_000);
+			const [, , salt] = (ref.seal ?? "").split(".");
+			const rotated = new RawMail(bucket, { SECRETS_KEY: NEW, SECRETS_KEY_PREVIOUS: KEY });
+			const onlyNew = new RawMail(bucket, { SECRETS_KEY: NEW });
+			for (const [from, object] of [
+				[ref, "w/m/a.NEW.eml"],
+				[{ ...ref, seal: `v1.${salt}` }, "w/m/a.NEW1.eml"],
+			] as const) {
+				const seal = await rotated.sealedCopy(from, object);
+				expect(seal?.split(".")[1]).toBe((await onlyNew.newSeal())?.split(".")[1]);
+				const copy = { object, size: ref.size, seal };
+				expect(text(await onlyNew.bytes(copy))).toBe(text(mail));
+			}
+			// What is already under the current key isn't copied.
+			const fresh = await rotated.sealedCopy(ref, "w/m/a.NEW.eml");
+			await expect(
+				rotated.sealedCopy({ object: "w/m/a.NEW.eml", size: ref.size, seal: fresh }, "w/m/x.eml"),
+			).rejects.toThrow(/already sealed under the current key/);
+		});
+
 		it("seals new mail only under the current key", async () => {
 			const store = memoryBucket();
 			const before = await new RawMail(store.bucket, { SECRETS_KEY: KEY }).newSeal();

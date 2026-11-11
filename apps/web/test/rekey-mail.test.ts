@@ -23,6 +23,8 @@ function dns(request: Request): Response {
 let mail: Awaited<ReturnType<typeof startMail>>;
 let owner: Awaited<ReturnType<typeof signUp>>;
 let newId: string;
+/** What D1 notes for a mailbox that needs the old key no more. */
+let done: string;
 let counter = 0;
 
 beforeAll(async () => {
@@ -36,9 +38,10 @@ beforeAll(async () => {
 		isolateSettings: [{}, { SECRETS_KEY: OLD, SECRETS_KEY_PREVIOUS: "" }],
 	});
 	owner = await signUp(mail, origin, "Owner");
-	const { current } = await secretsKeys({ SECRETS_KEY: NEW });
-	if (!current) throw new Error("expected a key");
+	const { current, previous } = await secretsKeys({ SECRETS_KEY: NEW, SECRETS_KEY_PREVIOUS: OLD });
+	if (!current || !previous) throw new Error("expected both keys");
 	newId = current.id;
+	done = `${current.id}.${previous.id}`;
 });
 
 afterAll(async () => {
@@ -155,7 +158,7 @@ describe("mail under the previous SECRETS_KEY", () => {
 
 		// The daily run asks, finds none left, and notes that the mailbox needs the old key no more.
 		await mail.runScheduled(0);
-		expect(await sealedUnder(box.mailboxId)).toBe(newId);
+		expect(await sealedUnder(box.mailboxId)).toBe(done);
 		expect(rawMailLogs().at(-1)).toMatchObject({ left: 0 });
 	});
 
@@ -171,9 +174,23 @@ describe("mail under the previous SECRETS_KEY", () => {
 			})
 			.toBe(before + 1);
 		await mail.runScheduled(0);
-		expect(await sealedUnder(box.mailboxId)).toBe(newId);
+		expect(await sealedUnder(box.mailboxId)).toBe(done);
 		expect(rawMailLogs().at(-1)).toMatchObject({ messages: 0, left: 0 });
 		expect(rawMailLogs().at(-1)?.unopened).toBeGreaterThanOrEqual(1);
+	});
+
+	it("that comes after the mailbox said it had none has it asked again", async () => {
+		const box = await mailboxWithAddress();
+		await mail.runScheduled(0);
+		expect(await sealedUnder(box.mailboxId)).toBe(done);
+		// As from a Worker of the version before, during a deploy.
+		const { id } = await keptUnderOld(box, "Late");
+		expect(await sealedUnder(box.mailboxId)).toBeNull();
+		await expect
+			.poll(() => objects(prefixOf(box)), { timeout: 15_000 })
+			.toContain(`${prefixOf(box)}${id}.${newId}.eml`);
+		await mail.runScheduled(0);
+		expect(await sealedUnder(box.mailboxId)).toBe(done);
 	});
 
 	it("is deleted with its message, copy and original alike", async () => {
