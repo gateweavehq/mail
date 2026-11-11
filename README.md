@@ -108,6 +108,11 @@ once. Then:
   kept the key in Claude Code's settings. `claude plugin update gateweave-mail@gateweave-mail`
   brings the skill up to date.
 
+- **A repository's coding agents:** in [Gateweave Agents](https://github.com/gateweavehq/agents),
+  add the ready-made Gateweave Mail setup under Setups, give it your Mail's MCP address, and apply
+  it to the repository. Its pull request writes the skill and the MCP settings for Claude Code,
+  Codex, Gemini CLI, Cursor and GitHub Copilot. They read the key from the `GATEWEAVE_MAIL_KEY`
+  environment variable, so it is never in the repository.
 - **Any other agent:** point its MCP client at `https://mail.example.com/mcp` with the header
   `Authorization: Bearer <key>`, and give it the skill,
   [`plugins/gateweave-mail/skills/mail/SKILL.md`](plugins/gateweave-mail/skills/mail/SKILL.md),
