@@ -168,14 +168,28 @@ pnpm wrangler secret put SECRETS_KEY            # the new one
 ```
 
 From then on, everything new is encrypted under the new key, and what is under the old one still
-opens. The daily Cron Trigger encrypts the workspaces' Resend keys and webhook secrets again under
-the new key, and the Worker's log says how many with a `secrets:` line, as
-`{"resealed":3,"unopened":0,"left":0}`. Mail already in R2 stays under the old key for now, so
-**keep `SECRETS_KEY_PREVIOUS` set**: removing it loses that mail, and so does changing the key a
-second time, as there is room for one previous key only. An `unopened` count is a secret that
-neither key opens, which only adding that workspace's key again mends. Setting a new key without
-`SECRETS_KEY_PREVIOUS` loses everything under the old one, as losing it does, and mail that
-arrives before `SECRETS_KEY_PREVIOUS` is set can be searched by its headers only.
+opens. Each day the Cron Trigger encrypts again under the new key what is under the old one, and
+the Worker's log says how far it got:
+
+- `secrets:` for the workspaces' Resend keys and webhook secrets, as
+  `{"resealed":3,"unopened":0,"left":0}`, up to 500 a run, which is usually all of them.
+- `raw mail:` for mail in R2, as `{"asked":12,"messages":340,"unopened":0,"left":3}`. The run asks
+  up to 200 mailboxes a day what they hold under the old key, which wakes each to encrypt it again
+  in the background, a few messages at a time; `left` is how many mailboxes haven't said they are
+  done. A mailbox that is read or gets mail starts on it too.
+
+Once both say `"left":0`, nothing needs the old key, and it can go:
+
+```sh
+pnpm wrangler secret delete SECRETS_KEY_PREVIOUS
+```
+
+Until then, **keep `SECRETS_KEY_PREVIOUS` set**: removing it loses what is still under the old
+key, and so does changing the key a second time, as there is room for one previous key only. An
+`unopened` count is a secret or a message that neither key opens, which removing the old key
+doesn't change: a secret is mended only by adding that workspace's key again. Setting a new key
+without `SECRETS_KEY_PREVIOUS` loses everything under the old one, as losing it does, and mail
+that arrives before `SECRETS_KEY_PREVIOUS` is set can be searched by its headers only.
 
 R2 storage and Durable Object storage are billed past what the plan includes: see
 [R2 pricing](https://developers.cloudflare.com/r2/pricing/) and

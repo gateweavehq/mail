@@ -74,6 +74,12 @@ export const mailbox = sqliteTable(
 		 * mailbox only when it is given that one.
 		 */
 		everyone: integer("everyone", { mode: "boolean" }).default(false).notNull(),
+		/**
+		 * The id of the `SECRETS_KEY` the mailbox's mail was all sealed under when the daily run last
+		 * asked, while the deployment had a previous key: then it needs that key no more. Null until
+		 * then. See `resealMailboxes`.
+		 */
+		sealedUnder: text("sealed_under"),
 		createdAt: createdAt(),
 	},
 	(table) => [index("mailbox_organization_id_idx").on(table.organizationId)],

@@ -9,9 +9,15 @@
  * stops the work, the row names an object that is there and opens: before the switch it names the
  * original, after it the copy.
  *
- * Nothing here is unknown to the mailbox. The copy's name comes from the message's (`sealedName`),
- * so a copy a stop left behind is overwritten by the next try, or deleted with its message, and
- * the original a stop left behind is kept in the row (`stale_object`) until it is deleted.
+ * After `SECRETS_KEY` changes, with the old one kept as `SECRETS_KEY_PREVIOUS`, mail sealed under
+ * the old key, or under a seal from before keys had ids (`v1`), is sealed again under the new one
+ * the same way, so that the old key can go once none is left (`resealStatus`, which the daily run
+ * asks each mailbox).
+ *
+ * Nothing here is unknown to the mailbox. The copy's name comes from the message's (`sealedName`,
+ * `rekeyedName`), so a copy a stop left behind is overwritten by the next try, or deleted with its
+ * message, and the original a stop left behind is kept in the row (`stale_object`) until it is
+ * deleted.
  */
 import type { MigratedStorage } from "./schema";
 import { type RawRef, SealError } from "./sealed";
@@ -42,6 +48,20 @@ export const sealedName = (object: string) =>
 	object.endsWith(".eml") ? `${object.slice(0, -4)}.sealed.eml` : `${object}.sealed`;
 
 /**
+ * What a message's mail is named once sealed again under the key `keyId`: beside its object, with
+ * the message's id and the key's, so that each change of key writes a name of its own.
+ */
+export const rekeyedName = (object: string, id: string, keyId: string) =>
+	`${object.slice(0, object.lastIndexOf("/") + 1)}${id}.${keyId}.eml`;
+
+/** The ids of the deployment's keys (`secrets-key.ts`), as far as sealing mail again goes. */
+export interface KeyIds {
+	current: string;
+	/** Mail under this key, or under a seal that names none (`v1`), is sealed again. */
+	previous: string | null;
+}
+
+/**
  * Not one being tried right now: it is sealed by a later run, once the try is over. Mail waiting to
  * be sent, approved or sent again is sealed like the rest, as it may wait for good. Each try reads
  * the copy through the row, and the original outlives the switch by the grace window.
@@ -57,6 +77,82 @@ const NOT_SENDING = `NOT EXISTS (
 const UNSEALED = `SELECT id, object, size, seal FROM message INDEXED BY message_unsealed
 	WHERE state = 'stored' AND seal IS NULL AND seal_failed_at IS NULL AND ${NOT_SENDING}
 	ORDER BY arrived_at DESC, id DESC LIMIT ?`;
+
+/**
+ * Seals as a range of `message_sealed`: those that name the key `id`, or from before ids. A key id
+ * never holds a dot, and `/` sorts right after it.
+ */
+const keyRange = (id: string) => [`v2.${id}.`, `v2.${id}/`] as const;
+const BEFORE_IDS = ["v1.", "v1/"] as const;
+
+/**
+ * Stored messages whose mail is sealed in one range of seals and waits to be sealed again: not
+ * one whose original still waits to be deleted, that R2 failed on too often since the daily run
+ * last asked, or that didn't open under this previous key.
+ */
+const UNDER_PREVIOUS = `SELECT id, object, size, seal FROM message INDEXED BY message_sealed
+	WHERE state = 'stored' AND seal IS NOT NULL AND seal >= ? AND seal < ?
+		AND stale_object IS NULL AND seal_tries < ${RESEAL_TRIES} AND rekey_failed IS NOT ?
+		AND ${NOT_SENDING}
+	LIMIT ?`;
+
+/** Up to `limit` stored messages whose mail waits to be sealed under the current key. */
+function underPrevious(storage: MigratedStorage, keys: KeyIds, limit: number) {
+	const rows: (RawRef & { id: string })[] = [];
+	if (!keys.previous) return rows;
+	for (const [from, to] of [BEFORE_IDS, keyRange(keys.previous)]) {
+		if (rows.length >= limit) break;
+		rows.push(
+			...storage.sql
+				.exec<RawRef & { id: string }>(UNDER_PREVIOUS, from, to, keys.previous, limit - rows.length)
+				.toArray(),
+		);
+	}
+	return rows;
+}
+
+/** Whether the alarm has mail to seal again under the current key. */
+export const waitsUnderPrevious = (storage: MigratedStorage, keys: KeyIds) =>
+	underPrevious(storage, keys, 1).length > 0;
+
+/** What a mailbox still holds under a key other than the current one. */
+export interface ResealStatus {
+	/** Messages whose mail still needs `SECRETS_KEY_PREVIOUS`: under it, or sealed before ids. */
+	left: number;
+	/** Messages whose mail opens with neither key, or names a key the server doesn't have. */
+	unopened: number;
+}
+
+/**
+ * What a mailbox holds under its previous key, for the daily run, which may take the key away once
+ * no mailbox has any left. Mail R2 failed on too often is tried again from now on.
+ */
+export function resealStatus(
+	storage: MigratedStorage,
+	keys: KeyIds & { previous: string },
+): ResealStatus {
+	const sql = storage.sql;
+	const count = (where: string, ...params: string[]) =>
+		sql
+			.exec<{ count: number }>(
+				`SELECT count(*) AS count FROM message INDEXED BY message_sealed
+				WHERE state = 'stored' AND seal IS NOT NULL AND ${where}`,
+				...params,
+			)
+			.one().count;
+	sql.exec(
+		`UPDATE message SET seal_tries = 0
+		WHERE state = 'stored' AND seal IS NOT NULL AND seal_tries >= ?`,
+		RESEAL_TRIES,
+	);
+	const [from, to] = keyRange(keys.current);
+	const notCurrent = count("seal < ?", from) + count("seal >= ?", to);
+	let left = 0;
+	for (const [start, end] of [BEFORE_IDS, keyRange(keys.previous)]) {
+		left += count("seal >= ? AND seal < ? AND rekey_failed IS NOT ?", start, end, keys.previous);
+	}
+	return { left, unopened: notCurrent - left };
+}
 
 /** What a run needs of R2. */
 export interface Sealer {
@@ -122,13 +218,20 @@ export async function dropStale(
 }
 
 /**
- * Seals a few stored messages' mail, the newest first, as search is indexed. A message whose mail
- * doesn't open is marked and not tried again; one R2 failed on is tried again later while the rest
- * are sealed.
+ * Seals a few stored messages' mail, the newest first, as search is indexed, then, with `keys`,
+ * seals again under the current key mail under the previous one. A message whose mail doesn't open
+ * is marked and not tried again; one R2 failed on is tried again later while the rest are sealed.
  */
-export async function resealBatch(storage: MigratedStorage, sealer: Sealer): Promise<Resealed> {
+export async function resealBatch(
+	storage: MigratedStorage,
+	sealer: Sealer,
+	keys: KeyIds | null = null,
+): Promise<Resealed> {
 	const sql = storage.sql;
-	const waiting = sql.exec<RawRef & { id: string }>(UNSEALED, RESEAL_BATCH + 1).toArray();
+	const unsealed = sql.exec<RawRef & { id: string }>(UNSEALED, RESEAL_BATCH + 1).toArray();
+	const waiting = keys
+		? [...unsealed, ...underPrevious(storage, keys, RESEAL_BATCH + 1 - unsealed.length)]
+		: unsealed;
 	const batch: typeof waiting = [];
 	let bytes = 0;
 	for (const row of waiting.slice(0, RESEAL_BATCH)) {
@@ -138,13 +241,27 @@ export async function resealBatch(storage: MigratedStorage, sealer: Sealer): Pro
 	}
 	let failures = 0;
 	for (const row of batch) {
-		const copy = sealedName(row.object);
+		const again = typeof row.seal === "string" ? keys : null;
+		const copy = again ? rekeyedName(row.object, row.id, again.current) : sealedName(row.object);
 		let seal: string | null;
 		try {
 			seal = await sealer.copy(row, copy);
 		} catch (error) {
 			await forget(sealer, copy);
-			if (error instanceof SealError) {
+			if (error instanceof SealError && again) {
+				// Opens with neither key, or is missing. Marked with the previous key, so that another
+				// SECRETS_KEY_PREVIOUS has it tried again; it is left as it is, under its own seal.
+				sql.exec(
+					"UPDATE message SET rekey_failed = ? WHERE id = ? AND seal IS ? AND object = ?",
+					again.previous,
+					row.id,
+					row.seal,
+					row.object,
+				);
+				console.error("mailbox: mail under the previous SECRETS_KEY can't be sealed again", {
+					name: error.name,
+				});
+			} else if (error instanceof SealError) {
 				// Nothing clears this mark. Mail that is missing, or isn't the size its row says, won't
 				// mend by trying again, and the message is read as it is, as before. Setting its
 				// `seal_failed_at` to NULL in the object's storage would have the alarm try it again.
@@ -160,20 +277,22 @@ export async function resealBatch(storage: MigratedStorage, sealer: Sealer): Pro
 			} else {
 				// Counted, so that mail R2 never gives doesn't hold the alarm in a retry for good. The
 				// fifth failure marks it, as mail that doesn't open.
+				// Mail under the previous key that fails too often waits until the daily run asks again.
 				sql.exec(
 					`UPDATE message SET seal_tries = seal_tries + 1,
-						seal_failed_at = CASE WHEN seal_tries + 1 >= ? THEN ? END
-					WHERE id = ? AND seal IS NULL AND object = ?`,
+						seal_failed_at = CASE WHEN seal IS NULL AND seal_tries + 1 >= ? THEN ? END
+					WHERE id = ? AND seal IS ? AND object = ?`,
 					RESEAL_TRIES,
 					Date.now(),
 					row.id,
+					row.seal,
 					row.object,
 				);
-				const marked = sql
-					.exec("SELECT 1 FROM message WHERE id = ? AND seal_failed_at IS NOT NULL", row.id)
-					.toArray();
+				const tries = sql
+					.exec<{ tries: number }>("SELECT seal_tries AS tries FROM message WHERE id = ?", row.id)
+					.toArray()[0]?.tries;
 				console.error(
-					marked.length > 0
+					(tries ?? 0) >= RESEAL_TRIES
 						? "mailbox: sealing a message's mail failed too often; it is left as it is"
 						: "mailbox: sealing a message's mail failed; it will be tried again",
 					{ name: named(error) },
@@ -192,15 +311,17 @@ export async function resealBatch(storage: MigratedStorage, sealer: Sealer): Pro
 			switched = storage.transactionSync(() => {
 				const still = sql
 					.exec(
-						`SELECT 1 FROM message WHERE id = ? AND state = 'stored' AND seal IS NULL
-							AND object = ? AND ${NOT_SENDING}`,
+						`SELECT 1 FROM message WHERE id = ? AND state = 'stored' AND seal IS ?
+							AND object = ? AND stale_object IS NULL AND ${NOT_SENDING}`,
 						row.id,
+						row.seal,
 						row.object,
 					)
 					.toArray();
 				if (still.length === 0) return false;
 				sql.exec(
-					"UPDATE message SET object = ?, seal = ?, stale_object = ?, stale_at = ? WHERE id = ?",
+					`UPDATE message SET object = ?, seal = ?, stale_object = ?, stale_at = ?, seal_tries = 0
+					WHERE id = ?`,
 					copy,
 					seal,
 					row.object,

@@ -267,6 +267,15 @@ CREATE INDEX message_unsealed ON message (arrived_at DESC, id DESC)
 CREATE INDEX message_stale ON message (stale_at) WHERE stale_object IS NOT NULL;
 `;
 
+// Sealing mail again under the current SECRETS_KEY after it changed (`resealing.ts`).
+// `message_sealed` finds what is under the key before it, or sealed before key ids, as ranges of
+// seals. `rekey_failed` is the id of the previous key the mail didn't open with, so that another
+// previous key has it tried again.
+const VERSION_14 = `
+ALTER TABLE message ADD COLUMN rekey_failed TEXT;
+CREATE INDEX message_sealed ON message (seal) WHERE state = 'stored' AND seal IS NOT NULL;
+`;
+
 /** Each brings the schema from the version before it. Append only: objects keep what they ran. */
 export const MIGRATIONS: ((sql: SqlStorage) => void)[] = [
 	(sql) => sql.exec(VERSION_1),
@@ -299,6 +308,7 @@ export const MIGRATIONS: ((sql: SqlStorage) => void)[] = [
 	(sql) => sql.exec(VERSION_11),
 	(sql) => sql.exec(VERSION_12),
 	(sql) => sql.exec(VERSION_13),
+	(sql) => sql.exec(VERSION_14),
 ];
 
 /** What migrating needs of a Durable Object's storage. */

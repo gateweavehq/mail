@@ -299,16 +299,19 @@ export class RawMail {
 	}
 
 	/**
-	 * Writes a sealed copy of mail kept as it came, under `object`, and gives the seal its row must
-	 * take to read it. The original is left as it is. The copy is read back at its start before this
-	 * returns, so a row never names an object that doesn't open. Null when this server can't seal.
-	 * Throws a `SealError` when the original is missing or isn't the size its row says, which
-	 * trying again won't mend; any other error is R2's, and may be tried again.
+	 * Writes a copy of mail kept as it came, or sealed under another key, under `object`, sealed
+	 * under the current key, and gives the seal its row must take to read it. The original is left
+	 * as it is. The copy is read back at its start before this returns, so a row never names an
+	 * object that doesn't open. Null when this server can't seal. Throws a `SealError` when the
+	 * original is missing, isn't the size its row says, or doesn't open, which trying again won't
+	 * mend; any other error is R2's, and may be tried again.
 	 */
 	async sealedCopy(from: RawRef, object: string): Promise<string | null> {
-		if (typeof from.seal === "string") throw new Error("This mail is already sealed");
 		const seal = await this.newSeal();
 		if (seal === null) return null;
+		if (typeof from.seal === "string" && parsed(from.seal).id === parsed(seal).id) {
+			throw new Error("This mail is already sealed under the current key");
+		}
 		const found = await this.get(from);
 		if (!found) throw new SealError("Stored mail is missing");
 		if (found.size !== from.size) {

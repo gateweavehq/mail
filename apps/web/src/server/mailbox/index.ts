@@ -1,7 +1,8 @@
 import { env } from "cloudflare:workers";
-import { asc, eq, lte } from "drizzle-orm";
+import { asc, eq, isNull, lte, ne, or, sql } from "drizzle-orm";
 import type { Database } from "../db";
 import { schema } from "../db";
+import { type SecretsKeySettings, secretsKeys } from "../secrets-key";
 import {
 	cloudflareVerdict,
 	deliveryKey,
@@ -142,6 +143,74 @@ export const REMOVAL_SETTLES_MS = 60 * 60 * 1000;
 
 /** How many removals one daily run finishes. The rest wait for the next. */
 const REMOVALS_PER_RUN = 500;
+
+/** How many mailboxes one daily run asks about their mail under the previous key. */
+export const RESEAL_MAILBOXES_PER_RUN = 200;
+
+/** What the daily run learned of mail under the previous `SECRETS_KEY`. */
+export interface MailboxesResealed {
+	/** Mailboxes asked in this run. */
+	asked: number;
+	/** Messages they hold under the previous key, which their alarms seal again from now on. */
+	messages: number;
+	/** Messages they hold that open with neither key. */
+	unopened: number;
+	/** Mailboxes that may still hold mail under the previous key, after this run. */
+	left: number;
+}
+
+/**
+ * Asks mailboxes about their mail under the key before the current `SECRETS_KEY`, which wakes
+ * each to seal it again, and notes in D1 each that has none left (`mailbox.sealed_under`), so
+ * that the previous key may go once no mailbox is left. Null when the deployment has no previous
+ * key. Those asked are picked at random from the rest, so that one that never finishes, as with
+ * mail R2 keeps failing on, doesn't keep others from their turn.
+ */
+export async function resealMailboxes(
+	db: Database,
+	settings: SecretsKeySettings,
+): Promise<MailboxesResealed | null> {
+	const { current, previous } = await secretsKeys(settings);
+	if (!current || !previous) return null;
+	const { mailbox } = schema;
+	const notDone = or(isNull(mailbox.sealedUnder), ne(mailbox.sealedUnder, current.id));
+	const due = await db
+		.select({ id: mailbox.id })
+		.from(mailbox)
+		.where(notDone)
+		.orderBy(sql`random()`)
+		.limit(RESEAL_MAILBOXES_PER_RUN)
+		.all();
+	const done: MailboxesResealed = { asked: 0, messages: 0, unopened: 0, left: 0 };
+	// A few at once: each is a call to its mailbox's object.
+	for (let at = 0; at < due.length; at += 10) {
+		await Promise.all(
+			due.slice(at, at + 10).map(async ({ id }) => {
+				try {
+					const status = await mailboxStub(id).resealStatus();
+					if (!status) return;
+					done.asked++;
+					done.messages += status.left;
+					done.unopened += status.unopened;
+					if (status.left === 0) {
+						await db
+							.update(mailbox)
+							.set({ sealedUnder: current.id })
+							.where(eq(mailbox.id, id))
+							.run();
+					}
+				} catch (error) {
+					console.error("mailbox: asking about mail under the previous key failed", {
+						name: error instanceof Error ? error.name : "unknown",
+					});
+				}
+			}),
+		);
+	}
+	const left = await db.select({ count: sql<number>`count(*)` }).from(mailbox).where(notDone).get();
+	done.left = left?.count ?? 0;
+	return done;
+}
 
 /**
  * Removes again what removed mailboxes held, from D1's records of their removal, and forgets the

@@ -7,6 +7,7 @@ import { heldWriters } from "../auth/agents";
 import { createDb } from "../db";
 import { openProviderKey } from "../providers/keys";
 import { RESEND_API, type ResendFailure, sendWithResend } from "../providers/resend";
+import { secretsKeys } from "../secrets-key";
 import { suppressedAmong } from "../suppressions";
 import type { MailEvent } from "../webhooks/durable-object";
 import { bodyHash } from "./body";
@@ -25,11 +26,16 @@ import { base64Size, bytesOfBase64 } from "./files";
 import { indexBatch } from "./indexing";
 import {
 	dropStale,
+	type KeyIds,
 	oldestStale,
 	type Resealed,
+	type ResealStatus,
+	rekeyedName,
 	resealBatch,
+	resealStatus,
 	type Sealer,
 	sealedName,
+	waitsUnderPrevious,
 } from "./resealing";
 import { LINKED_THREADS, migrate } from "./schema";
 import { type RawRef, rawMail, SealError } from "./sealed";
@@ -383,33 +389,58 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			.exec("SELECT 1 FROM message WHERE state = 'stored' AND search_id IS NULL LIMIT 1")
 			.toArray();
 		if (waiting.length > 0) void ctx.blockConcurrencyWhile(() => this.#indexSoon());
-		// Mail kept as it came is sealed once the deployment has a key, and the originals of what was
-		// sealed are deleted when their window has passed, as after a stop between the two. So a
-		// mailbox seals its old mail as it wakes, which any mail, read or alarm does.
-		const sealAt = this.#sealingDue();
-		if (sealAt !== null) void ctx.blockConcurrencyWhile(() => this.#alarmBy(sealAt));
+		// Mail kept as it came is sealed once the deployment has a key, mail under the key before
+		// the current one is sealed again under it, and the originals of what was sealed are deleted
+		// when their window has passed, as after a stop between the two. So a mailbox seals its old
+		// mail as it wakes, which any mail, read, alarm or the daily run does.
+		void ctx.blockConcurrencyWhile(async () => {
+			const sealAt = await this.#sealingDue();
+			if (sealAt !== null) await this.#alarmBy(sealAt);
+		});
+	}
+
+	/** The ids of the deployment's keys, or null when it has no key to seal with. */
+	async #keyIds(): Promise<KeyIds | null> {
+		const { current, previous } = await secretsKeys(this.env);
+		return current ? { current: current.id, previous: previous?.id ?? null } : null;
 	}
 
 	/**
 	 * When the alarm next has mail to seal, or originals of sealed mail to delete, or null when it
 	 * has neither.
 	 */
-	#sealingDue(): number | null {
+	async #sealingDue(): Promise<number | null> {
 		const sql = this.ctx.storage.sql;
 		const stale = oldestStale(this.ctx.storage);
+		const keys = await this.#keyIds();
 		const unsealed =
-			rawMail(this.env).canSeal() &&
-			sql
+			keys !== null &&
+			(sql
 				.exec(
 					`SELECT 1 FROM message INDEXED BY message_unsealed
 					WHERE state = 'stored' AND seal IS NULL AND seal_failed_at IS NULL LIMIT 1`,
 				)
-				.toArray().length > 0;
+				.toArray().length > 0 ||
+				waitsUnderPrevious(this.ctx.storage, keys));
 		const times = [
 			stale === null ? null : Math.max(stale + PENDING_MS, Date.now()),
 			unsealed ? Date.now() + RESEAL_DELAY_MS : null,
 		].filter((at): at is number => at !== null);
 		return times.length > 0 ? Math.min(...times) : null;
+	}
+
+	/**
+	 * What this mailbox still holds under the key before the current one, for the daily run, which
+	 * also wakes it to seal that again: null when the deployment has no previous key. Mail R2
+	 * failed on too often is tried again.
+	 */
+	async resealStatus(): Promise<ResealStatus | null> {
+		const keys = await this.#keyIds();
+		if (!keys?.previous) return null;
+		const status = resealStatus(this.ctx.storage, { ...keys, previous: keys.previous });
+		const sealAt = await this.#sealingDue();
+		if (sealAt !== null) await this.#alarmBy(sealAt);
+		return status;
 	}
 
 	/** What the alarm seals mail with. */
@@ -1402,10 +1433,15 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			return was === "held";
 		});
 		if (rejected) await this.#tellSoon();
-		// The mail's own object, the original a sealed copy replaced, and a copy being written.
+		// The mail's own object, the original a sealed copy replaced, and a copy being written,
+		// under the current key or, from before it changed, the previous.
+		const keys = await this.#keyIds();
 		const objects = (object: string, stale: string | null) => [
 			object,
 			sealedName(object),
+			...[keys?.current, keys?.previous]
+				.filter((key): key is string => typeof key === "string")
+				.map((key) => rekeyedName(object, id, key)),
 			...(stale ? [stale] : []),
 		];
 		await this.env.RAW_MAIL.delete(objects(row.object, row.stale));
@@ -1565,15 +1601,16 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 	}
 
 	/**
-	 * Seals a few messages' mail kept as it came, and deletes the originals of what was sealed
-	 * `PENDING_MS` ago. Last in the alarm, and never throws, so that what it can't do holds up none
+	 * Seals a few messages' mail kept as it came, or under the previous key, and deletes the
+	 * originals of what was sealed `PENDING_MS` ago. Last in the alarm, and never throws, so that what it can't do holds up none
 	 * of the rest. Says too when the next original is due, or null.
 	 */
-	async #sealSome(canSeal: boolean): Promise<{ sealed: Resealed; staleAt: number | null }> {
+	async #sealSome(): Promise<{ sealed: Resealed; staleAt: number | null }> {
 		try {
 			const sealer = this.#sealer();
 			const stale = await dropStale(this.ctx.storage, sealer, Date.now() - PENDING_MS);
-			const sealed = canSeal ? await resealBatch(this.ctx.storage, sealer) : "done";
+			const keys = await this.#keyIds();
+			const sealed = keys ? await resealBatch(this.ctx.storage, sealer, keys) : "done";
 			const oldest = oldestStale(this.ctx.storage);
 			return {
 				sealed: stale === "failed" && sealed === "done" ? "failed" : sealed,
@@ -1657,7 +1694,7 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 		for (const { id } of due) if (!taken.has(id)) await this.#tryNow(id, "due");
 		const raw = rawMail(this.env);
 		const indexed = await indexBatch(this.ctx.storage, (message) => searchable(raw, message));
-		const { sealed, staleAt } = await this.#sealSome(raw.canSeal());
+		const { sealed, staleAt } = await this.#sealSome();
 		const next = sql
 			.exec<{ at: number | null }>(
 				"SELECT min(arrived_at) AS at FROM message WHERE state = 'pending'",
