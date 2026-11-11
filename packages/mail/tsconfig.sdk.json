@@ -1,0 +1,12 @@
+{
+	"extends": "../../tsconfig.base.json",
+	"compilerOptions": {
+		// The SDK runs in browsers and Workers as well as Node, so it may use nothing of Node's: with
+		// no Node types, an import from node: fails here.
+		"lib": ["ES2024", "DOM", "DOM.Iterable"],
+		"module": "NodeNext",
+		"moduleResolution": "NodeNext",
+		"types": []
+	},
+	"files": ["src/index.ts"]
+}

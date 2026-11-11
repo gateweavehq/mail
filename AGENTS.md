@@ -28,6 +28,7 @@ Read [docs/architecture.md](docs/architecture.md) before changing auth or the `e
 | Path              | What lives there                                                            |
 | ----------------- | --------------------------------------------------------------------------- |
 | `apps/web`        | The Worker: TanStack Start UI, Better Auth, rate limiting, email, `email()` |
+| `packages/mail`   | `@gateweave/mail`: a TypeScript SDK and a CLI for the agent API             |
 | `plugins/`        | The Claude Code plugin, with the skill that tells agents how to use Mail    |
 | `.claude-plugin/` | The marketplace that offers the plugin                                      |
 | `docs/`           | Architecture and self-hosting                                               |
@@ -35,7 +36,7 @@ Read [docs/architecture.md](docs/architecture.md) before changing auth or the `e
 | `.claude/skills/` | Step-by-step playbooks for recurring tasks (plain Markdown, any agent)      |
 | `wrangler.jsonc`  | The Worker's config, at the root because the Deploy button reads it there   |
 
-There are no `packages/` yet. Add one when a second consumer needs the same code, not before.
+Add another package only when a second consumer needs the same code, not before.
 
 Wrangler commands that use the build output (`deploy`, `versions upload`, `preview`) must run
 from the repository root, where the build leaves its pointer next to `wrangler.jsonc`. Use
@@ -53,7 +54,7 @@ root unless noted.
 | `pnpm dev:setup`  | One-time: create `.dev.vars` and migrate the local D1 database               |
 | `pnpm dev`        | Run the app on http://localhost:4750 (Workers, D1 and Durable Objects local) |
 | `pnpm check`      | Biome lint and format check (`pnpm format` fixes most findings)              |
-| `pnpm typecheck`  | Type-check the app (regenerates Wrangler and route types first)              |
+| `pnpm typecheck`  | Type-check every package (regenerates Wrangler and route types first)        |
 | `pnpm test`       | Run every test suite                                                         |
 | `pnpm test:e2e`   | Build, then run the browser tests (Playwright, Chromium) on port 4752        |
 | `pnpm build`      | Production build                                                             |
@@ -134,9 +135,12 @@ These are load-bearing. Breaking one breaks users' data or security, usually sil
     from one list of operations (`agent-api/operations.ts`), which call the same functions as the
     REST routes, with the request's own key, never around them: they add no access rules of their
     own, and must not widen theirs. Change an operation there, never one transport alone, and
-    the skill for agents (`plugins/gateweave-mail/skills/mail/SKILL.md`) with it. What
-    they hand an agent from a message is marked as the sender's words, beside the proved domain,
-    and `get_verification_code` hands over only the code and the From's domain.
+    the skill for agents (`plugins/gateweave-mail/skills/mail/SKILL.md`) with it. The SDK's
+    types in `packages/mail` are generated from them, through the OpenAPI document: after a
+    change, update the document's snapshot (`pnpm --filter @gateweave/mail-web exec vitest run
+    --project unit -u src/server/agent-api`), then run `pnpm --filter @gateweave/mail generate`.
+    What they hand an agent from a message is marked as the sender's words, beside the proved
+    domain, and `get_verification_code` hands over only the code and the From's domain.
 14. **A message that may have gone is never sent again by itself.** Email Service has no
     idempotency key, so a send that failed without a code, with its own failure, or that nothing
     finished, is `uncertain`, and only a person's "Send again" sends it again. Through Resend, the
@@ -225,8 +229,10 @@ These are load-bearing. Breaking one breaks users' data or security, usually sil
   framework requires them.
 - Comments explain why, not what. Match the tone and density of the file you are editing.
 - Generated files are not edited by hand: `routeTree.gen.ts`, `worker-configuration.d.ts`,
-  `apps/web/src/server/db/auth-schema.ts` (`pnpm --filter @gateweave/mail-web auth:schema`), and
-  everything under `apps/web/migrations/` except custom migrations
+  `apps/web/src/server/db/auth-schema.ts` (`pnpm --filter @gateweave/mail-web auth:schema`),
+  `packages/mail/openapi.json` (a snapshot `openapi.test.ts` writes with `vitest -u`),
+  `packages/mail/src/api.gen.ts` (`pnpm --filter @gateweave/mail generate`), and everything
+  under `apps/web/migrations/` except custom migrations
   (`drizzle-kit generate --custom`, such as `0001_owner_triggers.sql`).
 - Dependencies are pinned to exact versions. Shared ones go in the `catalog:` of
   `pnpm-workspace.yaml`. `drizzle-orm` stays on 0.45: the 1.0 migration format does not work
@@ -252,6 +258,9 @@ the cost.
   and run it in workerd through Miniflare, with every outbound request failing as a deployed
   Worker's request to its own hostname does; see `test/mail-worker.ts`. That harness also
   delivers a message to the Worker's `email()` handler (`deliver`), the way Email Routing does.
+- `packages/mail` has its tests in `test/`, in Node: the generator, the client against a fake
+  `fetch`, webhook signatures, and the CLI through `run`, which takes its environment, streams,
+  files, `fetch` and clock as arguments. `apps/web/test/sdk.test.ts` runs both against the Worker.
 - `apps/web/e2e` has browser tests: Playwright drives Chromium against the production build
   (`vite preview`, port 4752, its own empty local database). They cover what the other suites
   cannot: sign-up, the account page, and a page a policy breaks (`e2e/fixtures.ts` fails a test on

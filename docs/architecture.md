@@ -394,6 +394,17 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     database or a message said may hold mail. Any site may call the API (CORS without
     credentials), as only a key counts and a browser sends none of its own.
 
+    The document is also kept in the repository, as `packages/mail/openapi.json` for
+    `https://mail.example.com`, a snapshot that `agent-api/openapi.test.ts` checks. The SDK in
+    `packages/mail` (`@gateweave/mail`) is made from that file: `scripts/generate.mjs` turns each
+    route into an input type (its path, query and body inputs in one, as its MCP tool takes them),
+    an output type and a row of `ROUTES`, and its client makes one method of each row, so it adds
+    nothing to the API and can't fall behind it without a test failing. It reaches the API as any
+    caller does, with the key as a bearer token, and checks webhook signatures with Web Crypto. The
+    `gateweave-mail` command line is made of the same client, for scripts and CI jobs: `code` calls
+    the bounded wait again until its own timeout, honouring a 429's `Retry-After`, and reads the
+    key and the webhook secret only from the environment.
+
     Both are stateless (the MCP server is `createMcpHandler` from `@modelcontextprotocol/server`,
     as in Track) and take only an agent's key: without one, or with one that doesn't work, they
     answer 401, whatever cookies come with it. The key only lets the request in. Each operation
