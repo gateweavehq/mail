@@ -276,6 +276,12 @@ ALTER TABLE message ADD COLUMN rekey_failed TEXT;
 CREATE INDEX message_sealed ON message (seal) WHERE state = 'stored' AND seal IS NOT NULL;
 `;
 
+// What a message the mailbox sends was written for, as its writer said: a link and a label, as
+// JSON (`SentContext`). Shown beside it, told to webhooks, never sent.
+const VERSION_15 = `
+ALTER TABLE message ADD COLUMN context TEXT;
+`;
+
 /** Each brings the schema from the version before it. Append only: objects keep what they ran. */
 export const MIGRATIONS: ((sql: SqlStorage) => void)[] = [
 	(sql) => sql.exec(VERSION_1),
@@ -309,6 +315,7 @@ export const MIGRATIONS: ((sql: SqlStorage) => void)[] = [
 	(sql) => sql.exec(VERSION_12),
 	(sql) => sql.exec(VERSION_13),
 	(sql) => sql.exec(VERSION_14),
+	(sql) => sql.exec(VERSION_15),
 ];
 
 /** What migrating needs of a Durable Object's storage. */

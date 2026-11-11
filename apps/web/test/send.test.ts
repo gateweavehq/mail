@@ -1024,6 +1024,7 @@ describe("an agent", () => {
 			approval: null,
 			deliveries: [],
 			recipients: 1,
+			context: null,
 		});
 		expect(await awaiting(box, reader)).toEqual({
 			count: 1,

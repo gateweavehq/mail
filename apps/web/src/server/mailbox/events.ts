@@ -1,4 +1,5 @@
 import type { DeliveryState } from "../../lib/delivery";
+import { keptContext, type SentContext } from "../../lib/outbox";
 import type { DeliveryEventType, SentEventType } from "../../lib/webhooks";
 
 /**
@@ -40,6 +41,8 @@ export interface SentFacts {
 		/** Memberships, by id. */
 		writtenBy: string | null;
 		approvedBy: string | null;
+		/** What its writer said it was for. Missing from events written before it was kept. */
+		context?: SentContext | null;
 	};
 	/** The membership that did what the event tells of; null for what a recipient's server did. */
 	by: string | null;
@@ -78,10 +81,11 @@ export function writeSentEvent(
 			writtenBy: string | null;
 			approvedBy: string | null;
 			request: string;
+			context: string | null;
 		}>(
 			`SELECT message.thread_id AS threadId, message.arrived_at AS writtenAt,
 				message.from_header AS "from", message.subject AS subject, message.sent_by AS writtenBy,
-				outgoing.approved_by AS approvedBy, outgoing.request AS request
+				outgoing.approved_by AS approvedBy, outgoing.request AS request, message.context AS context
 			FROM message JOIN outgoing ON outgoing.message = message.id
 			WHERE message.id = ? AND message.state = 'stored'`,
 			messageId,
@@ -100,6 +104,7 @@ export function writeSentEvent(
 			subject: row.subject,
 			writtenBy: row.writtenBy,
 			approvedBy: row.approvedBy,
+			context: keptContext(row.context),
 		},
 		by: by === undefined ? (row.approvedBy ?? row.writtenBy) : by,
 		recipient,

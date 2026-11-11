@@ -1,0 +1,1 @@
+ALTER TABLE `agent_log` ADD `context` text;

@@ -1,5 +1,15 @@
-import { Image, ImageOff, Paperclip, Send, ShieldAlert, ShieldCheck, Trash2 } from "lucide-react";
+import {
+	Image,
+	ImageOff,
+	Link2,
+	Paperclip,
+	Send,
+	ShieldAlert,
+	ShieldCheck,
+	Trash2,
+} from "lucide-react";
 import { useState } from "react";
+import { SentFor } from "#/components/mail/sent-context";
 import { Button } from "#/components/ui/button";
 import { ConfirmDialog } from "#/components/workspace/confirm-dialog";
 import { isAdminRole, useMyRole } from "#/components/workspace/context";
@@ -303,31 +313,45 @@ function DeleteMessage({
  */
 function Sender({ message }: { message: OpenedMessage }) {
 	if (message.sent) {
+		const { context } = message.sent;
 		return (
-			<p className="flex items-center gap-2 text-sm text-muted-foreground">
-				<Send className="size-4 shrink-0" aria-hidden />
-				<span className="min-w-0 break-words">
-					Written in this mailbox
-					{message.sent.by ? (
-						<>
-							{" "}
-							by <span className="font-medium text-foreground">{message.sent.by}</span>
-						</>
-					) : null}
-					{message.sent.approval ? (
-						<>
-							, approved
-							{message.sent.approval.by ? (
-								<>
-									{" "}
-									by <span className="font-medium text-foreground">{message.sent.approval.by}</span>
-								</>
-							) : null}
-						</>
-					) : null}
-					.
-				</span>
-			</p>
+			<>
+				<p className="flex items-center gap-2 text-sm text-muted-foreground">
+					<Send className="size-4 shrink-0" aria-hidden />
+					<span className="min-w-0 break-words">
+						Written in this mailbox
+						{message.sent.by ? (
+							<>
+								{" "}
+								by <span className="font-medium text-foreground">{message.sent.by}</span>
+							</>
+						) : null}
+						{message.sent.approval ? (
+							<>
+								, approved
+								{message.sent.approval.by ? (
+									<>
+										{" "}
+										by{" "}
+										<span className="font-medium text-foreground">{message.sent.approval.by}</span>
+									</>
+								) : null}
+							</>
+						) : null}
+						.
+					</span>
+				</p>
+				{context && (
+					// Mail checks only that it is an https link: what it says is the writer's.
+					<p className="flex items-center gap-2 text-sm text-muted-foreground">
+						<Link2 className="size-4 shrink-0" aria-hidden />
+						<span className="min-w-0 break-words">
+							{message.sent.mine ? "You said" : "Its writer said"} it is for{" "}
+							<SentFor context={context} />.
+						</span>
+					</p>
+				)}
+			</>
 		);
 	}
 	if (message.verifiedDomain) {

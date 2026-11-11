@@ -276,6 +276,8 @@ export const agentLog = sqliteTable(
 		threadId: text("thread_id"),
 		subject: text("subject"),
 		detail: text("detail"),
+		/** For mail it wrote, what it said the mail was for, as JSON (`SentContext`). */
+		context: text("context"),
 		at: integer("at", { mode: "timestamp_ms" }).notNull(),
 	},
 	(table) => [

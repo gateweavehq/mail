@@ -13,7 +13,7 @@ import type {
 	ThreadsPage,
 } from "../../lib/mailbox";
 import { MAX_QUERY_SENT } from "../../lib/mailbox";
-import type { SendStatus } from "../../lib/outbox";
+import { keptContext, type SendStatus } from "../../lib/outbox";
 import { canReadMailbox, isAdminRole } from "../../lib/roles";
 import { type Caller, currentCaller, currentMember } from "../access";
 import { noteAgent } from "../agent-log";
@@ -127,6 +127,7 @@ function sentOf(row: StoredSummary, names: Map<string, string>, me: string) {
 		// An object still on the code before delivery events, during a deploy, has neither.
 		deliveries: row.deliveries ? (JSON.parse(row.deliveries) as Delivery[]) : [],
 		recipients: row.recipients ?? 0,
+		context: keptContext(row.context),
 	};
 }
 

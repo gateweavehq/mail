@@ -1073,6 +1073,7 @@ function sentPayload(
 				subject: decoded(message.subject),
 				writtenBy: actor(message.writtenBy),
 				approvedBy: actor(message.approvedBy),
+				context: message.context ?? null,
 				url: threadUrl(where, message.threadId),
 			},
 			by: actor(by),

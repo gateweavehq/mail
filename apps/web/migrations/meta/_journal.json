@@ -169,6 +169,13 @@
       "when": 1794396916697,
       "tag": "0023_mailbox_sealed_under",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "6",
+      "when": 1794402781763,
+      "tag": "0024_agent_log_context",
+      "breakpoints": true
     }
   ]
 }

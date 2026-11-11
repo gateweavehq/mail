@@ -1,3 +1,5 @@
+import type { SentContext } from "./outbox";
+
 // What an agent's log holds and how its page says it. No server code: the page imports it too.
 
 /** How long the log keeps what happened, in days. The daily run lets older entries go. */
@@ -67,6 +69,8 @@ export interface AgentLogEntry {
 	subject: string | null;
 	/** A few words more, such as the address it made or what a policy became. */
 	detail: string | null;
+	/** For mail it wrote, what it said the mail was for: its own words, never proof. */
+	context: SentContext | null;
 	/** For a message, the thread it is in, so the page can open it. */
 	thread: string | null;
 }

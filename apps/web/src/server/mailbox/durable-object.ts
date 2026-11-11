@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import PostalMime, { type Attachment } from "postal-mime";
-import { type SendStatus, SUPPRESSED_CODE } from "../../lib/outbox";
+import { type SendStatus, type SentContext, SUPPRESSED_CODE } from "../../lib/outbox";
 import { KEY_CHANGED, RESEND_CODE, type SendsWith } from "../../lib/providers";
 import type { SentEventType } from "../../lib/webhooks";
 import { heldWriters } from "../auth/agents";
@@ -204,6 +204,8 @@ export interface Sending {
 	 * someone it isn't allowed to write to does.
 	 */
 	hold: boolean;
+	/** What its writer said it was for, if anything. Optional, as a Worker on older code sends none. */
+	context?: SentContext | null;
 }
 
 /** The states a person may discard a message the mailbox sent from. */
@@ -304,6 +306,11 @@ export type StoredSummary = {
 	 * mail the mailbox sent, everyone it went to, separated by commas.
 	 */
 	envelopeTo: string;
+	/**
+	 * For a message the mailbox sent, what its writer said it was for, as JSON (`SentContext`).
+	 * Missing from an object still on older code, during a deploy.
+	 */
+	context?: string | null;
 };
 
 export type StoredMessage = StoredSummary & {
@@ -360,7 +367,8 @@ const SUMMARY = `id, thread_id AS threadId, arrived_at AS arrivedAt, size, from_
 	(SELECT json_object('state', state, 'code', code, 'nextAt', next_at, 'detail', detail) FROM outgoing
 		WHERE outgoing.message = message.id) AS sending,
 	(SELECT approved_by FROM outgoing WHERE outgoing.message = message.id) AS approvedBy,
-	${DELIVERIES_JSON} AS deliveries, ${RECIPIENT_COUNT} AS recipients, envelope_to AS envelopeTo`;
+	${DELIVERIES_JSON} AS deliveries, ${RECIPIENT_COUNT} AS recipients, envelope_to AS envelopeTo,
+	context`;
 
 /**
  * One mailbox: its messages' index in SQLite, their raw mail in R2 under
@@ -724,8 +732,8 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			sql.exec(
 				`INSERT INTO message (id, state, delivery_key, object, size, arrived_at, envelope_from,
 					envelope_to, from_header, subject, date_header, message_id, own_id, subject_key, sent_by,
-					seal)
-				VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					seal, context)
+				VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				id,
 				`sent:${id}`,
 				object,
@@ -741,6 +749,7 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 				subjectKey(sending.subject),
 				sending.sentBy,
 				seal,
+				sending.context ? JSON.stringify(sending.context) : null,
 			);
 			for (const ref of sending.references.slice(-MAX_REFERENCES)) {
 				sql.exec("INSERT OR IGNORE INTO message_reference (message, ref) VALUES (?, ?)", id, ref);

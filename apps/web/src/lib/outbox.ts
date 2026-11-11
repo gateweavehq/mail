@@ -67,6 +67,72 @@ export const MAX_SEND_BODY = 16_000_000;
 /** The longest name a file may have, in characters. */
 export const MAX_FILE_NAME = 200;
 
+/** The longest link a message may say it was written for. */
+export const MAX_CONTEXT_URL = 2000;
+
+/** The longest label for that link. */
+export const MAX_CONTEXT_LABEL = 100;
+
+/**
+ * What a message was written for, as whoever wrote it said: one https link, such as the CI run,
+ * issue or pull request behind it, and a few words for it. The workspace sees it beside the
+ * message as the writer's own words, never as proof, and it never goes into the mail.
+ */
+export interface SentContext {
+	url: string;
+	label: string | null;
+}
+
+// Control characters, the format characters that can turn text around or hide it, and the rest
+// that show nothing, such as Hangul fillers and variation selectors.
+const UNSHOWN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/gu;
+// More marks on one character than a script needs, which pile up over the lines around it.
+const PILED = /(\p{M}{4})\p{M}+/gu;
+
+/** A writer's link and label, as they are kept and shown, or why they can't be. */
+export function sentContext(given: { url: string; label?: string | null }): SentContext | string {
+	const written = given.url.trim();
+	if (written.length > MAX_CONTEXT_URL) {
+		return `The context's url can be ${MAX_CONTEXT_URL} characters at most.`;
+	}
+	let url: URL;
+	try {
+		url = new URL(written);
+	} catch {
+		return "The context's url isn't a link.";
+	}
+	if (url.protocol !== "https:") return "The context's url must be an https link.";
+	if (url.username || url.password) {
+		return "The context's url can't carry a user name or password.";
+	}
+	const label = (given.label ?? "")
+		.replace(UNSHOWN, " ")
+		.replace(PILED, "$1")
+		.replace(/\s+/g, " ")
+		.trim();
+	if (label.length > MAX_CONTEXT_LABEL) {
+		return `The context's label can be ${MAX_CONTEXT_LABEL} characters at most.`;
+	}
+	// As the URL parser writes it, so a host in another script shows as the punycode it is.
+	return url.href.length > MAX_CONTEXT_URL
+		? `The context's url can be ${MAX_CONTEXT_URL} characters at most.`
+		: { url: url.href, label: label || null };
+}
+
+/** A kept context, read back; null for none, or one that isn't what `sentContext` keeps. */
+export function keptContext(json: string | null | undefined): SentContext | null {
+	if (!json) return null;
+	try {
+		const value = JSON.parse(json) as unknown;
+		if (!value || typeof value !== "object" || !("url" in value)) return null;
+		const { url, label } = value as { url: unknown; label?: unknown };
+		if (typeof url !== "string" || !url.startsWith("https://")) return null;
+		return { url, label: typeof label === "string" && label ? label : null };
+	} catch {
+		return null;
+	}
+}
+
 /**
  * Kinds of file Mail doesn't send, by extension: those Resend refuses to send. They are refused
  * whichever provider a domain uses, so that it doesn't change what may go, and many receiving
