@@ -323,6 +323,15 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     (`withoutCode`). A note is written after what it tells of and can't undo it: when D1
     refuses it, the Worker's log says so, by action. The daily run lets entries go after 90 days,
     and an agent's goes with it.
+  - **The agents at a glance** (`server/agents-glance.ts`) head the workspace's home for owners
+    and admins, and `/api/agents/<workspace>` gives the same as JSON: each agent, paused or not,
+    the addresses it holds, how many messages it sent, held for approval and read (its `reads`
+    kind) with its key in the last 24 hours, and the last thing it did with it. They come from D1
+    alone, the agents and their log, in two statements whatever their number: the counts by
+    `agent_log_agent_idx` from the time on, the last by the same index from its newest end, so
+    the home costs no mailbox's object a call. While the home is in sight, it asks for them again
+    every 15 seconds, and only for them. Members, keys and strangers get nothing, as for an
+    agent's page.
   - **Addresses an agent makes** (`server/directory/agent-addresses.ts`), such as one for each
     sign-up or task. An owner or admin sets how many it may hold at once, how long each may last
     and on which proved domains (`agent_address_policy`, keyed by membership, set on the Agents

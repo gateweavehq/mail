@@ -2,7 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { getRequestHeaders } from "@tanstack/react-start/server";
 import { z } from "zod";
 import type { AgentInfo } from "#/server/auth/agents";
-import { AGENT_LOG_KINDS, type AgentLogKind } from "./agent-log";
+import { AGENT_LOG_KINDS, type AgentLogAction, type AgentLogKind } from "./agent-log";
 import type { ListedMessage } from "./mailbox";
 import { isAdminRole } from "./roles";
 
@@ -32,6 +32,40 @@ export const getWorkspaceAgents = createServerFn({ method: "GET" })
 		// The domains an agent may be let make addresses on: those the workspace has proved.
 		const domains = admin ? await provedDomains(db, membership.workspaceId) : [];
 		return { admin, agents, apiUrl: `${appOrigin()}/api`, domains };
+	});
+
+/** How far back the home screen counts what each agent did, in hours. */
+export const GLANCE_HOURS = 24;
+
+/** An agent as the workspace's home shows it to an owner or admin: what it is and did of late. */
+export interface AgentGlance {
+	id: string;
+	name: string;
+	createdAt: number;
+	paused: AgentInfo["paused"];
+	/** How many addresses it holds now. */
+	liveAddresses: number;
+	/** What it did with its key in the last `GLANCE_HOURS`, counted from its log. */
+	recent: {
+		sent: number;
+		/** What it wrote that went to wait for a person, whether or not it still waits. */
+		held: number;
+		/** The messages it opened, codes and files it took from them, and its searches. */
+		reads: number;
+	};
+	/** The last thing it did with its key, while its log keeps it: null for none. */
+	last: { at: number; action: AgentLogAction } | null;
+}
+
+/**
+ * The workspace's agents at a glance, from D1 alone, for owners and admins: null for anyone else,
+ * and for a request with an agent's key.
+ */
+export const getAgentsAtAGlance = createServerFn({ method: "GET" })
+	.validator(z.string().min(1))
+	.handler(async ({ data: slug }) => {
+		const { agentsAtAGlance } = await import("#/server/agents-glance");
+		return agentsAtAGlance(slug);
 	});
 
 /** How many of each list an agent's page shows: the newest, or the addresses soonest to end. */
