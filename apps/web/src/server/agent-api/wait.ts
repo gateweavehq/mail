@@ -7,7 +7,7 @@ const MAX_PAUSE_MS = 5000;
 export const WAIT_SECONDS = 30;
 export const MAX_WAIT_SECONDS = 50;
 /** How far back a wait looks without `since`: mail that came just before the call counts. */
-const LOOK_BACK_MS = 5 * 60 * 1000;
+export const LOOK_BACK_MS = 5 * 60 * 1000;
 /** Pages of a mailbox one look reads at most, newest first, before giving up on older mail. */
 const PAGES_PER_LOOK = 4;
 

@@ -425,13 +425,16 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
 
     How an agent should use all this is a skill, `plugins/gateweave-mail/skills/mail/SKILL.md`,
     plain Markdown any agent can follow, which the Claude Code plugin beside it carries with the
-    MCP server. The plugin asks for Mail's address and the key when it is installed, and keeps the
-    key in the system's credential store (`userConfig`, `sensitive`), so it is in no file. The
-    repository's `.claude-plugin/marketplace.json` offers the plugin, so
+    MCP server. The plugin asks for Mail's MCP address and the key when it is installed, and
+    Claude Code keeps the key with its own sign-in (`userConfig`, `sensitive`: the macOS Keychain,
+    or its `.credentials.json` elsewhere), never in its settings or the project. The repository's
+    `.claude-plugin/marketplace.json` offers the plugin, so
     `claude plugin install gateweave-mail --marketplace gateweavehq/mail` installs it, whichever
-    Mail it is for. `agent-api/skill.test.ts` holds the skill to the operations: every tool it
-    names exists, every tool is in it, each route it gives is that tool's, and the inputs it
-    tells an agent to pass are ones the tools take.
+    Mail it is for. The plugin has no `version`, so each commit is one and a change to the skill
+    reaches whoever runs `claude plugin update`. `agent-api/skill.test.ts` holds the skill to the
+    operations: every tool it names exists and every tool is in it, each route it gives is that
+    tool's, every field it names is an input or output of some tool, and the numbers it gives
+    are the constants'. Change the skill with the operations.
   - **Webhooks** (`server/webhooks/`, ported from Track). A webhook posts each message a
     mailbox receives, and what becomes of mail it sends, to a URL of the workspace's, such as an
     agent's trigger, so that an agent hears of mail without waiting for it. Owners and admins

@@ -93,13 +93,20 @@ once. Then:
 
 - **Claude Code:** Mail's plugin adds its MCP server and a skill that says how to use it well:
   codes rather than whole messages, mail that waits for approval, addresses of its own, and mail
-  as data, never instructions. Install it with your Mail's address, then run
-  `/plugin configure gateweave-mail@gateweave-mail` in Claude Code and paste the key, which Claude
-  Code keeps in your system's credential store, not in a file:
+  as data, never instructions. Install it with your Mail's MCP address:
 
   ```sh
-  claude plugin install gateweave-mail --marketplace gateweavehq/mail --config mail_url=https://mail.example.com
+  claude plugin install gateweave-mail --marketplace gateweavehq/mail --config mcp_url=https://mail.example.com/mcp
   ```
+
+  Then run `/plugin configure gateweave-mail@gateweave-mail` in Claude Code and paste the key.
+  Claude Code keeps it with its own sign-in (in the macOS Keychain, or in `.credentials.json` in
+  its folder elsewhere), not in its settings or the project. If your Claude Code doesn't know
+  `--marketplace`, run `claude plugin marketplace add gateweavehq/mail` first, then
+  `claude plugin install gateweave-mail@gateweave-mail --config mcp_url=…`. If you connected an
+  agent with `claude mcp add` before, remove that with `claude mcp remove gateweave-mail`, as it
+  kept the key in Claude Code's settings. `claude plugin update gateweave-mail@gateweave-mail`
+  brings the skill up to date.
 
 - **Any other agent:** point its MCP client at `https://mail.example.com/mcp` with the header
   `Authorization: Bearer <key>`, and give it the skill,

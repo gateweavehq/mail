@@ -788,7 +788,7 @@ test("an admin makes an agent, gives it a mailbox, and its key reads the mail un
 	await expect(page.getByText(mcpUrl, { exact: true })).toBeVisible();
 	await expect(
 		page.getByText(
-			`claude plugin install gateweave-mail --marketplace gateweavehq/mail --config mail_url=${new URL(page.url()).origin}`,
+			`claude plugin install gateweave-mail --marketplace gateweavehq/mail --config mcp_url=${mcpUrl}`,
 		),
 	).toBeVisible();
 	const started = await request.post(mcpUrl, {

@@ -185,8 +185,8 @@ function KeyReveal({
 		}
 	}
 	const mcpUrl = new URL("/mcp", apiUrl).href;
-	// The key isn't in it: Claude Code asks for it, and keeps it in the system's credential store.
-	const pluginCommand = `claude plugin install gateweave-mail --marketplace gateweavehq/mail --config mail_url=${new URL(apiUrl).origin}`;
+	// The key isn't in it: Claude Code asks for it, and keeps it with its own sign-in.
+	const pluginCommand = `claude plugin install gateweave-mail --marketplace gateweavehq/mail --config mcp_url=${mcpUrl}`;
 	const restUrl = `${apiUrl}/v1`;
 	const command = `curl -H "Authorization: Bearer ${newKey.secret}" ${restUrl}/mailboxes`;
 
@@ -228,11 +228,7 @@ function KeyReveal({
 					>
 						skill
 					</a>{" "}
-					that says how to use them well, which other agents can follow too. Install it, then run{" "}
-					<code className="font-mono text-xs text-foreground">
-						/plugin configure gateweave-mail@gateweave-mail
-					</code>{" "}
-					in Claude Code and paste the key, which it keeps in your system's credential store:
+					that says how to use them well, which other agents can follow too. Install it with:
 				</p>
 				<div className="flex items-start gap-2">
 					<pre className="min-w-0 flex-1 overflow-x-auto rounded-md border bg-background p-2 font-mono text-xs text-foreground">
@@ -248,6 +244,14 @@ function KeyReveal({
 						<Copy />
 					</Button>
 				</div>
+				<p>
+					Then run{" "}
+					<code className="font-mono text-xs text-foreground">
+						/plugin configure gateweave-mail@gateweave-mail
+					</code>{" "}
+					in Claude Code and paste the key. Claude Code keeps it with its own sign-in, not in its
+					settings.
+				</p>
 				<p>
 					Or its own code calls the API at{" "}
 					<code className="font-mono text-xs text-foreground break-all">{restUrl}</code> with the

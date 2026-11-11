@@ -1,7 +1,6 @@
 {
 	"name": "gateweave-mail",
 	"displayName": "Gateweave Mail",
-	"version": "0.1.0",
 	"description": "Gateweave Mail for an agent: verification codes, reading, sending with approval, addresses of its own and webhooks, over Mail's MCP server with an agent's key.",
 	"author": { "name": "Gateweave", "url": "https://gateweave.com" },
 	"homepage": "https://github.com/gateweavehq/mail#readme",
@@ -9,16 +8,16 @@
 	"license": "AGPL-3.0-only",
 	"keywords": ["email", "mail", "agents", "mcp", "verification-code", "cloudflare"],
 	"userConfig": {
-		"mail_url": {
+		"mcp_url": {
 			"type": "string",
-			"title": "Mail's address",
-			"description": "Where your Gateweave Mail runs, such as https://mail.example.com, with no path or trailing slash.",
+			"title": "Mail's MCP server",
+			"description": "Your Gateweave Mail's MCP address, such as https://mail.example.com/mcp, as Settings → Agents shows it.",
 			"required": true
 		},
 		"mail_key": {
 			"type": "string",
 			"title": "Agent key",
-			"description": "The key of an agent in your Mail workspace, from Settings → Agents. It is kept in your system's credential store.",
+			"description": "The key of an agent in your Mail workspace, from Settings → Agents. Claude Code keeps it with its own sign-in, not in settings.",
 			"required": true,
 			"sensitive": true
 		}
