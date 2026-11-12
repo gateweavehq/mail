@@ -47,6 +47,12 @@ declare namespace Cloudflare {
 		 * the daily run's `secrets:` and `raw mail:` lines both say none is left.
 		 */
 		SECRETS_KEY_PREVIOUS?: string;
+		/**
+		 * `off` sends every message through its provider, mail to this deployment's own addresses
+		 * too, as the browser tests do to use the real path. Otherwise a message whose every
+		 * recipient is an address here goes straight to their mailboxes, without a provider.
+		 */
+		DIRECT_DELIVERY?: string;
 		/** Resend's API. `https://api.resend.com` when unset. The browser tests point it at a stand-in. */
 		RESEND_API_URL?: string;
 		/**

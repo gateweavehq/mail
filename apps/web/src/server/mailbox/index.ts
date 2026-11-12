@@ -1,118 +1,24 @@
-import { env } from "cloudflare:workers";
 import { asc, eq, isNull, lte, ne, or, sql } from "drizzle-orm";
 import type { Database } from "../db";
 import { schema } from "../db";
 import { keysDone } from "../reseal-state";
 import { type SecretsKeySettings, secretsKeys } from "../secrets-key";
-import {
-	cloudflareVerdict,
-	deliveryKey,
-	firstHeader,
-	type Header,
-	parseHeaders,
-	readHeaderBlock,
-	resendVerifiedDomain,
-	verifiedDomain,
-} from "./headers";
-import { rawMail } from "./sealed";
-import { ownId, referencedIds } from "./thread";
+import { mailboxStub } from "./store";
 
 export { Mailbox } from "./durable-object";
-
-/** The mailbox's own instance. Only the Worker reaches it, after checking who is asking. */
-export function mailboxStub(mailboxId: string) {
-	return env.MAILBOX.get(env.MAILBOX.idFromName(mailboxId));
-}
+export {
+	type ArrivingMessage,
+	type Judge,
+	judgedByCloudflare,
+	judgedByResend,
+	MailboxFullError,
+	mailboxStub,
+	storeMail,
+} from "./store";
 
 /** Where a mailbox's raw mail lives in R2. */
 export const mailboxPrefix = (workspaceId: string, mailboxId: string) =>
 	`${workspaceId}/${mailboxId}/`;
-
-/** What `email()` gets from Cloudflare, or a delivery from Resend, as far as storing goes. */
-export interface ArrivingMessage {
-	readonly from: string;
-	readonly to: string;
-	readonly raw: ReadableStream<Uint8Array>;
-	readonly rawSize: number;
-}
-
-/** What proves who sent a message: a DMARC result, and the domain it proves the mail came from. */
-export type Judge = (headers: Header[]) => { dmarc: string | null; verifiedDomain: string | null };
-
-/** For mail from Email Routing: Cloudflare's own `Authentication-Results`, in its own place. */
-export const judgedByCloudflare: Judge = (headers) => {
-	const verdict = cloudflareVerdict(headers);
-	return { dmarc: verdict?.dmarc ?? null, verifiedDomain: verifiedDomain(headers, verdict) };
-};
-
-/**
- * For mail that came through Resend: the DMARC result its API gives, which its MX computed, for
- * the From it read (`from`). Nothing in the mail itself counts, as a sender can write anything
- * there, Cloudflare's headers too.
- */
-export const judgedByResend =
-	(dmarc: string | null, from: string | null): Judge =>
-	(headers) => ({ dmarc, verifiedDomain: resendVerifiedDomain(headers, dmarc, from) });
-
-/** The mailbox has no room for the message, which may change by the time the sender tries again. */
-export class MailboxFullError extends Error {
-	override name = "MailboxFullError";
-	constructor() {
-		super("The mailbox is full");
-	}
-}
-
-/**
- * Stores a message for a mailbox the directory found. The header block is read from the start of
- * the raw mail, and the whole of it streams into R2, sealed when the deployment has a
- * `SECRETS_KEY`, without being held in memory. Anything that goes wrong throws, which tells the
- * sender to try again.
- */
-export async function storeMail(
-	found: { workspaceId: string; mailboxId: string; agentMemberId?: string | null },
-	message: ArrivingMessage,
-	judge: Judge = judgedByCloudflare,
-): Promise<void> {
-	const [forHeaders, forStoring] = message.raw.tee();
-	const headers = parseHeaders(await readHeaderBlock(forHeaders));
-	const judged = judge(headers);
-	const mailbox = mailboxStub(found.mailboxId);
-	const raw = rawMail(env);
-	const begun = await mailbox.begin({
-		workspaceId: found.workspaceId,
-		mailboxId: found.mailboxId,
-		key: await deliveryKey(found.mailboxId, headers),
-		size: message.rawSize,
-		envelopeFrom: message.from,
-		envelopeTo: message.to,
-		from: firstHeader(headers, "from"),
-		subject: firstHeader(headers, "subject"),
-		date: firstHeader(headers, "date"),
-		messageId: firstHeader(headers, "message-id"),
-		ownId: ownId(headers),
-		references: referencedIds(headers),
-		dmarc: judged.dmarc,
-		verifiedDomain: judged.verifiedDomain,
-		cameFor: found.agentMemberId ?? null,
-		seal: await raw.newSeal(),
-	});
-	if (!begun.ok) {
-		await forStoring.cancel();
-		// Temporary on purpose: the mailbox may have room again by the time the sender retries.
-		throw new MailboxFullError();
-	}
-	// Sealed as the mailbox kept it: an object older than sealing keeps no seal, and says none.
-	await raw.put(
-		{ object: begun.object, size: message.rawSize, seal: begun.seal ?? null },
-		forStoring,
-	);
-	if ((await mailbox.finish(begun.id)) === "gone") {
-		// The alarm or a removal let this delivery go while it was on its way, and nothing knows its
-		// mail now. The sender tries again.
-		await env.RAW_MAIL.delete(begun.object).catch(() => {});
-		throw new Error("The mailbox gave up on this delivery");
-	}
-}
 
 /** Removes everything a mailbox held. Its row in D1 must be gone first, so no more mail arrives. */
 export async function destroyMailbox(workspaceId: string, mailboxId: string): Promise<void> {

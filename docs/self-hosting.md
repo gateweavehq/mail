@@ -223,6 +223,7 @@ because `wrangler.jsonc` sets `keep_vars`.
 | `EMAIL_FROM`               | Turns on email (invitations, password reset), such as `Gateweave Mail <mail@example.com>`.                         |
 | `MAILBOX_BYTES`            | How many bytes one mailbox may hold, as a whole number. Unset: 1 GiB.                                              |
 | `SEND_PER_DAY`             | How many messages one workspace may send from its mailboxes a day, as a whole number. Unset: 200.                  |
+| `DIRECT_DELIVERY`          | `off` sends mail to this deployment's own addresses through Email Service or Resend too. Unset: straight there.    |
 | `SECRETS_KEY`              | Encrypts mail in R2 and workspaces' keys: 32 random bytes, base64. See [Where mail is kept](#where-mail-is-kept).  |
 | `SECRETS_KEY_PREVIOUS`     | The previous `SECRETS_KEY`, which only opens what it encrypted. See [Where mail is kept](#where-mail-is-kept).     |
 | `EMAIL_SENDING_ACCOUNT_ID` | Your account ID, with the token below, so that removing a suppression also clears Email Service's own list.        |
@@ -265,6 +266,14 @@ is refused, and its copy in the thread says why. A workspace sends up to 200 mes
 address that bounced or complained before. An agent also has a day's count of its own, which an
 owner or admin sets on the Agents page, and mail it writes that waits for approval counts against
 the workspace's day only once it is approved.
+
+A message whose every recipient is an address on this deployment, in any workspace, doesn't leave
+it: it goes straight to their mailboxes, with no send, no DNS and no spam score, and its copy shows
+each as delivered at once. Its sender's domain counts as proved there, as the directory proved it.
+A message that also goes elsewhere goes through Email Service or Resend to everyone, as the headers
+and the envelope are one list there. It still counts against the workspace's day, and an agent's
+still waits for approval as its policy says. Set `DIRECT_DELIVERY` to `off` to send it all through
+the provider, as when you test the real path.
 
 **Delivery events.** Email Service says what each recipient's mail server did with a message:
 delivered, delayed, bounced, failed, not sent, or marked as spam. Mail shows it under the message

@@ -49,7 +49,8 @@ tools that run on Cloudflare, next to [Gateweave Track](https://github.com/gatew
   sandbox that runs nothing and loads remote images only when asked, or by themselves for a
   sender the reader allowed by its proved domain. Replies join
   the thread of the message they answer, or of other replies to it, when their subject matches.
-  A sender's domain shows as proved only when the message passed DMARC for it. Owners and admins
+  A sender's domain shows as proved only when the message passed DMARC for it, or came from a
+  mailbox on the same deployment. Owners and admins
   can delete a message.
 - **Search.** Find a mailbox's threads by the words in their messages: subject, sender, text and
   attachment names.
@@ -58,6 +59,9 @@ tools that run on Cloudflare, next to [Gateweave Track](https://github.com/gatew
   marked in the text, with buttons and a preview, and a message that uses them goes as HTML
   too; files are attached, dropped or pasted. The copy shows in its thread at once, with who wrote it and whether it went; one that wasn't sent can be sent again or
   discarded, and one that may have gone is never sent twice by itself.
+- **Mail between your own mailboxes stays in.** A message whose every recipient is an address on
+  the same deployment goes straight to their mailboxes, with no send and no round trip through
+  DNS, and its sender's domain shows as proved there.
 - **Resend for domains elsewhere.** A domain whose DNS isn't on your Cloudflare account can send
   through Resend instead, with the workspace's own key, which Mail keeps encrypted and never shows
   again.

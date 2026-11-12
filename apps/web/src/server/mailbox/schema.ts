@@ -282,6 +282,13 @@ const VERSION_15 = `
 ALTER TABLE message ADD COLUMN context TEXT;
 `;
 
+// How a message the mailbox sends goes, decided at its first try (`direct.ts`): 1 straight to the
+// mailboxes of this deployment it is for, 0 through its provider. Null until then, and for mail
+// from before.
+const VERSION_16 = `
+ALTER TABLE outgoing ADD COLUMN direct INTEGER;
+`;
+
 /** Each brings the schema from the version before it. Append only: objects keep what they ran. */
 export const MIGRATIONS: ((sql: SqlStorage) => void)[] = [
 	(sql) => sql.exec(VERSION_1),
@@ -316,6 +323,7 @@ export const MIGRATIONS: ((sql: SqlStorage) => void)[] = [
 	(sql) => sql.exec(VERSION_13),
 	(sql) => sql.exec(VERSION_14),
 	(sql) => sql.exec(VERSION_15),
+	(sql) => sql.exec(VERSION_16),
 ];
 
 /** What migrating needs of a Durable Object's storage. */
