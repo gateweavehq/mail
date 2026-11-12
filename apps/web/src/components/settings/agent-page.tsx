@@ -233,7 +233,7 @@ function Messages({ messages, kind }: { messages: AgentMessage[]; kind: "wrote" 
 										// The domain, not only a mark: the name beside it is the sender's to write.
 										<span
 											className="flex min-w-0 items-center gap-1 self-center"
-											title={`Cloudflare checked that ${message.verifiedDomain} sent it`}
+											title={`Proved to come from ${message.verifiedDomain}`}
 										>
 											<ShieldCheck className="size-3.5 shrink-0" aria-hidden />
 											<span className="sr-only">Sent from </span>

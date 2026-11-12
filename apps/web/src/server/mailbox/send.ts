@@ -199,7 +199,7 @@ export async function outboxAnswer(
 			return refuse("Only who wrote it, or an owner or admin, can discard it.", 403);
 		}
 		if (!(await box.stub.discard(action.message, !writerOrAdmin, memberId))) {
-			return refuse("Only a message that isn't sent can be discarded.", 409);
+			return refuse("Only a message that hasn't reached anyone can be discarded.", 409);
 		}
 		// Only an agent's mail waits for approval, so discarding it is rejecting what it wrote.
 		if (row?.sentBy && isHeld(row)) {

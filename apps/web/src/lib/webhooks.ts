@@ -134,7 +134,10 @@ export interface WebhookMessage {
 	date: string | null;
 	/** The address it came to, lower case, as the envelope had it. */
 	cameTo: string[];
-	/** The From's domain, when DMARC proved that domain sent it; null when unproved. */
+	/**
+	 * The From's domain, when it is proved: DMARC passed for it, or a mailbox on this server that holds
+	 * the domain sent it. Null when unproved.
+	 */
 	verifiedDomain: string | null;
 	dmarc: string | null;
 	size: number;

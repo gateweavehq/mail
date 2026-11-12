@@ -427,7 +427,7 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     marked as the sender's words, never instructions, beside its proved domain and DMARC verdict.
     `get_verification_code` gives only the code (`lib/verification-code.ts`), the From's domain
     and the proof, never the text around it or the part of the address before the @. It needs the
-    sender (`from`), and by default takes only mail whose From's domain DMARC proved, so a stranger
+    sender (`from`), and by default takes only mail whose From's domain is proved, so a stranger
     who writes first with a forged From and a code of their own is passed over. The code is the
     first after a word that names one ("code", "OTP"), or one right beside a word such as
     "verify", in the subject or a line of the text, or one set apart in the lines after, or else
@@ -741,20 +741,27 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
       mailbox through `storeMail`, the path `email()` takes, so it is kept once, threaded, counted
       against that mailbox's space, told to webhooks (`message.received`) and indexed, and comes
       for the agent that made the address. Out through Email Service and back through MX it would
-      cost a send and a place in the provider's limits, take seconds, depend on DNS and be scored
-      for spam. A message that also goes elsewhere goes through its provider to everyone, as
+      cost a send and a place in the provider's limits, take seconds and be scored for spam. A message that also goes elsewhere goes through its provider to everyone, as
       before: Email Service and Resend take one list for the headers and the envelope, so leaving
       our own addresses out would take them out of what the others see. Which way is decided at
       the first try and kept (`outgoing.direct`), so a later try never hands to a provider what a
       mailbox here has; one that may have gone through Resend stays with Resend. The recipients'
       copies have no DMARC result: their `verified_domain` is the sender's domain, which the
       directory proved, because the sender is still an address of the sending mailbox on that
-      domain, as each try checks again (`mail:direct_sender` refuses it when it isn't). Each
+      domain, as each try checks again (`mail:direct_sender` refuses it when it isn't). A proof in
+      the directory outlives its TXT record, so it says who held a domain once; DNS decides who
+      holds it now, and mail through a provider meets DNS as it is. So the first try also asks
+      DNS (`heldToday`, a minute's cache): every domain involved must still show its holder's
+      proof record, and each recipient's MX must take its mail the way it reaches Mail here.
+      When it doesn't, or DNS can't say, the message goes through its provider. Each
       recipient's record says `delivered` as soon as it is stored, and an address that is gone
       by then `bounced`. A mailbox that is full, or a store that failed, waits on the busy waits
       (`mail:direct_full`, `mail:direct_unavailable`); a mailbox keeps a message once, so trying
       again gives no one a second copy, and the alarm tries a stale `sending` one again too.
-      When the waits run out, those still without it are `bounced` and the message is `sent`. The
+      When the waits run out, those still without it are `bounced` and the message is `sent`. A
+      message some recipients have can't be discarded; deleting it records it as `sent`, and the
+      others as `failed`. A try writes its decision and its outcome only while the row is still
+      its own (`attempted_at`), so one the alarm gave up on changes nothing when it ends. The
       gateway's checks stay as they are: the suppression list, the workspace's day and an agent's
       policy and approval. A mailbox may send to its own address, and keeps the copy and the mail
       it got side by side in the thread. `DIRECT_DELIVERY=off` sends everything through the

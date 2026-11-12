@@ -74,6 +74,7 @@ export function SentNotice({
 	id,
 	status,
 	mine,
+	reached = false,
 	onChanged,
 	onDiscarded,
 }: {
@@ -83,6 +84,8 @@ export function SentNotice({
 	status: SendStatus | null;
 	/** Whether whoever reads it wrote it, who may discard it, as an owner or admin may. */
 	mine: boolean;
+	/** Whether some recipients have it already, when it can't be discarded any more. */
+	reached?: boolean;
 	/** After it was sent again, to read how it went. */
 	onChanged: () => Promise<void> | void;
 	onDiscarded: () => Promise<void> | void;
@@ -95,6 +98,7 @@ export function SentNotice({
 	const held = status.state === "held";
 	const discardable =
 		(mine || admin) &&
+		!reached &&
 		(canSendAgain(status) || status.state === "waiting" || status.state === "discarded");
 
 	async function change(action: "send-again" | "approve") {

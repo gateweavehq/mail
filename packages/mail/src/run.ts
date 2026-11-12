@@ -275,9 +275,7 @@ async function waitFor(
 		values.since === undefined
 			? "once the command had started (--since takes an earlier time)"
 			: `since ${since}`;
-	const proved = values.unproved
-		? ""
-		: ", from a sender DMARC proved (--unproved takes others too)";
+	const proved = values.unproved ? "" : ", from a proved sender (--unproved takes others too)";
 	say(`${what} came in ${timeout} seconds. Only mail that arrived ${after}${proved} counts.`);
 	return FAILED;
 }

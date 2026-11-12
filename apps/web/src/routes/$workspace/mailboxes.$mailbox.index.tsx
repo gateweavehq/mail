@@ -288,7 +288,7 @@ function ThreadRow({ thread }: { thread: ListedThread }) {
 						// The domain, not only a mark: the name beside it is the sender's to write.
 						<span
 							className="flex max-w-[45%] shrink-0 items-center gap-1 self-center text-xs text-muted-foreground sm:max-w-48"
-							title={`Cloudflare checked that ${thread.latestVerifiedDomain} sent ${thread.count > 1 ? "the newest message" : "it"}`}
+							title={`${thread.count > 1 ? "The newest message is proved" : "Proved"} to come from ${thread.latestVerifiedDomain}`}
 						>
 							<ShieldCheck className="size-3.5 shrink-0" aria-hidden />
 							<span className="sr-only">

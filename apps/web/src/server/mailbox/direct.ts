@@ -1,6 +1,7 @@
 import type { DeliveryState } from "../../lib/delivery";
 import type { Database } from "../db";
-import { findAddress } from "../directory";
+import { type DomainHolder, domainHolders, findAddress, mailRoute } from "../directory";
+import type { DomainRecords, LookUpDomain } from "../directory/dns";
 import { NO_SUCH_ADDRESS } from "../inbound";
 import { type Judge, MailboxFullError, type StoringMailbox, storeMail } from "./store";
 
@@ -8,7 +9,7 @@ import { type Judge, MailboxFullError, type StoringMailbox, storeMail } from "./
  * Mail a mailbox sends to addresses this deployment hosts goes straight to their mailboxes, through
  * the storing path `email()` takes (`storeMail`): the same raw mail, kept once, in its thread, told
  * to webhooks and indexed. Out through a provider and back in through MX, it would cost a send and a
- * place in the provider's limits, take seconds, depend on DNS and be scored for spam.
+ * place in the provider's limits, take seconds and be scored for spam.
  *
  * Only a message whose every recipient is here goes this way. Email Service and Resend take one
  * list for the headers and the envelope alike, so a message that also goes elsewhere can't leave
@@ -18,6 +19,13 @@ import { type Judge, MailboxFullError, type StoringMailbox, storeMail } from "./
  * Its sender is proved by this server rather than by DMARC: an address of the sending mailbox, on a
  * domain the directory proved, as the gateway checked when it was written and as each try checks
  * again. So the recipients' copies name that domain as proved, and no DMARC result.
+ *
+ * A proof in the directory is old news: a record that has gone doesn't undo it, so whoever proved a
+ * domain once keeps it until someone proves it again. Out through a provider, mail meets the
+ * domain's DNS as it is today: its MX decides who receives, and DMARC who may send. Straight to a
+ * mailbox, it would meet nothing. So it goes this way only when DNS says the same today: every
+ * domain involved still shows its holder's proof record, and each recipient's MX takes its mail the
+ * way it reaches Mail here. When DNS can't say, it goes through the provider.
  */
 
 /** Whether this deployment hands mail for its own addresses straight to their mailboxes. */
@@ -38,18 +46,70 @@ export async function isOwnSender(db: Database, sender: Sender, now: Date): Prom
 }
 
 /**
- * Whether a message goes straight to mailboxes here: its sender is the mailbox's own, and every
- * address it goes to is a live one here. Throws when D1 doesn't say.
+ * Whether a message goes straight to mailboxes here: its sender is the mailbox's own, every address
+ * it goes to is a live one here, and DNS says today that their domains are held as the directory
+ * says (`heldToday`). Throws when D1 doesn't say.
  */
 export async function goesDirectly(
 	db: Database,
+	lookUp: LookUpDomain,
 	sender: Sender,
 	recipients: string[],
 	now: Date,
 ): Promise<boolean> {
 	if (recipients.length === 0 || !(await isOwnSender(db, sender, now))) return false;
 	const found = await Promise.all(recipients.map((recipient) => findAddress(db, recipient, now)));
-	return found.every(Boolean);
+	if (!found.every(Boolean)) return false;
+	const senderDomain = domainOf(sender.address);
+	const receiving = new Set(recipients.map(domainOf));
+	const holders = await domainHolders(db, [senderDomain, ...receiving]);
+	const checks = [...new Set([senderDomain, ...receiving])].map(async (domain) => {
+		const holder = holders.get(domain);
+		if (!holder) return false;
+		// The sender's domain must still be the sending workspace's.
+		if (domain === senderDomain && holder.workspaceId !== sender.workspaceId) return false;
+		return heldToday(holder, await recordsOf(lookUp, domain, now), receiving.has(domain));
+	});
+	try {
+		return (await Promise.all(checks)).every(Boolean);
+	} catch (error) {
+		// DNS couldn't say, which is no answer either way: the provider takes it.
+		console.error("mailbox: DNS couldn't say whether mail can go straight to a mailbox here", {
+			name: error instanceof Error ? error.name : "unknown",
+		});
+		return false;
+	}
+}
+
+/**
+ * Whether a domain's DNS today says what the directory does: it shows its holder's proof record and,
+ * when mail is going to it, its MX takes that mail the way it reaches Mail here.
+ */
+export function heldToday(
+	holder: DomainHolder,
+	records: DomainRecords,
+	receiving: boolean,
+): boolean {
+	if (!records.proof.includes(holder.proof)) return false;
+	return !receiving || mailRoute(records.mailHosts) === holder.receivesWith;
+}
+
+/** How long one look at a domain's records is used for, by every message this object sends. */
+const RECORDS_KEPT_MS = 60_000;
+const looked = new Map<string, { at: number; records: Promise<DomainRecords> }>();
+
+/** A domain's records, asked of DNS at most once a minute in this isolate. */
+function recordsOf(lookUp: LookUpDomain, domain: string, now: Date): Promise<DomainRecords> {
+	const kept = looked.get(domain);
+	if (kept && now.getTime() - kept.at < RECORDS_KEPT_MS) return kept.records;
+	const records = lookUp(domain);
+	// A failed look isn't kept, so the next message asks again.
+	records.catch(() => {
+		if (looked.get(domain)?.records === records) looked.delete(domain);
+	});
+	if (looked.size >= 1_000) looked.clear();
+	looked.set(domain, { at: now.getTime(), records });
+	return records;
 }
 
 /** The domain an address is on, lower case. */

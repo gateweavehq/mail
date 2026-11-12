@@ -208,8 +208,20 @@ function AddDomain() {
 }
 
 /** What the last check found, in words. */
-function checkedWords(proved: boolean, mail: MailRoute, receivesWith: ReceivesWith): string {
+function checkedWords(
+	proved: boolean,
+	mail: MailRoute,
+	receivesWith: ReceivesWith,
+	kept: boolean,
+): string {
 	if (!proved) return "No matching TXT record yet. A new one can take a few minutes to show.";
+	const route = routeWords(mail, receivesWith);
+	return kept
+		? route
+		: `${route} Its TXT record is gone, so mail from this server's mailboxes reaches it through the provider, as other mail does.`;
+}
+
+function routeWords(mail: MailRoute, receivesWith: ReceivesWith): string {
 	if (receivesWith === "resend") {
 		if (mail === "resend")
 			return "Proved. Its MX records point to Resend, which passes its mail on.";
@@ -225,6 +237,21 @@ function checkedWords(proved: boolean, mail: MailRoute, receivesWith: ReceivesWi
 		return "Proved, but not all its MX records point to Cloudflare, so some or all of its mail won't reach this server.";
 	}
 	return "Proved, but it has no MX records yet. Turning on Email Routing adds them.";
+}
+
+function ProofRecord({ proof }: { proof: { name: string; value: string } }) {
+	return (
+		<dl className="space-y-1">
+			<div>
+				<dt className="text-muted-foreground">Name</dt>
+				<dd className="break-all font-mono text-xs select-all">{proof.name}</dd>
+			</div>
+			<div>
+				<dt className="text-muted-foreground">Value</dt>
+				<dd className="break-all font-mono text-xs select-all">{proof.value}</dd>
+			</div>
+		</dl>
+	);
 }
 
 const RECEIVES_WITH_WORDS: Record<ReceivesWith, string> = {
@@ -370,12 +397,12 @@ function DomainRow({
 		setPending(true);
 		setError(null);
 		setSaid(null);
-		const result = await changeDirectory<{ proved: boolean; mail: MailRoute }>(slug, {
-			action: "check-domain",
-			id: domain.id,
-		});
+		const result = await changeDirectory<{ proved: boolean; mail: MailRoute; kept: boolean }>(
+			slug,
+			{ action: "check-domain", id: domain.id },
+		);
 		if (result.ok) {
-			setSaid(checkedWords(result.proved, result.mail, domain.receivesWith));
+			setSaid(checkedWords(result.proved, result.mail, domain.receivesWith, result.kept));
 			await router.invalidate();
 		} else {
 			setError(result.error);
@@ -401,21 +428,24 @@ function DomainRow({
 					{domain.verifiedAt ? "Proved" : "Waiting for proof"}
 				</p>
 			</div>
-			{domain.proof && (
-				<div className="space-y-2 text-sm">
-					<p className="text-muted-foreground">Add this TXT record to the domain's DNS:</p>
-					<dl className="space-y-1">
-						<div>
-							<dt className="text-muted-foreground">Name</dt>
-							<dd className="break-all font-mono text-xs select-all">{domain.proof.name}</dd>
+			{domain.proof &&
+				(domain.verifiedAt ? (
+					<details className="text-sm">
+						<summary className="cursor-pointer text-muted-foreground">Its TXT record</summary>
+						<div className="mt-2 space-y-2">
+							<p className="text-muted-foreground">
+								Keep it in the domain's DNS: while it's there, mail from this server's mailboxes
+								reaches the domain's addresses here straight away, without a provider.
+							</p>
+							<ProofRecord proof={domain.proof} />
 						</div>
-						<div>
-							<dt className="text-muted-foreground">Value</dt>
-							<dd className="break-all font-mono text-xs select-all">{domain.proof.value}</dd>
-						</div>
-					</dl>
-				</div>
-			)}
+					</details>
+				) : (
+					<div className="space-y-2 text-sm">
+						<p className="text-muted-foreground">Add this TXT record to the domain's DNS:</p>
+						<ProofRecord proof={domain.proof} />
+					</div>
+				))}
 			{admin ? (
 				<div className="flex flex-wrap items-center gap-2">
 					<Label htmlFor={`sends-with-${domain.id}`} className="text-muted-foreground">

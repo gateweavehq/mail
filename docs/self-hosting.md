@@ -268,8 +268,11 @@ owner or admin sets on the Agents page, and mail it writes that waits for approv
 the workspace's day only once it is approved.
 
 A message whose every recipient is an address on this deployment, in any workspace, doesn't leave
-it: it goes straight to their mailboxes, with no send, no DNS and no spam score, and its copy shows
-each as delivered at once. Its sender's domain counts as proved there, as the directory proved it.
+it: it goes straight to their mailboxes, with no send and no spam score, and its copy shows each as
+delivered at once. Its sender's domain counts as proved there. That needs DNS to agree today:
+every domain involved keeps its `_gateweave-mail` TXT record (the Domains page shows it under
+"Its TXT record"), and each recipient's MX points where its mail reaches Mail. Without them, the
+message goes through the provider, as mail to anyone else does.
 A message that also goes elsewhere goes through Email Service or Resend to everyone, as the headers
 and the envelope are one list there. It still counts against the workspace's day, and an agent's
 still waits for approval as its policy says. Set `DIRECT_DELIVERY` to `off` to send it all through
