@@ -103,7 +103,10 @@ These are load-bearing. Breaking one breaks users' data or security, usually sil
     (`resendVerifiedDomain`), never a header in that mail, which could copy Cloudflare's. Mail a
     mailbox here sends straight to another (`apps/web/src/server/mailbox/direct.ts`) is proved by
     the directory instead, with no DMARC result: its domain only while its sender is still an
-    address of the sending mailbox on that proved domain, as each try checks again (`isOwnSender`). A forged message can arrive marked `dmarc=none`, bring an
+    address of the sending mailbox on that proved domain, as each try checks again (`isOwnSender`),
+    and only when DNS showed that domain's proof record as the message was decided (`heldToday`):
+    a proof in the directory outlives its record, so on its own it says who held a domain once,
+    not who holds it now. A forged message can arrive marked `dmarc=none`, bring an
     `Authentication-Results` of its own, or put an address in the name before the real one, so
     show the proved domain, never a mark alone. `message.from` is the envelope sender, not the
     person the reader will see, so show the `From` header. Show a message's HTML only as the page
@@ -156,7 +159,9 @@ These are load-bearing. Breaking one breaks users' data or security, usually sil
     key only in its own account. Mail delivered straight to mailboxes here is the other: a
     mailbox keeps a message once, so the alarm may try it again too. Which way a message goes is
     decided at its first try and kept (`outgoing.direct`), so no later try hands a provider what a
-    mailbox here already has, and one that may have gone through Resend never goes straight.
+    mailbox here already has, and one that may have gone through Resend never goes straight. A try
+    records only its own outcome (`attempted_at`), so one the alarm gave up on changes nothing
+    when it ends. A message some recipients have isn't discarded: deleting it records it as sent.
     A draft's id makes a second send of it the first. The copy and its `outgoing` row are
     written in one transaction before anything is called, each change of state is made only from
     the state it was found in, and the message's own id goes in its `References`, so its thread

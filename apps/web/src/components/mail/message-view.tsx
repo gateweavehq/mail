@@ -360,7 +360,10 @@ function Sender({ message }: { message: OpenedMessage }) {
 				<ShieldCheck className="mt-0.5 size-4 shrink-0" aria-hidden />
 				<span className="min-w-0 break-words">
 					Sent from <span className="font-medium text-foreground">{message.verifiedDomain}</span>,
-					which Cloudflare checked. The name in front of the address isn't checked.
+					{message.dmarc === null
+						? " by a mailbox on this server that holds the domain."
+						: " which DMARC proved."}{" "}
+					The name in front of the address isn't checked.
 				</span>
 			</p>
 		);

@@ -192,10 +192,11 @@ export async function listDirectory(
 			id: domain.id,
 			name: domain.name,
 			verifiedAt: domain.verifiedAt?.getTime() ?? null,
-			proof:
-				admin && !domain.verifiedAt
-					? { name: proofName(domain.name), value: proofValue(domain.verificationToken) }
-					: null,
+			// Kept after it's proved too: while DNS shows it, this server's mailboxes reach the domain
+			// straight away (mailbox/direct.ts).
+			proof: admin
+				? { name: proofName(domain.name), value: proofValue(domain.verificationToken) }
+				: null,
 			sendsWith: domain.sendsWith,
 			receivesWith: domain.receivesWith,
 			eventsAt: admin ? (domain.eventsAt?.getTime() ?? null) : null,
@@ -240,12 +241,48 @@ export async function addDomain(db: Database, workspaceId: string, input: string
 	return { ok: true };
 }
 
-function mailRoute(hosts: string[]): MailRoute {
+export function mailRoute(hosts: string[]): MailRoute {
 	if (hosts.length === 0) return "none";
 	if (hosts.every((host) => host.endsWith(CLOUDFLARE_MAIL_HOST))) return "cloudflare";
 	if (hosts.every((host) => RESEND_MAIL_HOSTS.some((pattern) => pattern.test(host))))
 		return "resend";
 	return "elsewhere";
+}
+
+/**
+ * The workspaces that hold these domains now, by domain: each with its proof's value, which the
+ * domain's DNS has to show for this server to take it as theirs today, and how its mail comes in.
+ */
+export async function domainHolders(db: Database, names: string[]) {
+	const wanted = [...new Set(names.map((name) => name.toLowerCase()))];
+	if (wanted.length === 0) return new Map<string, DomainHolder>();
+	const rows = await db
+		.select({
+			name: mailDomain.name,
+			workspaceId: mailDomain.organizationId,
+			token: mailDomain.verificationToken,
+			receivesWith: mailDomain.receivesWith,
+		})
+		.from(mailDomain)
+		.where(and(inArray(mailDomain.name, wanted), isNotNull(mailDomain.verifiedAt)))
+		.all();
+	return new Map(
+		rows.map((row) => [
+			row.name,
+			{
+				workspaceId: row.workspaceId,
+				proof: proofValue(row.token),
+				receivesWith: row.receivesWith,
+			},
+		]),
+	);
+}
+
+export interface DomainHolder {
+	workspaceId: string;
+	/** The TXT record's value that proves it: `gateweave-mail-verification=…`. */
+	proof: string;
+	receivesWith: (typeof mailDomain.receivesWith.enumValues)[number];
 }
 
 /** What the Domains page shows of receiving through Resend: whether it is set up, and how it went. */
@@ -281,7 +318,7 @@ export async function checkDomain(
 	id: string,
 	lookUp: LookUpDomain,
 	now: Date,
-): Promise<Result<{ proved: boolean; mail: MailRoute }>> {
+): Promise<Result<{ proved: boolean; mail: MailRoute; kept: boolean }>> {
 	const domain = await db
 		.select()
 		.from(mailDomain)
@@ -296,10 +333,9 @@ export async function checkDomain(
 		return refuse("Couldn't ask DNS just now. Try again in a moment.", 502);
 	}
 	const mail = mailRoute(records.mailHosts);
-	if (domain.verifiedAt) return { ok: true, proved: true, mail };
-	if (!records.proof.includes(proofValue(domain.verificationToken))) {
-		return { ok: true, proved: false, mail };
-	}
+	const kept = records.proof.includes(proofValue(domain.verificationToken));
+	if (domain.verifiedAt) return { ok: true, proved: true, mail, kept };
+	if (!kept) return { ok: true, proved: false, mail, kept };
 	const holder = await db
 		.select({ id: mailDomain.id, token: mailDomain.verificationToken })
 		.from(mailDomain)
@@ -330,7 +366,7 @@ export async function checkDomain(
 		}
 		throw error;
 	}
-	return { ok: true, proved: true, mail };
+	return { ok: true, proved: true, mail, kept };
 }
 
 /** Its addresses go with it, and mail to them is refused from then on. */

@@ -180,7 +180,9 @@ export const OUTPUTS = {
 			.string()
 			.nullable()
 			.optional()
-			.describe("The From's domain, when DMARC proved it; null when unproved."),
+			.describe(
+				"The From's domain, when DMARC proved it, or this server did, for mail one of its mailboxes sent here; null when unproved.",
+			),
 		dmarc: z.string().nullable().optional(),
 		arrivedAt: z.string().optional(),
 	}),

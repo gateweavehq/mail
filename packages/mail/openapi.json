@@ -1060,7 +1060,7 @@
             "name": "provedOnly",
             "in": "query",
             "required": false,
-            "description": "Only mail whose From's domain DMARC proved (verifiedDomain), so a forged From is passed over. With from, proved to be that sender's.",
+            "description": "Only mail whose From's domain is proved (verifiedDomain): DMARC passed for it, or a mailbox on this server that holds the domain sent it. So a forged From is passed over. With from, proved to be that sender's.",
             "schema": {
               "type": "boolean"
             }
@@ -1306,7 +1306,7 @@
       "get": {
         "operationId": "get_verification_code",
         "summary": "Get verification code",
-        "description": "Waits for a sign-up, sign-in or confirmation message from a sender you name, as wait_for_email does, and gives only the one-time code in it, never the rest of its text. Only mail whose sender DMARC proved counts, unless you pass provedOnly: false, as a From can be forged. Pass since, the time just before you asked for the code, so an earlier one isn't taken. code is null when the message has no code it could tell apart.",
+        "description": "Waits for a sign-up, sign-in or confirmation message from a sender you name, as wait_for_email does, and gives only the one-time code in it, never the rest of its text. Only mail whose sender is proved counts (verifiedDomain), unless you pass provedOnly: false, as a From can be forged. Pass since, the time just before you asked for the code, so an earlier one isn't taken. code is null when the message has no code it could tell apart.",
         "x-mcp-tool": "get_verification_code",
         "parameters": [
           {
@@ -1413,7 +1413,7 @@
                       ]
                     },
                     "verifiedDomain": {
-                      "description": "The From's domain, when DMARC proved it; null when unproved.",
+                      "description": "The From's domain, when DMARC proved it, or this server did, for mail one of its mailboxes sent here; null when unproved.",
                       "type": [
                         "string",
                         "null"

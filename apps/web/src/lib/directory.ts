@@ -10,7 +10,10 @@ export interface DirectoryDomain {
 	id: string;
 	name: string;
 	verifiedAt: number | null;
-	/** The TXT record that would prove it. Only for those who can act on it, and until it's proved. */
+	/**
+	 * The TXT record that proves it, for those who can act on it. Kept once it's proved, since mail
+	 * from this server's mailboxes goes straight to the domain only while DNS still shows it.
+	 */
 	proof: { name: string; value: string } | null;
 	/** How its mail is sent. */
 	sendsWith: SendsWith;

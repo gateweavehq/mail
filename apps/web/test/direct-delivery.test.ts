@@ -11,15 +11,28 @@ const origin = "https://mail.test";
 const MAILBOX_BYTES = 400_000;
 
 const proofs = new Map<string, string>();
+/** Where each domain's mail goes. A domain made here takes its mail through Cloudflare. */
+const mailHosts = new Map<string, string[]>();
+/** Domains DNS can't answer for. */
+const unanswered = new Set<string>();
 
 function dns(request: Request): Response {
 	const url = new URL(request.url);
-	const value = proofs.get(url.searchParams.get("name") ?? "");
-	if (!value || url.searchParams.get("type") !== "TXT") return Response.json({ Status: 3 });
-	return Response.json({
-		Status: 0,
-		Answer: [{ name: url.searchParams.get("name"), type: 16, data: `"${value}"` }],
-	});
+	const name = url.searchParams.get("name") ?? "";
+	if ([...unanswered].some((domain) => name === domain || name.endsWith(`.${domain}`))) {
+		return new Response("busy", { status: 503 });
+	}
+	if (url.searchParams.get("type") === "MX") {
+		const hosts = mailHosts.get(name) ?? [];
+		if (hosts.length === 0) return Response.json({ Status: 3 });
+		return Response.json({
+			Status: 0,
+			Answer: hosts.map((host, at) => ({ name, type: 15, data: `${(at + 1) * 10} ${host}.` })),
+		});
+	}
+	const value = proofs.get(name);
+	if (!value) return Response.json({ Status: 3 });
+	return Response.json({ Status: 0, Answer: [{ name, type: 16, data: `"${value}"` }] });
 }
 
 type Mail = Awaited<ReturnType<typeof startMail>>;
@@ -82,7 +95,7 @@ async function directory(
 	return (await response.json()) as {
 		proved?: boolean;
 		domains: { id: string; proof: { value: string } | null }[];
-		mailboxes: { id: string; name: string }[];
+		mailboxes: { id: string; name: string; addresses: { id: string; address: string }[] }[];
 	};
 }
 
@@ -101,6 +114,7 @@ async function mailboxWithAddress(app = mail, person = owner) {
 	const [added] = (await directory(app, slug, person.headers)).domains;
 	if (!added?.proof) throw new Error("expected a proof");
 	proofs.set(`_gateweave-mail.${domain}`, added.proof.value);
+	mailHosts.set(domain, ["route1.mx.cloudflare.net", "route2.mx.cloudflare.net"]);
 	expect(
 		(await directory(app, slug, person.headers, { action: "check-domain", id: added.id })).proved,
 	).toBe(true);
@@ -117,7 +131,20 @@ async function mailboxWithAddress(app = mail, person = owner) {
 		localPart: "help",
 		expiresInDays: null,
 	});
-	return { app, person, slug, workspaceId, domain, mailboxId: made.id, address: `help@${domain}` };
+	const address = (await directory(app, slug, person.headers)).mailboxes
+		.find((box) => box.id === made.id)
+		?.addresses.find((one) => one.address === `help@${domain}`);
+	if (!address) throw new Error("expected the address");
+	return {
+		app,
+		person,
+		slug,
+		workspaceId,
+		domain,
+		mailboxId: made.id,
+		address: `help@${domain}`,
+		addressId: address.id,
+	};
 }
 
 type Box = Awaited<ReturnType<typeof mailboxWithAddress>>;
@@ -181,6 +208,48 @@ async function message(box: Box, id: string): Promise<MessageView> {
 async function sentTo(app: Mail, address: string): Promise<SentEmail[]> {
 	return (await app.emails()).filter((email) =>
 		[email.to, email.cc ?? []].flat().includes(address),
+	);
+}
+
+/** Fills a mailbox with one message from outside, which it gives back. */
+async function fill(box: Box) {
+	const big = [
+		"From: Ada Lovelace <ada@example.org>",
+		`To: ${box.address}`,
+		"Subject: Big",
+		"Date: Sun, 08 Nov 2026 09:00:00 +0000",
+		`Message-ID: <big-${++counter}@example.org>`,
+		"",
+		// In lines of mail's usual length, as a longer one is refused.
+		...Array.from({ length: Math.floor((MAILBOX_BYTES - 200) / 78) }, () => "x".repeat(76)),
+		"",
+	].join("\r\n");
+	expect(await box.app.deliver("ada@example.org", box.address, big)).toMatchObject({ status: 200 });
+	const [kept] = await messages(box);
+	if (!kept) throw new Error("expected the big message");
+	return kept;
+}
+
+async function deleteMessage(box: Box, id: string) {
+	const removed = await box.app.fetch(`${origin}/api/mail/${box.slug}/${box.mailboxId}/${id}`, {
+		method: "DELETE",
+		headers: { ...box.person.headers, origin },
+	});
+	expect(removed.status).toBe(200);
+}
+
+async function removeAddress(box: Box) {
+	const removed = await directory(box.app, box.slug, box.person.headers, {
+		action: "remove-address",
+		id: box.addressId,
+	});
+	expect(removed).toMatchObject({ ok: true });
+}
+
+async function deliveries(box: Box, sent: Sent) {
+	const copy = (await thread(box, sent.threadId)).messages.find((one) => one.id === sent.id);
+	return Object.fromEntries(
+		(copy?.sent?.deliveries ?? []).map((one) => [one.recipient, [one.state, one.detail]]),
 	);
 }
 
@@ -297,7 +366,9 @@ describe("mail to an address here", () => {
 		expect(sent.state).toBe("sent");
 		const page = await thread(box, sent.threadId);
 		expect(page.messages).toHaveLength(2);
-		expect(page.messages.filter((one) => one.sent === null)).toHaveLength(1);
+		const got = page.messages.find((one) => one.sent === null);
+		if (!got) throw new Error("expected the mail it got");
+		expect(await message(box, got.id)).toMatchObject({ verifiedDomain: box.domain, dmarc: null });
 	});
 
 	it("goes through Email Service to everyone when anyone it is for isn't here", async () => {
@@ -316,35 +387,147 @@ describe("mail to an address here", () => {
 	}, async () => {
 		const from = await mailboxWithAddress();
 		const to = await mailboxWithAddress();
-		const big = [
-			"From: Ada Lovelace <ada@example.org>",
-			`To: ${to.address}`,
-			"Subject: Big",
-			"Date: Sun, 08 Nov 2026 09:00:00 +0000",
-			"Message-ID: <big@example.org>",
-			"",
-			// In lines of mail's usual length, as a longer one is refused.
-			...Array.from({ length: Math.floor((MAILBOX_BYTES - 200) / 78) }, () => "x".repeat(76)),
-			"",
-		].join("\r\n");
-		const delivered = await mail.deliver("ada@example.org", to.address, big);
-		expect(delivered).toMatchObject({ status: 200 });
-		const [kept] = await messages(to);
-		if (!kept) throw new Error("expected the big message");
+		const kept = await fill(to);
 
 		const sent = await send(from, { to: [to.address], subject: "Room now" });
 		expect(sent).toMatchObject({ state: "waiting", code: "mail:direct_full" });
 		expect(await sentTo(mail, to.address)).toHaveLength(0);
 
-		const removed = await mail.fetch(`${origin}/api/mail/${to.slug}/${to.mailboxId}/${kept.id}`, {
-			method: "DELETE",
-			headers: { ...owner.headers, origin },
-		});
-		expect(removed.status).toBe(200);
+		await deleteMessage(to, kept.id);
 		expect(await untilState(from, sent, "sent")).toBe("sent");
 		const arrived = await messages(to);
 		expect(arrived.map((one) => one.subject)).toEqual(["Room now"]);
 		expect(await sentTo(mail, to.address)).toHaveLength(0);
+	});
+
+	it("gives those who have it no second copy when it is tried again for the others", {
+		timeout: 60_000,
+	}, async () => {
+		const from = await mailboxWithAddress();
+		const roomy = await mailboxWithAddress();
+		const full = await mailboxWithAddress();
+		const kept = await fill(full);
+
+		const sent = await send(from, { to: [roomy.address, full.address], subject: "Half way" });
+		expect(sent).toMatchObject({ state: "waiting", code: "mail:direct_full" });
+		expect(await messages(roomy)).toHaveLength(1);
+		expect(await deliveries(from, sent)).toEqual({ [roomy.address]: ["delivered", null] });
+
+		// Someone has it, so it isn't unsent any more.
+		const discarded = await outbox(
+			from,
+			{ ...owner.headers, origin },
+			{ action: "discard", message: sent.id },
+		);
+		expect(discarded.status).toBe(409);
+		expect(await discarded.json()).toMatchObject({
+			error: "Only a message that hasn't reached anyone can be discarded.",
+		});
+
+		await deleteMessage(full, kept.id);
+		expect(await untilState(from, sent, "sent")).toBe("sent");
+		expect((await messages(roomy)).map((one) => one.subject)).toEqual(["Half way"]);
+		expect((await messages(full)).map((one) => one.subject)).toEqual(["Half way"]);
+		expect(await deliveries(from, sent)).toEqual({
+			[roomy.address]: ["delivered", null],
+			[full.address]: ["delivered", null],
+		});
+	});
+
+	it("goes no further once its sender deletes it, though some have it", {
+		timeout: 60_000,
+	}, async () => {
+		const from = await mailboxWithAddress();
+		const roomy = await mailboxWithAddress();
+		const full = await mailboxWithAddress();
+		const kept = await fill(full);
+		const sent = await send(from, { to: [roomy.address, full.address], subject: "Stopped" });
+		expect(sent.state).toBe("waiting");
+
+		await deleteMessage(from, sent.id);
+		await deleteMessage(full, kept.id);
+		// Past the first wait, when a try would have come.
+		await new Promise((resolve) => setTimeout(resolve, 20_000));
+		expect(await messages(full)).toHaveLength(0);
+		expect((await messages(roomy)).map((one) => one.subject)).toEqual(["Stopped"]);
+	});
+
+	it("is refused when its sender's address is gone by the next try", {
+		timeout: 60_000,
+	}, async () => {
+		const from = await mailboxWithAddress();
+		const to = await mailboxWithAddress();
+		const kept = await fill(to);
+		const sent = await send(from, { to: [to.address] });
+		expect(sent.state).toBe("waiting");
+
+		await removeAddress(from);
+		await deleteMessage(to, kept.id);
+		expect(await untilState(from, sent, "refused")).toBe("refused");
+		const copy = (await thread(from, sent.threadId)).messages.find((one) => one.id === sent.id);
+		expect(copy?.sent?.status?.code).toBe("mail:direct_sender");
+		expect(await messages(to)).toHaveLength(0);
+		expect(await sentTo(mail, to.address)).toHaveLength(0);
+	});
+
+	it("bounces for an address that is gone by the next try, and is sent to the rest", {
+		timeout: 60_000,
+	}, async () => {
+		const from = await mailboxWithAddress();
+		const roomy = await mailboxWithAddress();
+		const full = await mailboxWithAddress();
+		await fill(full);
+		const sent = await send(from, { to: [roomy.address, full.address] });
+		expect(sent.state).toBe("waiting");
+
+		await removeAddress(full);
+		expect(await untilState(from, sent, "sent")).toBe("sent");
+		expect(await deliveries(from, sent)).toEqual({
+			[roomy.address]: ["delivered", null],
+			[full.address]: ["bounced", "No such address"],
+		});
+	});
+});
+
+describe("mail to an address here, when DNS doesn't agree today", () => {
+	/** Sends from one new mailbox to another after `change`, and says how it went. */
+	async function sendAfter(change: (from: Box, to: Box) => void) {
+		const from = await mailboxWithAddress();
+		const to = await mailboxWithAddress();
+		change(from, to);
+		const sent = await send(from, { to: [to.address] });
+		expect(sent.state).toBe("sent");
+		return { through: await sentTo(mail, to.address), arrived: await messages(to) };
+	}
+
+	it("goes through Email Service when the recipient's domain no longer shows its record", async () => {
+		const { through, arrived } = await sendAfter((_, to) =>
+			proofs.delete(`_gateweave-mail.${to.domain}`),
+		);
+		expect(through).toHaveLength(1);
+		expect(arrived).toHaveLength(0);
+	});
+
+	it("goes through Email Service when the recipient's mail goes elsewhere", async () => {
+		const { through, arrived } = await sendAfter((_, to) =>
+			mailHosts.set(to.domain, ["aspmx.l.google.com"]),
+		);
+		expect(through).toHaveLength(1);
+		expect(arrived).toHaveLength(0);
+	});
+
+	it("goes through Email Service when the sender's domain no longer shows its record", async () => {
+		const { through, arrived } = await sendAfter((from) =>
+			proofs.delete(`_gateweave-mail.${from.domain}`),
+		);
+		expect(through).toHaveLength(1);
+		expect(arrived).toHaveLength(0);
+	});
+
+	it("goes through Email Service when DNS can't say", async () => {
+		const { through, arrived } = await sendAfter((_, to) => unanswered.add(to.domain));
+		expect(through).toHaveLength(1);
+		expect(arrived).toHaveLength(0);
 	});
 });
 

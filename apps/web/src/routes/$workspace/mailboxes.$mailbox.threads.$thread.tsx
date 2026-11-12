@@ -325,7 +325,7 @@ function ThreadMessage({
 						{listed.verifiedDomain && (
 							<span
 								className="flex max-w-[40%] shrink-0 items-center gap-1 self-center text-xs text-muted-foreground"
-								title={`Cloudflare checked that ${listed.verifiedDomain} sent it`}
+								title={`Proved to come from ${listed.verifiedDomain}`}
 							>
 								<ShieldCheck className="size-3.5 shrink-0" aria-hidden />
 								<span className="sr-only">Sent from </span>
@@ -350,6 +350,7 @@ function ThreadMessage({
 								id={listed.id}
 								status={listed.sent.status}
 								mine={listed.sent.mine}
+								reached={listed.sent.deliveries.some((one) => one.state === "delivered")}
 								onChanged={async () => {
 									await onChanged();
 									if (!opened && loaded) await load();

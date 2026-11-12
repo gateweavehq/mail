@@ -263,7 +263,7 @@ export interface WaitForEmailInput {
 	from?: string | undefined;
 	/** Only mail whose subject has these words, ignoring case. */
 	subject?: string | undefined;
-	/** Only mail whose From's domain DMARC proved (verifiedDomain), so a forged From is passed over. With from, proved to be that sender's. */
+	/** Only mail whose From's domain is proved (verifiedDomain): DMARC passed for it, or a mailbox on this server that holds the domain sent it. So a forged From is passed over. With from, proved to be that sender's. */
 	provedOnly?: boolean | undefined;
 	/** Only mail that arrived at or after this time, ISO 8601. Without it, mail from the 5 minutes before the call counts too, such as an earlier code: pass the time just before you asked for the mail. */
 	since?: string | undefined;
@@ -345,7 +345,7 @@ export interface GetVerificationCodeOutput {
 	messageId?: string;
 	/** The domain of the From's address, which on its own proves nothing. */
 	fromDomain?: string | null;
-	/** The From's domain, when DMARC proved it; null when unproved. */
+	/** The From's domain, when DMARC proved it, or this server did, for mail one of its mailboxes sent here; null when unproved. */
 	verifiedDomain?: string | null;
 	dmarc?: string | null;
 	arrivedAt?: string;
@@ -829,7 +829,7 @@ export interface MailMethods {
 	/**
 	 * Get verification code.
 	 *
-	 * Waits for a sign-up, sign-in or confirmation message from a sender you name, as wait_for_email does, and gives only the one-time code in it, never the rest of its text. Only mail whose sender DMARC proved counts, unless you pass provedOnly: false, as a From can be forged. Pass since, the time just before you asked for the code, so an earlier one isn't taken. code is null when the message has no code it could tell apart.
+	 * Waits for a sign-up, sign-in or confirmation message from a sender you name, as wait_for_email does, and gives only the one-time code in it, never the rest of its text. Only mail whose sender is proved counts (verifiedDomain), unless you pass provedOnly: false, as a From can be forged. Pass since, the time just before you asked for the code, so an earlier one isn't taken. code is null when the message has no code it could tell apart.
 	 *
 	 * `GET /verification-code`, as the MCP tool `get_verification_code`.
 	 */

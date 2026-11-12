@@ -274,10 +274,11 @@ describe("proving a domain", () => {
 
 		setProof(domain, row.proof.value);
 		setMail(domain, "aspmx.l.google.com");
-		expect(await check()).toMatchObject({ proved: true, mail: "elsewhere" });
+		expect(await check()).toMatchObject({ proved: true, mail: "elsewhere", kept: true });
 		const proved = (await list("proof", owner.headers)).domains[0];
 		expect(proved?.verifiedAt).toEqual(expect.any(Number));
-		expect(proved?.proof).toBeNull();
+		// Still shown to an admin: mail from mailboxes here goes straight to it only while it's there.
+		expect(proved?.proof?.value).toBe(row.proof.value);
 
 		// One host elsewhere means some of its mail doesn't come here.
 		setMail(domain, CLOUDFLARE_MX, "aspmx.l.google.com");
@@ -285,9 +286,10 @@ describe("proving a domain", () => {
 		setMail(domain, CLOUDFLARE_MX, "route2.mx.cloudflare.net");
 		expect(await check()).toMatchObject({ mail: "cloudflare" });
 
-		// The record has served its purpose, and people remove such records.
+		// The record has served its purpose, and people remove such records. The proof stands, and the
+		// check says the record is gone.
 		records.delete(`_gateweave-mail.${domain}|TXT`);
-		expect(await check()).toMatchObject({ proved: true });
+		expect(await check()).toMatchObject({ proved: true, kept: false });
 	});
 
 	it("changes nothing when the resolver fails", async () => {

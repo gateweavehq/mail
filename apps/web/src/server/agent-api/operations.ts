@@ -230,7 +230,7 @@ const waitInput = {
 		.boolean()
 		.optional()
 		.describe(
-			"Only mail whose From's domain DMARC proved (verifiedDomain), so a forged From is passed over. With from, proved to be that sender's.",
+			"Only mail whose From's domain is proved (verifiedDomain): DMARC passed for it, or a mailbox on this server that holds the domain sent it. So a forged From is passed over. With from, proved to be that sender's.",
 		),
 	since: z.iso
 		.datetime({ offset: true })
@@ -441,7 +441,7 @@ const getVerificationCode = operation({
 	name: "get_verification_code",
 	title: "Get verification code",
 	description:
-		"Waits for a sign-up, sign-in or confirmation message from a sender you name, as wait_for_email does, and gives only the one-time code in it, never the rest of its text. Only mail whose sender DMARC proved counts, unless you pass provedOnly: false, as a From can be forged. Pass since, the time just before you asked for the code, so an earlier one isn't taken. code is null when the message has no code it could tell apart.",
+		"Waits for a sign-up, sign-in or confirmation message from a sender you name, as wait_for_email does, and gives only the one-time code in it, never the rest of its text. Only mail whose sender is proved counts (verifiedDomain), unless you pass provedOnly: false, as a From can be forged. Pass since, the time just before you asked for the code, so an earlier one isn't taken. code is null when the message has no code it could tell apart.",
 	input: z.object({
 		...waitInput,
 		from: senderInput.describe(

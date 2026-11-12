@@ -13,6 +13,7 @@ import { KEY_CHANGED, RESEND_CODE, type SendsWith } from "../../lib/providers";
 import type { SentEventType } from "../../lib/webhooks";
 import { heldWriters } from "../auth/agents";
 import { createDb } from "../db";
+import { DEFAULT_DNS_RESOLVER, dnsLookup } from "../directory/dns";
 import { openProviderKey } from "../providers/keys";
 import { RESEND_API, type ResendFailure, sendWithResend } from "../providers/resend";
 import { sealedUnderUnknown } from "../reseal-state";
@@ -233,6 +234,8 @@ export interface Sending {
 
 /** The states a person may discard a message the mailbox sent from. */
 const DISCARDABLE = new Set(["held", "refused", "uncertain", "waiting", "discarded"]);
+/** States a message can be in while some of its recipients have it and the others don't yet. */
+const UNSENT_REACHED = new Set(["refused", "uncertain", "waiting"]);
 
 /** A message waiting for a person to approve it, as the mailbox's page lists it. */
 export type Awaiting = {
@@ -278,6 +281,8 @@ type Trying = {
 	files: string;
 	/** 1 when it goes straight to mailboxes here, 0 through its provider, null until decided. */
 	direct: number | null;
+	/** When this try began, which tells it from any other: only this try may record how it went. */
+	attemptedAt: number;
 };
 
 /** Who a message goes to, To and Cc, as its request names them. */
@@ -875,13 +880,17 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 	 * Deletes a message that isn't sent, whether held for approval, refused, uncertain or waiting to
 	 * be tried again, or discarded already when deleting its copy failed. With `onlyHeld`, only one
 	 * held for approval, for someone who may reject it but not discard others' mail. False when there
-	 * is no such message here, or it is sent or being sent. `by` is the membership that discards it.
+	 * is no such message here, or it is sent or being sent, or a mailbox here has it already, as one
+	 * delivered straight to some of its recipients while it waits for the others' does: it isn't
+	 * unsent any more. `by` is the membership that discards it.
 	 */
 	async discard(id: string, onlyHeld = false, by: string | null = null): Promise<boolean> {
-		const row = this.ctx.storage.sql
+		const sql = this.ctx.storage.sql;
+		const row = sql
 			.exec<{ state: string }>("SELECT state FROM outgoing WHERE message = ?", id)
 			.toArray()[0];
 		if (!row || !DISCARDABLE.has(row.state)) return false;
+		if (this.#reachedAny(id)) return false;
 		// Checked here, with nothing awaited before it's marked: one approved meanwhile isn't held.
 		if (onlyHeld && row.state !== "held") return false;
 		return this.remove(id, by);
@@ -923,7 +932,7 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 				WHERE message = ? AND ${found}
 				RETURNING request, attempts, provider, workspace_id AS workspaceId,
 					idempotency_key AS idempotencyKey, maybe_sent AS maybeSent, key_version AS keyVersion,
-					files, direct`,
+					files, direct, attempted_at AS attemptedAt`,
 				now,
 				from === "again" || from === "approve" ? 1 : 0,
 				approvedBy,
@@ -944,10 +953,11 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 					.exec(
 						`UPDATE outgoing SET state = 'sent', code = NULL, detail = NULL, provider_id = ?,
 							sent_at = ?
-						WHERE message = ? AND state = 'sending' RETURNING message`,
+						WHERE message = ? AND state = 'sending' AND attempted_at = ? RETURNING message`,
 						result.providerId,
 						Date.now(),
 						id,
+						row.attemptedAt,
 					)
 					.toArray();
 				if (sent.length === 0) return false;
@@ -966,7 +976,7 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 							`UPDATE outgoing SET state = ?, code = ?, next_at = ?, detail = ?,
 								maybe_sent = max(maybe_sent, ?),
 								idempotency_key = CASE WHEN ? AND maybe_sent = 0 THEN ? ELSE idempotency_key END
-							WHERE message = ? AND state = 'sending' RETURNING message`,
+							WHERE message = ? AND state = 'sending' AND attempted_at = ? RETURNING message`,
 							outcome.state,
 							outcome.code,
 							outcome.state === "waiting" ? outcome.nextAt : null,
@@ -978,6 +988,7 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 							result.answered ? 1 : 0,
 							crypto.randomUUID(),
 							id,
+							row.attemptedAt,
 						)
 						.toArray().length > 0;
 				// Those who have it already aren't given it again by the next try.
@@ -1078,6 +1089,15 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 		return new Set(taken);
 	}
 
+	/** Whether a mailbox here has the message already, as one delivered straight to it does. */
+	#reachedAny(id: string): boolean {
+		return (
+			this.ctx.storage.sql
+				.exec("SELECT 1 FROM delivery WHERE message = ? AND state = 'delivered' LIMIT 1", id)
+				.toArray().length > 0
+		);
+	}
+
 	/** Records what became of recipients of mail delivered here. In the caller's transaction. */
 	#recordHere(id: string, recipients: Recorded[] | undefined): void {
 		const at = Date.now();
@@ -1125,7 +1145,8 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			let direct = false;
 			if (deliversDirectly(this.env) && row.maybeSent === 0) {
 				try {
-					direct = await goesDirectly(db, sender, recipients, new Date());
+					const lookUp = dnsLookup(this.env.DNS_RESOLVER_URL || DEFAULT_DNS_RESOLVER);
+					direct = await goesDirectly(db, lookUp, sender, recipients, new Date());
 				} catch (error) {
 					// It still arrives through the provider, as before.
 					console.error("mailbox: D1 didn't say where mail goes; it goes through its provider", {
@@ -1133,11 +1154,22 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 					});
 				}
 			}
-			sql.exec(
-				"UPDATE outgoing SET direct = ? WHERE message = ? AND state = 'sending'",
-				direct ? 1 : 0,
-				id,
-			);
+			// Only while this try still has it: one that took too long to decide may have been given up
+			// on, and another try may have decided since. Then this one goes no further either way.
+			const decided = sql
+				.exec(
+					`UPDATE outgoing SET direct = ?
+					WHERE message = ? AND state = 'sending' AND direct IS NULL AND attempted_at = ?
+					RETURNING direct`,
+					direct ? 1 : 0,
+					id,
+					row.attemptedAt,
+				)
+				.toArray();
+			if (decided.length === 0) {
+				const outcome = { state: "uncertain", code: DIRECT_UNAVAILABLE_CODE } as const;
+				return { ok: false, outcome, detail: null, answered: false, maybeSent: false };
+			}
 			if (!direct) return null;
 		} else {
 			let own: boolean;
@@ -1650,10 +1682,46 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 		if (!row) return false;
 		// One that isn't sent is discarded before anything is awaited, a state no try starts from:
 		// the alarm, a person's Send again or an approval could otherwise send it while its copy goes.
-		const rejected = this.ctx.storage.transactionSync(() => {
-			const was = sql
-				.exec<{ state: string }>("SELECT state FROM outgoing WHERE message = ?", id)
-				.toArray()[0]?.state;
+		const told = this.ctx.storage.transactionSync(() => {
+			const outgoing = sql
+				.exec<{ state: string; request: string }>(
+					"SELECT state, request FROM outgoing WHERE message = ?",
+					id,
+				)
+				.toArray()[0];
+			const was = outgoing?.state;
+			if (outgoing && UNSENT_REACHED.has(outgoing.state) && this.#reachedAny(id)) {
+				// Some recipients have it, delivered straight to them while it waited for the others: it
+				// was sent, to them, and goes no further. The rest are told it failed.
+				sql.exec(
+					`UPDATE outgoing SET state = 'sent', code = NULL, detail = NULL, next_at = NULL,
+						sent_at = ?
+					WHERE message = ?`,
+					Date.now(),
+					id,
+				);
+				writeSentEvent(sql, "message.sent", id, by);
+				const have = new Set(
+					sql
+						.exec<{ recipient: string }>(
+							"SELECT recipient FROM delivery WHERE message = ? AND state <> 'deferred'",
+							id,
+						)
+						.toArray()
+						.map(({ recipient }) => recipient),
+				);
+				const request = JSON.parse(outgoing.request) as EmailMessageBuilder;
+				for (const recipient of new Set(addressesOf(request).map((a) => a.trim().toLowerCase()))) {
+					if (have.has(recipient)) continue;
+					recordRecipient(sql, id, {
+						recipient,
+						state: "failed",
+						at: Date.now(),
+						detail: "Its sender deleted it before it reached them.",
+					});
+				}
+				return true;
+			}
 			sql.exec(
 				`UPDATE outgoing SET state = 'discarded', next_at = NULL
 				WHERE message = ? AND state IN ('held', 'waiting', 'refused', 'uncertain')`,
@@ -1663,7 +1731,7 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			if (was === "held") writeSentEvent(sql, "message.rejected", id, by);
 			return was === "held";
 		});
-		if (rejected) await this.#tellSoon();
+		if (told) await this.#tellSoon();
 		// The mail's own object, the original a sealed copy replaced, and a copy being written,
 		// under the current key or, from before it changed, the previous.
 		const keys = await this.#keyIds();
