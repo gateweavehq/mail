@@ -136,7 +136,7 @@ None of this exists yet; it is the direction, and it may change.
 - Aliases that point at a mailbox.
 - Transactional sending and templates, through Cloudflare Email Service.
 
-The planned shape is in [docs/architecture.md](docs/architecture.md).
+How it is built, and what isn't yet, is in [docs/architecture.md](docs/architecture.md).
 
 ## Tech stack
 
