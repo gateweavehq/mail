@@ -12,8 +12,18 @@ addresses of its own, and hear of mail through webhooks of its own.
   verification code and print it, wait for a message, send one, check a webhook's signature, or
   call any route.
 
-It will install with `npm install @gateweave/mail`, but it is not on npm yet. Until it is, use it
-from this repository: `pnpm --filter @gateweave/mail build` writes `dist/`.
+It isn't on npm yet. Each release is a tarball on `pkg.gateweave.com`, which npm and pnpm install
+from its address:
+
+```sh
+npm install https://pkg.gateweave.com/mail/0.1.0/gateweave-mail-0.1.0.tgz
+npx --yes https://pkg.gateweave.com/mail/0.1.0/gateweave-mail-0.1.0.tgz --version
+```
+
+[`mail/latest.json`](https://pkg.gateweave.com/mail/latest.json) names the newest release, with its
+SHA-256 and the `integrity` that npm keeps in your lockfile, and each release's folder has a
+`SHA256SUMS`. A release never changes once it is there. Since it doesn't come from a registry,
+`npm update`, Dependabot and Renovate don't see a new one: change the address to move to it.
 
 You need your Mail's address, such as `https://mail.example.com`, and an agent's key. An owner or
 admin makes the agent in the workspace's settings, under Agents, and copies its key, which is shown
@@ -234,6 +244,19 @@ pnpm --filter @gateweave/mail generate
 
 `pnpm --filter @gateweave/mail test` fails while `src/api.gen.ts` isn't what the document makes.
 `apps/web/test/sdk.test.ts` runs the SDK and the command line against the built Worker.
+
+A maintainer releases the package from a clean commit on `main`, once `version` in `package.json`
+and `src/version.ts` names the new one:
+
+```sh
+pnpm --filter @gateweave/mail release --dry-run   # builds, packs and checks it; CI does this too
+pnpm --filter @gateweave/mail release             # and puts it on pkg.gateweave.com
+```
+
+It packs the package as npm would publish it, checks that the tarball holds only `dist/`,
+`openapi.json`, the README and the licence, runs it unpacked, and uploads it with Wrangler, which
+needs write access to the `gateweave-pkg` bucket. The bucket's lock rules refuse to overwrite or
+delete anything under a version, so a version goes up once; then `latest.json` names it.
 
 ## License
 

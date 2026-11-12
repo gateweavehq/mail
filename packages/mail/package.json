@@ -4,6 +4,8 @@
 	"private": true,
 	"description": "A TypeScript client and a command line for Gateweave Mail's agent API",
 	"license": "AGPL-3.0-only",
+	"homepage": "https://github.com/gateweavehq/mail/tree/main/packages/mail#readme",
+	"bugs": "https://github.com/gateweavehq/mail/issues",
 	"type": "module",
 	"repository": {
 		"type": "git",
@@ -23,7 +25,8 @@
 	},
 	"files": [
 		"dist",
-		"openapi.json"
+		"openapi.json",
+		"LICENSE"
 	],
 	"publishConfig": {
 		"exports": {
@@ -46,7 +49,8 @@
 		"build": "tsc -p tsconfig.build.json",
 		"typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.sdk.json",
 		"test": "vitest run",
-		"generate": "node scripts/generate.mjs"
+		"generate": "node scripts/generate.mjs",
+		"release": "node scripts/release.mjs"
 	},
 	"devDependencies": {
 		"@types/node": "catalog:",

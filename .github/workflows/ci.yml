@@ -31,6 +31,8 @@ jobs:
         run: pnpm test
       - name: Build
         run: pnpm build
+      - name: Pack the SDK as a release would
+        run: pnpm --filter @gateweave/mail release --dry-run
 
   # Skips the browser tests when a pull request changes nothing the app is built from, such as a
   # release's changelog. Pushes to main always run them.
