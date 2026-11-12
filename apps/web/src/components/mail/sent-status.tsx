@@ -15,6 +15,8 @@ import {
 import {
 	canSendAgain,
 	changeOutbox,
+	DIRECT_FULL_CODE,
+	DIRECT_UNAVAILABLE_CODE,
 	isResendCode,
 	refusalReason,
 	type SendStatus,
@@ -243,6 +245,12 @@ function said(status: SendStatus): string {
 			const when = status.nextAt ? ` at ${formatDateTime(status.nextAt)}` : " soon";
 			// Without a code, its first try never began, as when a deploy came in between.
 			if (!status.code) return `It isn't sent yet. Mail tries${when}.`;
+			if (status.code === DIRECT_FULL_CODE) {
+				return `A mailbox here that it goes to is full, so Mail tries again${when}. Those who have it already don't get it twice.`;
+			}
+			if (status.code === DIRECT_UNAVAILABLE_CODE) {
+				return `Mail couldn't store it in a mailbox here just then, so it tries again${when}. Those who have it already don't get it twice.`;
+			}
 			if (!isResendCode(status.code)) return `Email Service is busy, so Mail tries again${when}.`;
 			if (status.code === "resend:key_unavailable") {
 				return `The workspace's Resend key couldn't be read just then, so Mail tries again${when}.`;
@@ -255,6 +263,9 @@ function said(status: SendStatus): string {
 				: `Resend didn't say whether it went, so Mail asks again${when}. Resend knows it by its id, so it can't go twice.`;
 		}
 		case "uncertain":
+			if (status.code === DIRECT_UNAVAILABLE_CODE) {
+				return "Mail stopped while storing this in mailboxes here, so some may not have it. Sending it again can't give anyone a second copy.";
+			}
 			if (status.code === SUPPRESSED_CODE) {
 				return "Resend didn't say whether a try went, and before the next one an address it goes to came onto this workspace's suppression list, so Mail stopped. It may have gone or not. An owner or admin can see the list in Settings, under Suppressions.";
 			}

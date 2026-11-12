@@ -735,6 +735,30 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
       column keeps it with the saving's `added_at`, so a key put in by code that doesn't know the
       column, as after a rollback, isn't taken for the one before. After a try that may have gone,
       a different one stops it as `uncertain` (`resend:key_changed`). Someone who then sends it again takes the new key.
+    - **Straight to a mailbox here** (`mailbox/direct.ts`). A message whose every recipient, To
+      and Cc, is a live address of this deployment, in any workspace, isn't handed to a provider:
+      the sending mailbox's object reads its copy from R2 and stores it in each recipient's
+      mailbox through `storeMail`, the path `email()` takes, so it is kept once, threaded, counted
+      against that mailbox's space, told to webhooks (`message.received`) and indexed, and comes
+      for the agent that made the address. Out through Email Service and back through MX it would
+      cost a send and a place in the provider's limits, take seconds, depend on DNS and be scored
+      for spam. A message that also goes elsewhere goes through its provider to everyone, as
+      before: Email Service and Resend take one list for the headers and the envelope, so leaving
+      our own addresses out would take them out of what the others see. Which way is decided at
+      the first try and kept (`outgoing.direct`), so a later try never hands to a provider what a
+      mailbox here has; one that may have gone through Resend stays with Resend. The recipients'
+      copies have no DMARC result: their `verified_domain` is the sender's domain, which the
+      directory proved, because the sender is still an address of the sending mailbox on that
+      domain, as each try checks again (`mail:direct_sender` refuses it when it isn't). Each
+      recipient's record says `delivered` as soon as it is stored, and an address that is gone
+      by then `bounced`. A mailbox that is full, or a store that failed, waits on the busy waits
+      (`mail:direct_full`, `mail:direct_unavailable`); a mailbox keeps a message once, so trying
+      again gives no one a second copy, and the alarm tries a stale `sending` one again too.
+      When the waits run out, those still without it are `bounced` and the message is `sent`. The
+      gateway's checks stay as they are: the suppression list, the workspace's day and an agent's
+      policy and approval. A mailbox may send to its own address, and keeps the copy and the mail
+      it got side by side in the thread. `DIRECT_DELIVERY=off` sends everything through the
+      provider, to test the real path (`test/direct-delivery.test.ts`).
     - **States** (`outgoing.state`). `held` for an agent's message that waits for approval, as
       above. `sending`, then `sent`. `waiting` when Email Service is busy
       (its rate or daily limit): the object's alarm tries again after 15 seconds, 1, 5 and 30

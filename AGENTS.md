@@ -100,7 +100,10 @@ These are load-bearing. Breaking one breaks users' data or security, usually sil
     among the headers it adds at the top, is proof of who sent a message, and only of the domain
     it checked (`header.from`), when that is the domain of the one address in the one `From`
     (`verifiedDomain`). For mail that came through Resend, only the DMARC result its API gives is
-    (`resendVerifiedDomain`), never a header in that mail, which could copy Cloudflare's. A forged message can arrive marked `dmarc=none`, bring an
+    (`resendVerifiedDomain`), never a header in that mail, which could copy Cloudflare's. Mail a
+    mailbox here sends straight to another (`apps/web/src/server/mailbox/direct.ts`) is proved by
+    the directory instead, with no DMARC result: its domain only while its sender is still an
+    address of the sending mailbox on that proved domain, as each try checks again (`isOwnSender`). A forged message can arrive marked `dmarc=none`, bring an
     `Authentication-Results` of its own, or put an address in the name before the real one, so
     show the proved domain, never a mark alone. `message.from` is the envelope sender, not the
     person the reader will see, so show the `From` header. Show a message's HTML only as the page
@@ -108,7 +111,8 @@ These are load-bearing. Breaking one breaks users' data or security, usually sil
     app's origin, nothing from elsewhere but images the reader asked for), and only in a frame with
     the same sandbox; never in one of the app's pages. Serve the original only as a download.
 12. **A mailbox's Durable Object has no public route.** Only `email()` and Resend's webhook, after
-    looking the address up, the queue's delivery events, after looking the sender up (see 17), and
+    looking the address up, another mailbox sending to an address here, after looking it up the
+    same way (`findAddress`, in `direct.ts`), the queue's delivery events, after looking the sender up (see 17), and
     server code, after checking membership and that the mailbox is in the caller's
     workspace, reach it. Mail is read only through `openMailbox`
     (`apps/web/src/server/mailbox/read.ts`), which applies `canReadMailbox`: being in the workspace
@@ -149,7 +153,11 @@ These are load-bearing. Breaking one breaks users' data or security, usually sil
     it and no earlier try under it may have gone (`outgoing.maybe_sent`), and after such a try,
     never end it as `refused` or send it through another saving of the key
     (`outgoing.key_version`): Resend checks a key before the message, and knows an idempotency
-    key only in its own account. A draft's id makes a second send of it the first. The copy and its `outgoing` row are
+    key only in its own account. Mail delivered straight to mailboxes here is the other: a
+    mailbox keeps a message once, so the alarm may try it again too. Which way a message goes is
+    decided at its first try and kept (`outgoing.direct`), so no later try hands a provider what a
+    mailbox here already has, and one that may have gone through Resend never goes straight.
+    A draft's id makes a second send of it the first. The copy and its `outgoing` row are
     written in one transaction before anything is called, each change of state is made only from
     the state it was found in, and the message's own id goes in its `References`, so its thread
     doesn't depend on the `Message-ID` the provider gives it.
