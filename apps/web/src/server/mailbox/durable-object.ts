@@ -1,6 +1,14 @@
 import { DurableObject } from "cloudflare:workers";
 import PostalMime, { type Attachment } from "postal-mime";
-import { type SendStatus, type SentContext, SUPPRESSED_CODE } from "../../lib/outbox";
+import type { DeliveryState } from "../../lib/delivery";
+import {
+	DIRECT_FULL_CODE,
+	DIRECT_SENDER_CODE,
+	DIRECT_UNAVAILABLE_CODE,
+	type SendStatus,
+	type SentContext,
+	SUPPRESSED_CODE,
+} from "../../lib/outbox";
 import { KEY_CHANGED, RESEND_CODE, type SendsWith } from "../../lib/providers";
 import type { SentEventType } from "../../lib/webhooks";
 import { heldWriters } from "../auth/agents";
@@ -13,7 +21,13 @@ import { suppressedAmong } from "../suppressions";
 import type { MailEvent } from "../webhooks/durable-object";
 import { bodyHash } from "./body";
 import type { SentFile } from "./compose";
-import { DELIVERIES_JSON, type DeliveryEvent, RECIPIENT_COUNT, recordDelivery } from "./deliveries";
+import {
+	DELIVERIES_JSON,
+	type DeliveryEvent,
+	RECIPIENT_COUNT,
+	recordDelivery,
+	recordRecipient,
+} from "./deliveries";
 import {
 	copyOutcome,
 	type Outcome,
@@ -22,6 +36,14 @@ import {
 	STALE_SENDING_MS,
 	WAITS_MS,
 } from "./delivery";
+import {
+	type DirectOutcome,
+	deliverHere,
+	deliversDirectly,
+	goesDirectly,
+	isOwnSender,
+	type Sender,
+} from "./direct";
 import { listed, type SentFacts, writeSentEvent } from "./events";
 import { base64Size, bytesOfBase64 } from "./files";
 import { indexBatch } from "./indexing";
@@ -41,6 +63,7 @@ import {
 import { LINKED_THREADS, migrate } from "./schema";
 import { type RawRef, rawMail, SealError } from "./sealed";
 import { ftsQuery, searchable } from "./search";
+import { mailboxStub } from "./store";
 import { MAX_REFERENCES, messageIds, subjectKey } from "./thread";
 
 /** How much one mailbox may hold unless `MAILBOX_BYTES` says otherwise, counting messages on their way in. */
@@ -253,6 +276,8 @@ type Trying = {
 	keyVersion: string | null;
 	/** The files its copy carries, as JSON, which the try reads from there. */
 	files: string;
+	/** 1 when it goes straight to mailboxes here, 0 through its provider, null until decided. */
+	direct: number | null;
 };
 
 /** Who a message goes to, To and Cc, as its request names them. */
@@ -260,11 +285,16 @@ function addressesOf(request: EmailMessageBuilder): string[] {
 	return [...listed(request.to), ...listed(request.cc)];
 }
 
+/** What became of a recipient of mail delivered here, to record with how the try went. */
+type Recorded = Extract<DirectOutcome, { state: DeliveryState }>;
+
 /** How handing a message over went. */
 type Delivered =
-	| { ok: true; providerId: string | null }
+	| { ok: true; providerId: string | null; recipients?: Recorded[] }
 	| {
 			ok: false;
+			/** Recipients of mail delivered here whose record this try settles. */
+			recipients?: Recorded[];
 			outcome: Outcome;
 			detail: string | null;
 			/** Whether Resend turned the request down, which spends its key. */
@@ -893,7 +923,7 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 				WHERE message = ? AND ${found}
 				RETURNING request, attempts, provider, workspace_id AS workspaceId,
 					idempotency_key AS idempotencyKey, maybe_sent AS maybeSent, key_version AS keyVersion,
-					files`,
+					files, direct`,
 				now,
 				from === "again" || from === "approve" ? 1 : 0,
 				approvedBy,
@@ -920,29 +950,41 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 						id,
 					)
 					.toArray();
-				if (sent.length > 0) writeSentEvent(sql, "message.sent", id, by);
-				return sent.length > 0;
+				if (sent.length === 0) return false;
+				writeSentEvent(sql, "message.sent", id, by);
+				// After it is sent, as a provider's events come after it took the message.
+				this.#recordHere(id, result.recipients);
+				return true;
 			});
 			if (told) await this.#tellSoon();
 		} else {
 			const { outcome } = result;
-			sql.exec(
-				`UPDATE outgoing SET state = ?, code = ?, next_at = ?, detail = ?,
-					maybe_sent = max(maybe_sent, ?),
-					idempotency_key = CASE WHEN ? AND maybe_sent = 0 THEN ? ELSE idempotency_key END
-				WHERE message = ? AND state = 'sending'`,
-				outcome.state,
-				outcome.code,
-				outcome.state === "waiting" ? outcome.nextAt : null,
-				result.detail,
-				result.maybeSent ? 1 : 0,
-				// Resend turned that request down, and would only give the same answer to its key again,
-				// so the next try, after a fix, needs a new one. Unless an earlier try under it may have
-				// sent the message: only that key keeps a try from sending it twice.
-				result.answered ? 1 : 0,
-				crypto.randomUUID(),
-				id,
-			);
+			const told = this.ctx.storage.transactionSync(() => {
+				const changed =
+					sql
+						.exec(
+							`UPDATE outgoing SET state = ?, code = ?, next_at = ?, detail = ?,
+								maybe_sent = max(maybe_sent, ?),
+								idempotency_key = CASE WHEN ? AND maybe_sent = 0 THEN ? ELSE idempotency_key END
+							WHERE message = ? AND state = 'sending' RETURNING message`,
+							outcome.state,
+							outcome.code,
+							outcome.state === "waiting" ? outcome.nextAt : null,
+							result.detail,
+							result.maybeSent ? 1 : 0,
+							// Resend turned that request down, and would only give the same answer to its key
+							// again, so the next try, after a fix, needs a new one. Unless an earlier try under
+							// it may have sent the message: only that key keeps a try from sending it twice.
+							result.answered ? 1 : 0,
+							crypto.randomUUID(),
+							id,
+						)
+						.toArray().length > 0;
+				// Those who have it already aren't given it again by the next try.
+				if (changed) this.#recordHere(id, result.recipients);
+				return changed && (result.recipients?.length ?? 0) > 0;
+			});
+			if (told) await this.#tellSoon();
 			if (outcome.state === "waiting") await this.#alarmBy(outcome.nextAt);
 		}
 		return this.#status(id);
@@ -1036,8 +1078,165 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 		return new Set(taken);
 	}
 
+	/** Records what became of recipients of mail delivered here. In the caller's transaction. */
+	#recordHere(id: string, recipients: Recorded[] | undefined): void {
+		const at = Date.now();
+		for (const { recipient, state, detail } of recipients ?? []) {
+			recordRecipient(this.ctx.storage.sql, id, { recipient, state, at, detail });
+		}
+	}
+
+	/**
+	 * Delivers a message straight to the mailboxes here it goes to, when it goes that way (see
+	 * `direct.ts`), and says how that went; null when it goes through its provider. Which way is
+	 * decided at its first try and kept, so that no later try sends through a provider what a mailbox
+	 * here already has. One that may have gone through Resend stays with it. Never throws.
+	 */
+	async #direct(id: string, row: Trying): Promise<Delivered | null> {
+		if (row.direct === 0) return null;
+		const sql = this.ctx.storage.sql;
+		const message = sql
+			.exec<RawRef & { sender: string }>(
+				"SELECT object, size, seal, envelope_from AS sender FROM message WHERE id = ?",
+				id,
+			)
+			.toArray()[0];
+		const place = this.#placeOf();
+		if (!message || !place || !row.workspaceId) {
+			if (row.direct === null) return null;
+			// Decided already, so never through a provider now.
+			const outcome = copyOutcome("wrong", row.attempts, Date.now(), false);
+			return { ok: false, outcome, detail: null, answered: false, maybeSent: false };
+		}
+		const db = createDb(this.env.DB);
+		const sender: Sender = {
+			address: message.sender,
+			mailboxId: place.mailboxId,
+			workspaceId: row.workspaceId,
+		};
+		const recipients = [
+			...new Set(
+				addressesOf(JSON.parse(row.request) as EmailMessageBuilder).map((address) =>
+					address.trim().toLowerCase(),
+				),
+			),
+		];
+		if (row.direct === null) {
+			let direct = false;
+			if (deliversDirectly(this.env) && row.maybeSent === 0) {
+				try {
+					direct = await goesDirectly(db, sender, recipients, new Date());
+				} catch (error) {
+					// It still arrives through the provider, as before.
+					console.error("mailbox: D1 didn't say where mail goes; it goes through its provider", {
+						name: error instanceof Error ? error.name : "unknown",
+					});
+				}
+			}
+			sql.exec(
+				"UPDATE outgoing SET direct = ? WHERE message = ? AND state = 'sending'",
+				direct ? 1 : 0,
+				id,
+			);
+			if (!direct) return null;
+		} else {
+			let own: boolean;
+			try {
+				// Checked at every try, as the copies say the mail is proved to come from its domain.
+				// Deciding checked it for the first.
+				own = await isOwnSender(db, sender, new Date());
+			} catch {
+				const next = WAITS_MS.busy[row.attempts - 1];
+				const code = DIRECT_UNAVAILABLE_CODE;
+				return {
+					ok: false,
+					outcome:
+						next === undefined
+							? { state: "uncertain", code }
+							: { state: "waiting", code, nextAt: Date.now() + next },
+					detail: null,
+					answered: false,
+					maybeSent: false,
+				};
+			}
+			if (!own) {
+				const outcome = { state: "refused", code: DIRECT_SENDER_CODE } as const;
+				return { ok: false, outcome, detail: null, answered: false, maybeSent: false };
+			}
+		}
+		const now = Date.now();
+		let raw: Uint8Array<ArrayBuffer> | null;
+		try {
+			raw = await rawMail(this.env).bytes(message);
+		} catch (error) {
+			const unopened = error instanceof SealError && error.kind === "unopened";
+			return {
+				ok: false,
+				outcome: copyOutcome(unopened ? "wrong" : "unavailable", row.attempts, now, false),
+				detail: null,
+				answered: false,
+				maybeSent: false,
+			};
+		}
+		if (!raw) {
+			const outcome = copyOutcome("wrong", row.attempts, now, false);
+			return { ok: false, outcome, detail: null, answered: false, maybeSent: false };
+		}
+		// An earlier try's recipients that have it, or never will, aren't given it again.
+		const settled = new Set(
+			sql
+				.exec<{ recipient: string }>(
+					"SELECT recipient FROM delivery WHERE message = ? AND state <> 'deferred'",
+					id,
+				)
+				.toArray()
+				.map(({ recipient }) => recipient),
+		);
+		const outcomes = await deliverHere(
+			db,
+			raw,
+			message.sender,
+			recipients.filter((recipient) => !settled.has(recipient)),
+			// A mailbox may send to its own address, and then stores what it sent as mail it got.
+			(mailboxId) => (mailboxId === place.mailboxId ? this : mailboxStub(mailboxId)),
+		);
+		const recorded = outcomes.filter(
+			(one): one is Recorded => one.state !== "full" && one.state !== "unavailable",
+		);
+		const left = outcomes.filter((one) => one.state === "full" || one.state === "unavailable");
+		if (left.length === 0) return { ok: true, providerId: null, recipients: recorded };
+		const code = left.some((one) => one.state === "full")
+			? DIRECT_FULL_CODE
+			: DIRECT_UNAVAILABLE_CODE;
+		const next = WAITS_MS.busy[row.attempts - 1];
+		if (next !== undefined) {
+			return {
+				ok: false,
+				outcome: { state: "waiting", code, nextAt: now + next },
+				detail: null,
+				answered: false,
+				maybeSent: false,
+				recipients: recorded,
+			};
+		}
+		// Out of tries: sent to those who have it, and not delivered to the rest, as a bounce would say.
+		const failed = left.map(
+			(one): Recorded => ({
+				recipient: one.recipient,
+				state: "bounced",
+				detail:
+					one.state === "full"
+						? "Their mailbox is full."
+						: "Mail couldn't store it in their mailbox.",
+			}),
+		);
+		return { ok: true, providerId: null, recipients: [...recorded, ...failed] };
+	}
+
 	/** Hands a message to Email Service or Resend once, and says how that went. Never throws. */
 	async #deliver(id: string, row: Trying): Promise<Delivered> {
+		const direct = await this.#direct(id, row);
+		if (direct) return direct;
 		const written = JSON.parse(row.request) as EmailMessageBuilder;
 		const kept = JSON.parse(row.files) as SentFile[];
 		const files = kept.length > 0 ? await this.#filesOf(id, kept) : [];
@@ -1695,6 +1894,18 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			Date.now(),
 			stale,
 		);
+		// A mailbox here keeps a message once, so a try of one delivered straight to them that never
+		// said how it went is tried again while there are tries left, whichever provider its domain
+		// has: taken first, so that Resend's rule below doesn't take it as Resend's.
+		sql.exec(
+			`UPDATE outgoing SET state = 'waiting', next_at = ?, code = ?
+			WHERE state = 'sending' AND direct = 1 AND attempts > 0 AND attempts <= ?
+				AND attempted_at <= ?`,
+			Date.now(),
+			DIRECT_UNAVAILABLE_CODE,
+			WAITS_MS.busy.length,
+			stale,
+		);
 		// Resend knows a message by its key for a day, so one of its tries that never said how it went
 		// is tried again, as a failure that may have sent it would be, while there are tries left.
 		sql.exec(
@@ -1709,8 +1920,9 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 		// A try that never said how it went may have sent the message, so it isn't tried again.
 		sql.exec(
 			`UPDATE outgoing SET state = 'uncertain', maybe_sent = 1,
-				code = CASE WHEN provider = 'resend' THEN ? END
+				code = CASE WHEN direct = 1 THEN ? WHEN provider = 'resend' THEN ? END
 			WHERE state = 'sending' AND attempts > 0 AND attempted_at <= ?`,
+			DIRECT_UNAVAILABLE_CODE,
 			`${RESEND_CODE}unreachable`,
 			stale,
 		);

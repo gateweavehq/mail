@@ -39,11 +39,25 @@ export function recordDelivery(sql: SqlStorage, event: DeliveryEvent): boolean {
 		)
 		.toArray()[0];
 	if (!found) return false;
+	recordRecipient(sql, found.message, event);
+	return true;
+}
+
+/**
+ * Records what became of one recipient of a message this mailbox sent, by the message's own id, as
+ * `recordDelivery` does for a provider's event. A message delivered straight to a mailbox here has
+ * no provider's id.
+ */
+export function recordRecipient(
+	sql: SqlStorage,
+	message: string,
+	event: Pick<DeliveryEvent, "recipient" | "state" | "at" | "detail">,
+): void {
 	const recipient = event.recipient.trim().toLowerCase();
 	const before = sql
 		.exec<{ state: DeliveryState }>(
 			"SELECT state FROM delivery WHERE message = ? AND recipient = ?",
-			found.message,
+			message,
 			recipient,
 		)
 		.toArray()[0];
@@ -56,7 +70,7 @@ export function recordDelivery(sql: SqlStorage, event: DeliveryEvent): boolean {
 			WHERE (${rank("excluded.state")}, excluded.at, excluded.state, coalesce(excluded.detail, ''))
 				> (${rank("delivery.state")}, delivery.at, delivery.state, coalesce(delivery.detail, ''))
 			RETURNING state, at, detail`,
-			found.message,
+			message,
 			recipient,
 			event.state,
 			event.at,
@@ -66,9 +80,8 @@ export function recordDelivery(sql: SqlStorage, event: DeliveryEvent): boolean {
 	const type = after ? deliveryEventOf(after.state) : null;
 	// Told once for each thing it tells of: a bounce that the provider then calls a failure is one.
 	if (after && type && type !== (before ? deliveryEventOf(before.state) : null)) {
-		writeSentEvent(sql, type, found.message, null, { address: recipient, ...after });
+		writeSentEvent(sql, type, message, null, { address: recipient, ...after });
 	}
-	return true;
 }
 
 /** A message's recipients' records as one JSON array, for a listing's row. */

@@ -40,6 +40,20 @@ export const SUPPRESSED_CODE = "mail:suppressed";
  */
 export const COPY_UNREAD_CODE = "mail:copy_unread";
 
+/**
+ * Mail's codes for a message delivered straight to mailboxes on this deployment, with no provider:
+ * one of them was full, or couldn't store it just then, so Mail tries again. Trying again can't give
+ * anyone a second copy, as a mailbox keeps a message once.
+ */
+export const DIRECT_FULL_CODE = "mail:direct_full";
+export const DIRECT_UNAVAILABLE_CODE = "mail:direct_unavailable";
+
+/**
+ * Mail's code for a message to mailboxes here whose sender stopped being one of the mailbox's
+ * addresses on a proved domain before it went, so its mail can't say who sent it.
+ */
+export const DIRECT_SENDER_CODE = "mail:direct_sender";
+
 /** The most people one message goes to, To and Cc together. Email Service takes up to 50. */
 export const MAX_RECIPIENTS = 20;
 
@@ -221,6 +235,8 @@ export function refusalReason(code: string | null, detail: string | null = null)
 			return "An address it goes to came onto this workspace's suppression list while it waited, so Mail didn't send it. An owner or admin can see the list in Settings, under Suppressions.";
 		case COPY_UNREAD_CODE:
 			return "Mail couldn't read its files from its copy, so it didn't send it. Write it again.";
+		case DIRECT_SENDER_CODE:
+			return "The address it's from isn't one of this mailbox's on a proved domain any more, so Mail didn't deliver it.";
 		case "E_RECIPIENT_SUPPRESSED":
 			return "An address it goes to bounced before or asked not to get mail, so Email Service won't send to it.";
 		case "E_SENDER_DOMAIN_NOT_AVAILABLE":

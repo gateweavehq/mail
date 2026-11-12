@@ -120,9 +120,9 @@ export interface ReadEmailOutput {
 		subject: string;
 		/** The Date header, as sent. */
 		date: string | null;
-		/** The From's domain, when DMARC proved that domain sent it; null when unproved. */
+		/** The From's domain, when DMARC proved that domain sent it, or this server did, for mail one of its mailboxes sent here; null when unproved. */
 		verifiedDomain: string | null;
-		/** The DMARC check's verdict, such as "pass" or "fail". */
+		/** The DMARC check's verdict, such as "pass" or "fail". Null when there was none, as for mail a mailbox on this server sent here, whose domain verifiedDomain names. */
 		dmarc: string | null;
 		/** The text, made from the HTML when the message has no text part. */
 		text: string;
@@ -170,7 +170,7 @@ export interface ReadThreadOutput {
 				[key: string]: unknown;
 			} | null;
 			subject: string;
-			/** The From's domain, when DMARC proved that domain sent it; null when unproved. */
+			/** The From's domain, when DMARC proved that domain sent it, or this server did, for mail one of its mailboxes sent here; null when unproved. */
 			verifiedDomain: string | null;
 			/** For mail that came in, the address it came to. */
 			cameTo: string[];
@@ -203,9 +203,9 @@ export interface ReadThreadOutput {
 			subject: string;
 			/** The Date header, as sent. */
 			date: string | null;
-			/** The From's domain, when DMARC proved that domain sent it; null when unproved. */
+			/** The From's domain, when DMARC proved that domain sent it, or this server did, for mail one of its mailboxes sent here; null when unproved. */
 			verifiedDomain: string | null;
-			/** The DMARC check's verdict, such as "pass" or "fail". */
+			/** The DMARC check's verdict, such as "pass" or "fail". Null when there was none, as for mail a mailbox on this server sent here, whose domain verifiedDomain names. */
 			dmarc: string | null;
 			/** The text, made from the HTML when the message has no text part. */
 			text: string;
@@ -296,9 +296,9 @@ export interface WaitForEmailOutput {
 		subject: string;
 		/** The Date header, as sent. */
 		date: string | null;
-		/** The From's domain, when DMARC proved that domain sent it; null when unproved. */
+		/** The From's domain, when DMARC proved that domain sent it, or this server did, for mail one of its mailboxes sent here; null when unproved. */
 		verifiedDomain: string | null;
-		/** The DMARC check's verdict, such as "pass" or "fail". */
+		/** The DMARC check's verdict, such as "pass" or "fail". Null when there was none, as for mail a mailbox on this server sent here, whose domain verifiedDomain names. */
 		dmarc: string | null;
 		/** The text, made from the HTML when the message has no text part. */
 		text: string;

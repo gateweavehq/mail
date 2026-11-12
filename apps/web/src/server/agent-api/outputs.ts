@@ -17,7 +17,9 @@ const sentOutput = z
 const verifiedOutput = z
 	.string()
 	.nullable()
-	.describe("The From's domain, when DMARC proved that domain sent it; null when unproved.");
+	.describe(
+		"The From's domain, when DMARC proved that domain sent it, or this server did, for mail one of its mailboxes sent here; null when unproved.",
+	);
 const summaryOutput = z.looseObject({
 	id: z.string(),
 	threadId: z.string(),
@@ -38,7 +40,12 @@ const messageOutput = z.looseObject({
 	subject: z.string(),
 	date: z.string().nullable().describe("The Date header, as sent."),
 	verifiedDomain: verifiedOutput,
-	dmarc: z.string().nullable().describe('The DMARC check\'s verdict, such as "pass" or "fail".'),
+	dmarc: z
+		.string()
+		.nullable()
+		.describe(
+			'The DMARC check\'s verdict, such as "pass" or "fail". Null when there was none, as for mail a mailbox on this server sent here, whose domain verifiedDomain names.',
+		),
 	text: z.string().describe("The text, made from the HTML when the message has no text part."),
 	textCut: z.boolean(),
 	attachments: z.array(

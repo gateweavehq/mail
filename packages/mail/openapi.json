@@ -416,14 +416,14 @@
                           ]
                         },
                         "verifiedDomain": {
-                          "description": "The From's domain, when DMARC proved that domain sent it; null when unproved.",
+                          "description": "The From's domain, when DMARC proved that domain sent it, or this server did, for mail one of its mailboxes sent here; null when unproved.",
                           "type": [
                             "string",
                             "null"
                           ]
                         },
                         "dmarc": {
-                          "description": "The DMARC check's verdict, such as \"pass\" or \"fail\".",
+                          "description": "The DMARC check's verdict, such as \"pass\" or \"fail\". Null when there was none, as for mail a mailbox on this server sent here, whose domain verifiedDomain names.",
                           "type": [
                             "string",
                             "null"
@@ -632,7 +632,7 @@
                                 "type": "string"
                               },
                               "verifiedDomain": {
-                                "description": "The From's domain, when DMARC proved that domain sent it; null when unproved.",
+                                "description": "The From's domain, when DMARC proved that domain sent it, or this server did, for mail one of its mailboxes sent here; null when unproved.",
                                 "type": [
                                   "string",
                                   "null"
@@ -769,14 +769,14 @@
                                   ]
                                 },
                                 "verifiedDomain": {
-                                  "description": "The From's domain, when DMARC proved that domain sent it; null when unproved.",
+                                  "description": "The From's domain, when DMARC proved that domain sent it, or this server did, for mail one of its mailboxes sent here; null when unproved.",
                                   "type": [
                                     "string",
                                     "null"
                                   ]
                                 },
                                 "dmarc": {
-                                  "description": "The DMARC check's verdict, such as \"pass\" or \"fail\".",
+                                  "description": "The DMARC check's verdict, such as \"pass\" or \"fail\". Null when there was none, as for mail a mailbox on this server sent here, whose domain verifiedDomain names.",
                                   "type": [
                                     "string",
                                     "null"
@@ -1183,14 +1183,14 @@
                           ]
                         },
                         "verifiedDomain": {
-                          "description": "The From's domain, when DMARC proved that domain sent it; null when unproved.",
+                          "description": "The From's domain, when DMARC proved that domain sent it, or this server did, for mail one of its mailboxes sent here; null when unproved.",
                           "type": [
                             "string",
                             "null"
                           ]
                         },
                         "dmarc": {
-                          "description": "The DMARC check's verdict, such as \"pass\" or \"fail\".",
+                          "description": "The DMARC check's verdict, such as \"pass\" or \"fail\". Null when there was none, as for mail a mailbox on this server sent here, whose domain verifiedDomain names.",
                           "type": [
                             "string",
                             "null"
