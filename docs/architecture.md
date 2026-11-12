@@ -971,16 +971,16 @@ People change both on `/settings/account`, through Better Auth's `/update-user` 
 - **It ends every session,** whatever the request asks, since whoever knew the old password may be
   why it is changing and may be the one asking.
 
-## Planned shape
+## Not built yet
 
-Not built. This is where it is going, and it may change.
+This is where it is going, and it may change. What is above stays as it is: one Worker for the UI,
+the API, auth and `email()`, with D1 for accounts and the address directory, a Durable Object per
+mailbox and R2 for raw mail.
 
-- **One Worker.** The UI, the API, auth and `email()` stay together.
-- **D1 for accounts and the address directory**, a Durable Object per mailbox and R2 for raw mail,
-  as above.
 - **Aliases that point at a mailbox.**
 - **Images in the composer's HTML**, as agents send them already, forwarding, and replying to
   all.
+- **Transactional sending and templates**, through Cloudflare Email Service.
 
 ## What Cloudflare does with mail
 
@@ -991,7 +991,7 @@ Measured on 2026-11-07. These shape the design above, and Cloudflare may change 
 - **A zone can have 200 literal routing rules,** across the whole zone, not per Worker.
 - **A new literal rule takes from about half a minute to over a minute to work.** An address
   cannot be handed out and used in the same moment through rules, which is why the catch-all and
-  our own directory are planned to decide, not a rule per address.
+  our own directory decide, not a rule per address.
 - **Every SMTP answer comes after the whole message is sent.** A refusal does not save the
   sender's upload, and a message over 25 MiB is answered `552`.
 - **The `email()` handler has about 2 seconds of CPU,** and `limits.cpu_ms` does not change that.

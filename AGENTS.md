@@ -5,7 +5,7 @@ of truth for how the project is built; `CLAUDE.md` and other tool-specific files
 
 ## The project
 
-Gateweave Mail will be mailboxes for people and AI agents, on Cloudflare, with no server to run. It
+Gateweave Mail is mailboxes for people and AI agents, on Cloudflare, with no server to run. It
 is part of [Gateweave](https://gateweave.com), next to
 [Gateweave Track](https://github.com/gateweavehq/track),
 [Gateweave ID](https://github.com/gateweavehq/id) and
