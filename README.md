@@ -124,7 +124,8 @@ once. Then:
 - **Code of your own:** [`@gateweave/mail`](packages/mail) is a TypeScript client with a method
   for each route, typed from the API's document, a check of a webhook's signature, and a command
   line, `gateweave-mail`, that waits for a sign-in code or sends a message from a script or a CI
-  job. It isn't on npm yet. Or call the REST API at `https://mail.example.com/api/v1` with the same
+  job. It isn't on npm yet: [its README](packages/mail#readme) says how to install a release from
+  `pkg.gateweave.com`. Or call the REST API at `https://mail.example.com/api/v1` with the same
   header; `/api/v1/openapi.json` describes it.
 
 ## What it is planned to become

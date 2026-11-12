@@ -299,6 +299,8 @@ the cost.
 - Follow `.claude/skills/open-pull-request/SKILL.md` for the full flow.
 - Pull requests leave `CHANGELOG.md` alone, so parallel branches do not conflict there. A
   maintainer adds each version's entry when releasing.
+- `@gateweave/mail` is released apart from the app, to `pkg.gateweave.com` with
+  `pnpm --filter @gateweave/mail release`, not to npm; `packages/mail/README.md` says how.
 
 ## Playbooks
 
