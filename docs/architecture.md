@@ -294,11 +294,19 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     arrived at is one it made, noted on arrival by Email Routing or Resend from
     `mail_address.agent_member_id`. It stays when the address ends or is removed; mail that
     arrived before it was noted has none, and mail to a mailbox's own addresses isn't the agent's.
-    Email Routing hands each recipient its own copy, and the mailbox keeps one: a later copy that
-    comes within the hour, proved as the kept one was, adds its address to the kept one's
-    `envelope_to`, and its agent when the kept one has none, so mail to a mailbox's address and an
-    agent's is the agent's, and an agent waiting for mail to its address finds it. Mail sent again
-    later, word for word, can't make an old message an agent's. One message counts for one agent. The page asks only the mailboxes the agent
+    Email Routing hands each recipient its own copy, and the mailbox keeps one: a later copy,
+    proved as the kept one was, adds its address to the kept one's `envelope_to`, and its agent
+    when the kept one has none, so mail to a mailbox's address and an agent's is the agent's, and
+    an agent waiting for mail to its address finds it (`copies.ts`). A copy counts when it comes
+    within the hour, or at any time when its sender is proved to have addressed it there
+    (`message.addressed`, schema version 17): Cloudflare's own `Authentication-Results` passed a
+    DKIM signature of the proved domain, every signature of that domain in the message signs the
+    one `To` or `Cc` field, and the address is in it (`signedAddressees`). A sender told to try
+    again can come back days later, and its copy keeps its recipient. Mail sent again later, word
+    for word, can't make an old message an agent's unless its sender addressed it to the agent,
+    which a copy sent again says as truly as the first. Mail through Resend proves no recipient,
+    as its API gives no DKIM result, and mail delivered straight to a mailbox here is addressed as
+    its `To` and `Cc` say, which this server wrote. One message counts for one agent. The page asks only the mailboxes the agent
     was ever given (`agent_mailbox`, which a trigger fills as grants are made and which keeps them
     after a grant goes, as what it wrote stays there), each through `ofAgent`: what it wrote and
     received by partial indexes on `sent_by` and `came_for`, what waits from `outgoing`'s held
@@ -1036,6 +1044,10 @@ Measured on 2026-11-07. These shape the design above, and Cloudflare may change 
   `ARC-Seal`, `ARC-Message-Signature`, `ARC-Authentication-Results`, `Received-SPF`,
   `Authentication-Results` (`mx.cloudflare.net`), then `X-CF-SpamH-Score`. The sender's own headers
   follow, and they can include an `Authentication-Results` of their own.
+- **Cloudflare's `Authentication-Results` lists a result for each DKIM signature first,** with its
+  domain, selector and the start of its signature (`dkim=pass header.d=… header.s=… header.b=…`),
+  then `dmarc=`, then `spf=` results that quote the envelope sender and the HELO name, which the
+  sender chooses, then `arc=`.
 - **`message.headers.get()` joins a repeated header with ", "**, so it can't tell Cloudflare's
   `Authentication-Results` from a sender's. Mail reads the header block from the raw message
   instead.

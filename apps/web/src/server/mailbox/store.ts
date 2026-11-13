@@ -8,6 +8,7 @@ import {
 	parseHeaders,
 	readHeaderBlock,
 	resendVerifiedDomain,
+	signedAddressees,
 	verifiedDomain,
 } from "./headers";
 import { rawMail } from "./sealed";
@@ -32,23 +33,42 @@ export interface ArrivingMessage {
 	readonly rawSize: number;
 }
 
-/** What proves who sent a message: a DMARC result, and the domain it proves the mail came from. */
-export type Judge = (headers: Header[]) => { dmarc: string | null; verifiedDomain: string | null };
+/**
+ * What proves who sent a message to an address (`recipient`): a DMARC result, the domain it proves
+ * the mail came from, and whether that sender is proved to have addressed it to the recipient.
+ */
+export type Judge = (
+	headers: Header[],
+	recipient: string,
+) => { dmarc: string | null; verifiedDomain: string | null; addressed: boolean };
 
-/** For mail from Email Routing: Cloudflare's own `Authentication-Results`, in its own place. */
-export const judgedByCloudflare: Judge = (headers) => {
+/**
+ * For mail from Email Routing: Cloudflare's own `Authentication-Results`, in its own place, and the
+ * signed `To` and `Cc` it vouches for (`signedAddressees`).
+ */
+export const judgedByCloudflare: Judge = (headers, recipient) => {
 	const verdict = cloudflareVerdict(headers);
-	return { dmarc: verdict?.dmarc ?? null, verifiedDomain: verifiedDomain(headers, verdict) };
+	const domain = verifiedDomain(headers, verdict);
+	return {
+		dmarc: verdict?.dmarc ?? null,
+		verifiedDomain: domain,
+		addressed: signedAddressees(headers, domain).includes(recipient.trim().toLowerCase()),
+	};
 };
 
 /**
  * For mail that came through Resend: the DMARC result its API gives, which its MX computed, for
  * the From it read (`from`). Nothing in the mail itself counts, as a sender can write anything
- * there, Cloudflare's headers too.
+ * there, Cloudflare's headers too. Its API says no more of DKIM than DMARC's result, so no recipient
+ * is proved addressed.
  */
 export const judgedByResend =
 	(dmarc: string | null, from: string | null): Judge =>
-	(headers) => ({ dmarc, verifiedDomain: resendVerifiedDomain(headers, dmarc, from) });
+	(headers) => ({
+		dmarc,
+		verifiedDomain: resendVerifiedDomain(headers, dmarc, from),
+		addressed: false,
+	});
 
 /** The mailbox has no room for the message, which may change by the time the sender tries again. */
 export class MailboxFullError extends Error {
@@ -74,7 +94,7 @@ export async function storeMail(
 ): Promise<void> {
 	const [forHeaders, forStoring] = message.raw.tee();
 	const headers = parseHeaders(await readHeaderBlock(forHeaders));
-	const judged = judge(headers);
+	const judged = judge(headers, message.to);
 	const mailbox = open(found.mailboxId);
 	const raw = rawMail(env);
 	const begun = await mailbox.begin({
@@ -92,6 +112,7 @@ export async function storeMail(
 		references: referencedIds(headers),
 		dmarc: judged.dmarc,
 		verifiedDomain: judged.verifiedDomain,
+		addressed: judged.addressed,
 		cameFor: found.agentMemberId ?? null,
 		seal: await raw.newSeal(),
 	});

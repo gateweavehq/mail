@@ -289,6 +289,13 @@ const VERSION_16 = `
 ALTER TABLE outgoing ADD COLUMN direct INTEGER;
 `;
 
+// Whether a received message's sender is proved to have addressed it to the address it came to
+// (`Judge`): 1 when so. A copy for another of the mailbox's addresses that comes long after the kept
+// one still counts when it is (`copies.ts`). Mail from before is 0, as nothing proved it.
+const VERSION_17 = `
+ALTER TABLE message ADD COLUMN addressed INTEGER NOT NULL DEFAULT 0;
+`;
+
 /** Each brings the schema from the version before it. Append only: objects keep what they ran. */
 export const MIGRATIONS: ((sql: SqlStorage) => void)[] = [
 	(sql) => sql.exec(VERSION_1),
@@ -324,6 +331,7 @@ export const MIGRATIONS: ((sql: SqlStorage) => void)[] = [
 	(sql) => sql.exec(VERSION_14),
 	(sql) => sql.exec(VERSION_15),
 	(sql) => sql.exec(VERSION_16),
+	(sql) => sql.exec(VERSION_17),
 ];
 
 /** What migrating needs of a Durable Object's storage. */

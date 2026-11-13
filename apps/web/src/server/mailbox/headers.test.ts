@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+	addressees,
+	cloudflareDkimPasses,
 	cloudflareVerdict,
 	deliveryKey,
 	firstHeader,
@@ -7,6 +9,7 @@ import {
 	parseHeaders,
 	readHeaderBlock,
 	resendVerifiedDomain,
+	signedAddressees,
 	verifiedDomain,
 } from "./headers";
 
@@ -276,5 +279,180 @@ describe("deliveryKey", () => {
 		expect(await deliveryKey("box", headersOf([...sender.slice(0, 2), "Subject: Other"]))).not.toBe(
 			key,
 		);
+	});
+});
+
+/**
+ * Cloudflare's `Authentication-Results` as it reaches the Worker: each DKIM result names the
+ * signature's domain, selector and the start of its `b=`, before the DMARC result.
+ */
+const results = (dkim: string[], tail = "") =>
+	[
+		"Authentication-Results: mx.cloudflare.net",
+		...dkim,
+		"dmarc=pass header.from=bank.example policy.dmarc=quarantine",
+		"spf=pass (mx.cloudflare.net: domain of bounce@bank.example designates 192.0.2.1 as permitted sender) smtp.mailfrom=bounce@bank.example",
+		`arc=none smtp.remote-ip=192.0.2.1${tail}`,
+	].join("; ");
+
+const BANK_PASSED = "dkim=pass header.d=bank.example header.s=s1 header.b=AbCdEf12";
+
+const signature = (fields: string, domain = "bank.example") =>
+	`DKIM-Signature: v=1; a=rsa-sha256; c=relaxed/relaxed; d=${domain}; s=s1;\r\n\th=${fields}; bh=YmFk; b=AbCdEf12xyz`;
+
+/** A message from bank.example to two of acme's addresses, with Cc a group of two more. */
+const message = ({
+	dkim = [BANK_PASSED],
+	signatures = [signature("From:To:Cc:Subject:Date:Message-ID")],
+	fields = [
+		"From: Bank <alerts@bank.example>",
+		"To: Ada <Ada@Acme.example>, agent@acme.example",
+		"Cc: Team: bo@acme.example, cy@acme.example;",
+	],
+}: {
+	dkim?: string[];
+	signatures?: string[];
+	fields?: string[];
+} = {}) =>
+	parseHeaders(
+		[
+			...CLOUDFLARE,
+			results(dkim),
+			"X-CF-SpamH-Score: 1",
+			...signatures,
+			...fields,
+			"Subject: Statement",
+		].join("\r\n"),
+	);
+
+const TO = ["ada@acme.example", "agent@acme.example"];
+const CC = ["bo@acme.example", "cy@acme.example"];
+
+describe("cloudflareDkimPasses", () => {
+	it("reads the domains whose signatures passed, as Cloudflare writes them", () => {
+		const passed = message({
+			dkim: [
+				BANK_PASSED,
+				"dkim=pass header.d=Cloudflare-SMTP.net. header.s=cf2024-1 header.b=Zz9y8x7W",
+				"dkim=fail header.d=other.example header.s=s header.b=QqQqQqQq",
+			],
+		});
+		expect(cloudflareDkimPasses(passed)).toEqual(["bank.example", "cloudflare-smtp.net"]);
+	});
+
+	// What follows the DMARC result quotes the envelope sender and HELO name, which the sender picks.
+	it("counts no DKIM result after Cloudflare's DMARC result", () => {
+		const headers = parseHeaders(
+			[...CLOUDFLARE, results([], "; dkim=pass header.d=bank.example")].join("\r\n"),
+		);
+		expect(cloudflareDkimPasses(headers)).toEqual([]);
+	});
+
+	it("trusts no results but Cloudflare's own, in their place", () => {
+		const theirs = `Authentication-Results: mx.cloudflare.net; ${BANK_PASSED}; dmarc=pass header.from=bank.example`;
+		expect(cloudflareDkimPasses(parseHeaders([theirs].join("\r\n")))).toEqual([]);
+		expect(
+			cloudflareDkimPasses(
+				parseHeaders([...CLOUDFLARE, "From: a@bank.example", theirs].join("\r\n")),
+			),
+		).toEqual([]);
+		// Without a DMARC result, it isn't the header Cloudflare writes.
+		expect(
+			cloudflareDkimPasses(
+				parseHeaders(
+					[...CLOUDFLARE, `Authentication-Results: mx.cloudflare.net; ${BANK_PASSED}`].join("\r\n"),
+				),
+			),
+		).toEqual([]);
+	});
+});
+
+describe("addressees", () => {
+	it("reads To and Cc, groups' members too, in lower case", () => {
+		expect(addressees(message())).toEqual([...TO, ...CC]);
+		expect(addressees(message(), ["cc"])).toEqual(CC);
+	});
+
+	it("reads no field that is there twice, or whose name only looks like its", () => {
+		const twice = message({
+			fields: ["To: agent@acme.example", "To: ada@acme.example", "Cc: bo@acme.example"],
+		});
+		expect(addressees(twice)).toEqual(["bo@acme.example"]);
+		const odd = parseHeaders("To : agent@acme.example\r\nCc: bo@acme.example");
+		expect(addressees(odd)).toEqual(["bo@acme.example"]);
+		expect(addressees(parseHeaders("T-o: agent@acme.example\r\nTo: ada@acme.example"))).toEqual([]);
+	});
+});
+
+describe("signedAddressees", () => {
+	it("gives To and Cc when a passing signature of the proved domain signs them", () => {
+		expect(signedAddressees(message(), "bank.example")).toEqual([...TO, ...CC]);
+		// Folded, spaced and in capitals, as signers write the list.
+		const spaced = signature("From : TO :\r\n\tSubject");
+		expect(signedAddressees(message({ signatures: [spaced] }), "bank.example")).toEqual(TO);
+	});
+
+	it("gives only the fields the signature signs", () => {
+		const toOnly = message({ signatures: [signature("From:To:Subject")] });
+		expect(signedAddressees(toOnly, "bank.example")).toEqual(TO);
+		const neither = message({ signatures: [signature("From:Subject:Date")] });
+		expect(signedAddressees(neither, "bank.example")).toEqual([]);
+	});
+
+	it("gives none unless Cloudflare passed a signature of the proved domain", () => {
+		expect(signedAddressees(message(), null)).toEqual([]);
+		expect(signedAddressees(message(), "acme.example")).toEqual([]);
+		const failed = message({
+			dkim: ["dkim=fail header.d=bank.example header.s=s1 header.b=AbCdEf12"],
+		});
+		expect(signedAddressees(failed, "bank.example")).toEqual([]);
+		const another = message({
+			dkim: ["dkim=pass header.d=relay.example header.s=s1 header.b=AbCdEf12"],
+			signatures: [signature("From:To:Cc", "relay.example")],
+		});
+		expect(signedAddressees(another, "bank.example")).toEqual([]);
+	});
+
+	// Cloudflare says a signature of the domain passed, not which: anyone can add one that fails.
+	it("gives none when another signature of the domain, such as a forged one, doesn't sign the field", () => {
+		const forged = message({
+			signatures: [signature("From:To:Cc:Subject"), signature("From:Subject:Date")],
+		});
+		expect(signedAddressees(forged, "bank.example")).toEqual([]);
+		const added = message({
+			signatures: [signature("From:Subject:Date"), signature("From:To:Cc:Subject")],
+		});
+		expect(signedAddressees(added, "bank.example")).toEqual([]);
+		// Another domain's signature needn't sign it.
+		const relayed = message({
+			signatures: [signature("From:To:Cc:Subject"), signature("From", "relay.example")],
+		});
+		expect(signedAddressees(relayed, "bank.example")).toEqual([...TO, ...CC]);
+	});
+
+	// A signature signs the last field of a name, so one added above it isn't signed.
+	it("gives none of a field that is there twice", () => {
+		const added = message({
+			fields: [
+				"To: agent@acme.example",
+				"From: Bank <alerts@bank.example>",
+				"To: ada@acme.example",
+				"Cc: bo@acme.example",
+			],
+		});
+		expect(signedAddressees(added, "bank.example")).toEqual(["bo@acme.example"]);
+	});
+
+	it("gives none when a signature can't be read as a verifier reads it", () => {
+		const odd = message({
+			signatures: [signature("From:To:Cc").replace("DKIM-Signature:", "DKIM-Signature :")],
+		});
+		expect(signedAddressees(odd, "bank.example")).toEqual([]);
+		const twice = message({ signatures: [`${signature("From:To:Cc")}; d=relay.example`] });
+		expect(signedAddressees(twice, "bank.example")).toEqual([]);
+		const unsigned = message({
+			signatures: [signature("From:To:Cc"), "DKIM-Signature: v=1; s=s1; b=x"],
+		});
+		expect(signedAddressees(unsigned, "bank.example")).toEqual([]);
 	});
 });
