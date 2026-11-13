@@ -3,6 +3,7 @@ import type { Database } from "../db";
 import { type DomainHolder, domainHolders, findAddress, mailRoute } from "../directory";
 import type { DomainRecords, LookUpDomain } from "../directory/dns";
 import { NO_SUCH_ADDRESS } from "../inbound";
+import { addressees } from "./headers";
 import { type Judge, MailboxFullError, type StoringMailbox, storeMail } from "./store";
 
 /**
@@ -115,10 +116,17 @@ function recordsOf(lookUp: LookUpDomain, domain: string, now: Date): Promise<Dom
 /** The domain an address is on, lower case. */
 const domainOf = (address: string) => address.slice(address.lastIndexOf("@") + 1).toLowerCase();
 
-/** Mail from a mailbox here: its domain is proved by the directory, with no DMARC check. */
+/**
+ * Mail from a mailbox here: its domain is proved by the directory, with no DMARC check, and this
+ * server wrote its `To` and `Cc`.
+ */
 const provedHere =
 	(domain: string): Judge =>
-	() => ({ dmarc: null, verifiedDomain: domain });
+	(headers, recipient) => ({
+		dmarc: null,
+		verifiedDomain: domain,
+		addressed: addressees(headers).includes(recipient.trim().toLowerCase()),
+	});
 
 /** What became of one recipient: stored, or no such address, or to try again. */
 export type DirectOutcome =

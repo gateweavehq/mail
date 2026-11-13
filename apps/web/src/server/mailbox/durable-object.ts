@@ -22,6 +22,7 @@ import { suppressedAmong } from "../suppressions";
 import type { MailEvent } from "../webhooks/durable-object";
 import { bodyHash } from "./body";
 import type { SentFile } from "./compose";
+import { type Copy, cameAlso } from "./copies";
 import {
 	DELIVERIES_JSON,
 	type DeliveryEvent,
@@ -88,32 +89,9 @@ export const MAX_LISTED = 100;
 /** The most senders a thread's listing names. */
 const MAX_SENDERS = 5;
 
-/**
- * The longest list of a mailbox's addresses one received message keeps, as copies for more of them
- * arrive: past it, the first ones stay.
- */
-const MAX_ENVELOPE_TO = 2_000;
-
-/** How soon after the copy kept another copy of the same mail must come to count (`#cameAlso`). */
-const COPIES_WITHIN_MS = 60 * 60 * 1000;
-
-/** What `#cameAlso` reads of a received message: a type, as a row's must be. */
-type Copy = {
-	envelopeTo: string;
-	cameFor: string | null;
-	verifiedDomain: string | null;
-	arrivedAt: number;
-};
-
+/** What `cameAlso` reads of a received message. */
 const COPY = `envelope_to AS envelopeTo, came_for AS cameFor, verified_domain AS verifiedDomain,
-	arrived_at AS arrivedAt`;
-
-/** The addresses an envelope's list names, lower case. */
-const recipientsOf = (envelopeTo: string) =>
-	envelopeTo
-		.split(",")
-		.map((address) => address.trim().toLowerCase())
-		.filter(Boolean);
+	arrived_at AS arrivedAt, addressed`;
 
 /** How many of a thread's first messages its listing looks through for senders. */
 const SENDERS_READ = 200;
@@ -173,6 +151,11 @@ export interface Arrival {
 	dmarc: string | null;
 	/** The domain the message is proved to come from, from `verifiedDomain` or `resendVerifiedDomain`. */
 	verifiedDomain: string | null;
+	/**
+	 * Whether that sender is proved to have addressed it to `envelopeTo` (`Judge`). Missing from a
+	 * Worker older than it, during a deploy, which proves nothing.
+	 */
+	addressed?: boolean;
 	/**
 	 * The membership of the agent that made the address it came to, when one did. Missing from a
 	 * Worker older than agents' pages, during a deploy.
@@ -533,8 +516,8 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 		sql.exec(
 			`INSERT INTO message (id, state, delivery_key, object, size, arrived_at, envelope_from,
 				envelope_to, from_header, subject, date_header, message_id, dmarc, verified_domain,
-				own_id, subject_key, came_for, seal)
-			VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				own_id, subject_key, came_for, seal, addressed)
+			VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			id,
 			arrival.key,
 			object,
@@ -552,6 +535,7 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			subjectKey(arrival.subject),
 			arrival.cameFor ?? null,
 			seal,
+			arrival.addressed === true ? 1 : 0,
 		);
 		for (const ref of (arrival.references ?? []).slice(-MAX_REFERENCES)) {
 			sql.exec("INSERT OR IGNORE INTO message_reference (message, ref) VALUES (?, ?)", id, ref);
@@ -642,27 +626,14 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 		return this.#store(id);
 	}
 
-	/**
-	 * Email Routing hands each recipient its own copy, so a copy of mail already kept may be the
-	 * same mail for another of the mailbox's addresses: the kept one says it came to that one too,
-	 * and for the agent that made it, when it came for none. Only a copy that came soon after, proved
-	 * as the kept one was, counts, so mail sent again later, word for word, can't make an old message
-	 * an agent's. A retry of the same copy changes nothing.
-	 */
+	/** Notes on the kept copy what another copy of the same mail adds to it (`cameAlso`). */
 	#cameAlso(kept: Copy & { id: string }, copy: Copy) {
-		if (copy.verifiedDomain !== kept.verifiedDomain) return;
-		if (Date.now() - kept.arrivedAt > COPIES_WITHIN_MS) return;
-		const had = recipientsOf(kept.envelopeTo);
-		const to = [...new Set([...had, ...recipientsOf(copy.envelopeTo)])];
-		const cameFor = kept.cameFor ?? copy.cameFor;
-		if (to.length === had.length && cameFor === kept.cameFor) return;
-		const envelopeTo = to.join(", ");
-		// Past the longest list, the copy changes nothing, so the agent named is always among it.
-		if (envelopeTo.length > MAX_ENVELOPE_TO) return;
+		const merged = cameAlso(kept, copy, Date.now());
+		if (!merged) return;
 		this.ctx.storage.sql.exec(
 			"UPDATE message SET envelope_to = ?, came_for = ? WHERE id = ?",
-			envelopeTo,
-			cameFor,
+			merged.envelopeTo,
+			merged.cameFor,
 			kept.id,
 		);
 	}

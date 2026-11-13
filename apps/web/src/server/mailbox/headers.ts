@@ -122,6 +122,12 @@ export interface Verdict {
  * way Cloudflare's do, nothing is trusted.
  */
 export function cloudflareVerdict(headers: Header[]): Verdict | null {
+	const results = cloudflareResults(headers);
+	return results === null ? null : verdictIn(results);
+}
+
+/** The value of Cloudflare's own `Authentication-Results`, found as `cloudflareVerdict` says. */
+function cloudflareResults(headers: Header[]): string | null {
 	const [received, ...rest] = headers;
 	if (
 		!received?.strict ||
@@ -135,15 +141,21 @@ export function cloudflareVerdict(headers: Header[]): Verdict | null {
 		const place = header.strict ? ADDED_BY_CLOUDFLARE.indexOf(header.name) : -1;
 		if (place <= at) return null;
 		at = place;
-		if (header.name === "authentication-results") return verdictIn(header.value);
+		if (header.name === "authentication-results") return header.value;
 	}
 	return null;
 }
 
+/** An `Authentication-Results` value's results, when it says it is Cloudflare's, or null. */
+function cloudflareParts(value: string): string[] | null {
+	const [server, ...results] = resultParts(value);
+	return server && /^mx\.cloudflare\.net(?:\s+\d+)?$/i.test(server) ? results : null;
+}
+
 /** The DMARC result in an `Authentication-Results` value from Cloudflare. */
 function verdictIn(value: string): Verdict | null {
-	const [server, ...results] = resultParts(value);
-	if (!server || !/^mx\.cloudflare\.net(?:\s+\d+)?$/i.test(server)) return null;
+	const results = cloudflareParts(value);
+	if (!results) return null;
 	const dmarc = results.filter((part) => /^dmarc\s*=/i.test(part));
 	// One message gets one DMARC check. A second can only have come from something the sender wrote.
 	const [only] = dmarc;
@@ -199,15 +211,28 @@ function resultParts(value: string): string[] {
 
 const normalDomain = (domain: string) => domain.trim().toLowerCase().replace(/\.$/, "");
 
+/** A field's name with only its letters, which is how a name that only looks like another is found. */
+const lettersOf = (name: string) => name.replace(/[^a-z]/g, "");
+
+/**
+ * The one field of a name, or null when there isn't exactly one. A field whose name only looks like
+ * it, such as `From ` with a space, counts as a second one: programs differ on such names, and a
+ * checker may have read it instead.
+ */
+function soleField(headers: Header[], name: string): Header | null {
+	const like = headers.filter((header) => lettersOf(header.name) === lettersOf(name));
+	const [only] = like;
+	return like.length === 1 && only?.strict && only.name === name ? only : null;
+}
+
 /**
  * The domain of the one address in the one `From`, which is the address a page shows, or null when
  * there isn't exactly one. A field whose name only looks like `From` counts as a second one:
  * programs differ on such names, and a checker may have read it instead.
  */
 export function soleFromDomain(headers: Header[]): string | null {
-	const froms = headers.filter((header) => header.name.replace(/[^a-z]/g, "") === "from");
-	const [from] = froms;
-	if (froms.length !== 1 || !from?.strict || from.name !== "from") return null;
+	const from = soleField(headers, "from");
+	if (!from) return null;
 	let senders: ReturnType<typeof addressParser>;
 	try {
 		senders = addressParser(from.value);
@@ -248,6 +273,101 @@ export function resendVerifiedDomain(
 	return domain && at > 0 && normalDomain(from.slice(at + 1).replace(/>\s*$/, "")) === domain
 		? domain
 		: null;
+}
+
+/**
+ * The domains Cloudflare's own `Authentication-Results` says a DKIM signature passed for, in lower
+ * case. Only the results before its DMARC one count: Cloudflare writes its DKIM results first, and
+ * what follows its DMARC result quotes the envelope sender and the HELO name, which the sender
+ * chooses. A header without a DMARC result isn't the one Cloudflare writes, and gives none.
+ */
+export function cloudflareDkimPasses(headers: Header[]): string[] {
+	const value = cloudflareResults(headers);
+	const results = value === null ? null : cloudflareParts(value);
+	const passed: string[] = [];
+	for (const result of results ?? []) {
+		if (/^dmarc\s*=/i.test(result)) return passed;
+		if (!/^dkim\s*=\s*pass(?:\s|$)/i.test(result)) continue;
+		const domain = /(?:^|\s)header\.d\s*=\s*("[^"]*"|[^\s"]+)/i.exec(result)?.[1];
+		if (domain) passed.push(normalDomain(domain.replace(/^"|"$/g, "")));
+	}
+	return [];
+}
+
+/**
+ * The addresses in a message's `To` and `Cc`, or in those of them named, in lower case. A field
+ * counts only when it is the one of its name (`soleField`).
+ */
+export function addressees(headers: Header[], names: readonly string[] = ["to", "cc"]): string[] {
+	const found: string[] = [];
+	for (const name of names) {
+		const field = soleField(headers, name);
+		if (!field) continue;
+		let listed: ReturnType<typeof addressParser>;
+		try {
+			listed = addressParser(field.value);
+		} catch {
+			continue;
+		}
+		for (const one of listed.flatMap((address) => address.group ?? [address])) {
+			const address = one.address?.trim().toLowerCase();
+			if (address?.includes("@")) found.push(address);
+		}
+	}
+	return [...new Set(found)];
+}
+
+/**
+ * A DKIM signature's tags, or null when one is written twice or a part isn't a tag, as a verifier
+ * would refuse the signature. Their values keep no whitespace, which the standard ignores in them.
+ */
+function dkimTags(value: string): Map<string, string> | null {
+	const tags = new Map<string, string>();
+	for (const part of value.split(";")) {
+		if (part.trim() === "") continue;
+		const equals = part.indexOf("=");
+		const name = part.slice(0, equals).trim();
+		if (equals <= 0 || tags.has(name)) return null;
+		tags.set(name, part.slice(equals + 1).replace(/\s+/g, ""));
+	}
+	return tags;
+}
+
+/**
+ * The fields, in lower case, that every DKIM signature of a domain in the message signs: none when
+ * it has no signature of that domain, or has one this can't read. Every one, not some: Cloudflare
+ * says that a signature of the domain passed, not which, and anyone can add one that fails.
+ */
+function signedByEvery(headers: Header[], domain: string): Set<string> {
+	let signed: Set<string> | null = null;
+	for (const signature of headers.filter((header) => lettersOf(header.name) === "dkimsignature")) {
+		if (!signature.strict || signature.name !== "dkim-signature") return new Set();
+		const tags = dkimTags(signature.value);
+		const signer = tags?.get("d");
+		const fields = tags?.get("h");
+		if (!signer || !fields) return new Set();
+		if (normalDomain(signer) !== domain) continue;
+		const these = new Set(fields.toLowerCase().split(":"));
+		signed = new Set([...(signed ?? these)].filter((field) => these.has(field)));
+	}
+	return signed ?? new Set();
+}
+
+/**
+ * The addresses in a message's `To` and `Cc` that its sender is proved to have written there, in
+ * lower case. That is when Cloudflare's check passed a DKIM signature of the domain the message is
+ * proved to come from (`verifiedDomain`), and every signature of that domain in the message signs
+ * the field. A signature signs the last field of each name it lists, so a field counts only when
+ * it is the one of its name. Mail sent again, word for word, carries the same signed fields, so
+ * these stay true of it whoever sends it again and whenever.
+ */
+export function signedAddressees(headers: Header[], domain: string | null): string[] {
+	if (!domain || !cloudflareDkimPasses(headers).includes(domain)) return [];
+	const signed = signedByEvery(headers, domain);
+	return addressees(
+		headers,
+		["to", "cc"].filter((name) => signed.has(name)),
+	);
 }
 
 /**
