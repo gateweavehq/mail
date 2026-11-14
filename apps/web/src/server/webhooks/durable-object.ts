@@ -21,6 +21,7 @@ import { type BackupRow, readForBackup } from "../backup-read";
 import { createDb, schema } from "../db";
 import type { SentFacts } from "../mailbox/events";
 import { decoded, sender } from "../mailbox/people";
+import { keysDone } from "../reseal-state";
 import { isSealer, type Sealer, sealerFor } from "../secrets";
 import { secretsKeys } from "../secrets-key";
 import { toRole } from "../workspaces";
@@ -125,11 +126,14 @@ const secretPlace = (id: string) => `webhook.${id}.secret`;
 
 /**
  * What the object holds after sealing its secrets under the current `SECRETS_KEY`: how many still
- * need the previous one, and how many open with neither.
+ * need the previous one, and how many open with neither. `keys` names the current and previous
+ * keys it judged by (`keysDone`), or is null when it has no previous key: an object that runs with
+ * other keys than the one asking, as during a deploy, hasn't said anything about the asker's.
  */
 export interface SecretsStatus {
 	left: number;
 	unopened: number;
+	keys: string | null;
 }
 
 // Types, not interfaces, so that SQLite's rows can be read as them.
@@ -960,7 +964,7 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 	async #sealSecrets(): Promise<SecretsStatus> {
 		const { current, previous } = await secretsKeys(this.env);
 		const sealer = current ? await this.#sealer() : null;
-		if (!current || !sealer) return { left: 0, unopened: 0 };
+		if (!current || !sealer) return { left: 0, unopened: 0, keys: null };
 		const sql = this.ctx.storage.sql;
 		const under = `v2.${current.id}.`;
 		const rows = sql
@@ -973,12 +977,22 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 		const sealed: { id: string; was: string; now: string }[] = [];
 		const unopened = new Set<string>();
 		for (const row of rows) {
+			let secret: string;
 			try {
-				const secret = await this.#opened(row.id, row.secret);
-				const now = await sealer.seal(secretPlace(row.id), secret);
-				sealed.push({ id: row.id, was: row.secret, now });
+				secret = await this.#opened(row.id, row.secret);
 			} catch {
 				unopened.add(row.id);
+				continue;
+			}
+			try {
+				sealed.push({
+					id: row.id,
+					was: row.secret,
+					now: await sealer.seal(secretPlace(row.id), secret),
+				});
+			} catch {
+				// Opened but not sealed: it stays as it is, and is counted below if the previous key is
+				// still what it needs.
 			}
 		}
 		if (sealed.length > 0) {
@@ -1003,7 +1017,11 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 					.toArray()
 					.filter(({ id }) => !unopened.has(id)).length
 			: 0;
-		return { left, unopened: unopened.size };
+		return {
+			left,
+			unopened: unopened.size,
+			keys: previous ? keysDone(current.id, previous.id) : null,
+		};
 	}
 
 	#meta(key: "workspace" | "origin"): string | null {

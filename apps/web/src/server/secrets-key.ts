@@ -1,9 +1,10 @@
 import { fromBase64, toBase64 } from "./base64";
 
 /**
- * The deployment's `SECRETS_KEY`, which seals workspaces' secrets in D1 and raw mail in R2, and the
- * one it replaced, `SECRETS_KEY_PREVIOUS`, which only opens what is still sealed under it until
- * that is sealed again under the new one. Each key has an id that what it seals carries, so a seal
+ * The deployment's `SECRETS_KEY`, which seals workspaces' secrets in D1, their webhooks' signing
+ * secrets in the webhooks objects and raw mail in R2, and the one it replaced,
+ * `SECRETS_KEY_PREVIOUS`, which only opens what is still sealed under it until that is sealed again
+ * under the new one. Each key has an id that what it seals carries, so a seal
  * says which key opens it, and what is not yet under the current one can be found. The id is a
  * keyed digest of the key, which says nothing of the key itself.
  */

@@ -481,7 +481,9 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
       changes, the daily run asks up to 200 workspaces' objects (`resealWebhooks`, ten at a time)
       what they still hold under the previous key, which seals it, and notes in
       `webhooks_sealed` those that hold none, under both keys' ids, logging `webhooks:` with how
-      many it asked, what neither key opened and how many workspaces are left.
+      many it asked, what neither key opened and how many workspaces are left. An object answers
+      with the keys it judged by, and only one that judged by the run's own is noted: one still
+      running with other keys, as during a deploy, is asked again the next day.
     - **From an outbox.** A mailbox's object writes an event (`event`, schema version 8) in the
       transaction that makes the change it tells of, so mail that is kept is always told of and
       mail that isn't, such as a second delivery of the same message, never is. One about mail the

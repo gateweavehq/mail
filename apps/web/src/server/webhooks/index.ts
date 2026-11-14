@@ -95,7 +95,9 @@ export async function resealWebhooks(
 					const status = await webhooksStub(id).secretsStatus();
 					done.asked++;
 					done.unopened += status.unopened;
-					if (status.left === 0) {
+					// Only an object that judged by these same keys is done with the previous one: one
+					// still running with others, as during a deploy, is asked again another day.
+					if (status.left === 0 && status.keys === doneWith) {
 						await db
 							.insert(webhooksSealed)
 							.values({ organizationId: id, sealedUnder: doneWith })

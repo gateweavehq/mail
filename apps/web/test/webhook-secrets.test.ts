@@ -244,3 +244,48 @@ describe("webhook secrets", () => {
 		expect(signedWith(late, secret)).toBe(true);
 	});
 });
+
+describe("the daily run, while the objects still run with the key before", () => {
+	it("doesn't count a workspace as done on an object's word about other keys", async () => {
+		// The objects run in the first copy, which has only the old key, as the version before the
+		// change would; the daily run runs in the second, which has the new one and the old as the
+		// previous.
+		const both = await startMail(origin, {
+			hosts: { [RECEIVER]: receiver },
+			isolates: 2,
+			settings: { SECRETS_KEY: OLD, SECRETS_KEY_PREVIOUS: "" },
+			isolateSettings: [{}, { SECRETS_KEY: NEW, SECRETS_KEY_PREVIOUS: OLD }],
+		});
+		try {
+			const someone = await signUp(both, origin, "Someone");
+			const workspaceId = await createWorkspace(both, origin, someone.headers, "hooks-between");
+			const made = await both.fetch(`${origin}/api/webhooks/hooks-between`, {
+				method: "POST",
+				headers: { ...someone.headers, origin, "content-type": "application/json" },
+				body: JSON.stringify({
+					action: "create",
+					input: {
+						url: `https://${RECEIVER}/between`,
+						events: ["message.received"],
+						mailboxIds: null,
+					},
+				}),
+			});
+			expect(made.status).toBe(200);
+
+			await both.runScheduled(1);
+			const done = await both.db
+				.prepare("SELECT sealed_under AS key FROM webhooks_sealed WHERE organization_id = ?")
+				.bind(workspaceId)
+				.first<{ key: string }>();
+			// Its secret is still under the old key, which must not be let go yet.
+			expect(done).toBeNull();
+			const logged = both.logs
+				.filter((log) => log.message.startsWith("webhooks: {"))
+				.map((log) => JSON.parse(log.message.slice("webhooks: ".length)) as Record<string, number>);
+			expect(logged.at(-1)?.left).toBeGreaterThanOrEqual(1);
+		} finally {
+			await both.dispose();
+		}
+	});
+});
