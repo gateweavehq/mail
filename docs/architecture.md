@@ -1010,6 +1010,47 @@ People change both on `/settings/account`, through Better Auth's `/update-user` 
 - **It ends every session,** whatever the request asks, since whoever knew the old password may be
   why it is changing and may be the one asking.
 
+## Backups
+
+D1 can be backed up from outside the Worker, but the Durable Objects can't: only the Worker's own
+code reads their SQLite. So the Worker exports a named entrypoint, `Backup`
+(`apps/web/src/server/backup.ts`), for a backup Worker such as Gateweave Backup's.
+
+- **No route.** A named entrypoint can't be reached from the internet. Only a Worker in the same
+  Cloudflare account with a service binding to it (`entrypoint: "Backup"`) can call it, so that
+  binding is the access, the way the gateways' checks are for people and agents.
+- **`objects(cursor)`** lists, 20 workspaces at a time from D1 in order of id, each one's
+  `webhooks.<workspace>` and then `mailbox.<id>` for each of its mailboxes. Removed mailboxes and
+  deleted workspaces aren't listed. The rate limiter is left out: it holds counters that expire.
+- **`read(name, statements)`** runs the SELECTs of a SQLite dump in that object, after checking in
+  D1 that the mailbox's row, or the workspace, still exists, so a backup never wakes a removed
+  mailbox's object. For any other name, or one that isn't plainly `mailbox.<id>` or
+  `webhooks.<id>`, it answers null. The object's `backupRead`
+  (`apps/web/src/server/backup-read.ts`) takes only `SELECT` and `PRAGMA table_list`,
+  `table_info` or `table_xinfo`, one statement each, at most 1,000 of 100 kB, and runs them
+  together in one transaction that it always rolls back. They see one moment, and nothing they run
+  can change the object. A refusal says why and never what it was sent.
+- **A backup can wake an object, and an empty one.** Waking a mailbox does what any wake does: it
+  may start indexing or sealing mail that waits for it, which is its own work and not part of the
+  read. A workspace's `Webhooks` object creates its tables when it wakes, and D1 doesn't say
+  whether a workspace ever had a webhook (the admins' own leave no trace there), so every workspace
+  is listed and a backup may create an empty one: a few empty tables and no alarm, nothing the app
+  doesn't make itself when someone opens the webhooks page. It is harmless, and the next backup finds
+  it empty.
+- **What a dump holds, sealed or not.** A dump copies rows as they are; nothing is opened.
+  - A mailbox's rows hold what its index needs, in the clear: each message's addresses, subject,
+    date, sizes and delivery state, threads, the `outgoing` requests of mail sent (their text and
+    recipients), and the delivery record. Each message's `seal` is the random salt its raw mail was
+    sealed with in R2, which opens nothing without `SECRETS_KEY`.
+  - A webhooks object's rows hold each webhook's URL and, in the clear, its signing secret, and the
+    deliveries on their way, with the body each was queued with. Treat a backup of it as secret.
+  - Not in a dump: raw mail and attachments, which are in R2 (`RAW_MAIL`), and everything in D1
+    (accounts, the address directory, and the workspaces' provider keys and Resend secrets, which
+    D1 holds sealed under `SECRETS_KEY`). Back those up separately, and keep `SECRETS_KEY`:
+    sealed mail and secrets are lost without it.
+- **Restoring** an object from a backup isn't built in. The backup's SQL restores into a SQLite
+  database, to read or to load by hand.
+
 ## Not built yet
 
 This is where it is going, and it may change. What is above stays as it is: one Worker for the UI,

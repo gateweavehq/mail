@@ -136,6 +136,22 @@ export default class Outbox extends WorkerEntrypoint {
 }
 `;
 
+// Stands in for Gateweave Backup: a Worker with a service binding to the app's Backup entrypoint,
+// as a deployment's backup Worker has. POST /<method> calls it with the body's array as arguments,
+// and answers {result} or {error}.
+const BACKUP = `
+export default {
+	async fetch(request, env) {
+		const method = new URL(request.url).pathname.slice(1);
+		try {
+			return Response.json({ result: await env.MAIL[method](...(await request.json())) });
+		} catch (error) {
+			return Response.json({ error: String(error?.message ?? error) });
+		}
+	},
+};
+`;
+
 /** Every module of the built Worker. Its migrations are imported as text. */
 function builtModules(): V4ModuleDefinition[] {
 	const modules: V4ModuleDefinition[] = [];
@@ -242,6 +258,14 @@ export async function startMail(
 					routes: ["impatient.test/*"],
 					compatibilityDate: config.compatibility_date,
 					serviceBindings: { TARGET: names[names.length - 1] as string },
+				},
+				{
+					name: "backup",
+					modules: true,
+					script: BACKUP,
+					routes: ["backup.test/*"],
+					compatibilityDate: config.compatibility_date,
+					serviceBindings: { MAIL: { name: names[0] as string, entrypoint: "Backup" } },
 				},
 				{
 					name: "outbox",
@@ -366,6 +390,17 @@ export async function startMail(
 				{ method: "POST", body: raw },
 			);
 			return { status: response.status, text: await response.text() };
+		},
+		/**
+		 * Calls the app's Backup entrypoint as Gateweave Backup's Worker would, through its service
+		 * binding: what the method returned, or the message of what it threw.
+		 */
+		async backup<T>(method: "objects" | "read", ...args: unknown[]) {
+			const response = await mf.dispatchFetch(`http://backup.test/${method}`, {
+				method: "POST",
+				body: JSON.stringify(args),
+			});
+			return (await response.json()) as { result?: T; error?: string };
 		},
 		dispose: () => mf.dispose(),
 	};

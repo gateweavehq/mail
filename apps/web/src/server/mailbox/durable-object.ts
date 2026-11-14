@@ -12,6 +12,7 @@ import {
 import { KEY_CHANGED, RESEND_CODE, type SendsWith } from "../../lib/providers";
 import type { SentEventType } from "../../lib/webhooks";
 import { heldWriters } from "../auth/agents";
+import { type BackupRow, readForBackup } from "../backup-read";
 import { createDb } from "../db";
 import { DEFAULT_DNS_RESOLVER, dnsLookup } from "../directory/dns";
 import { openProviderKey } from "../providers/keys";
@@ -422,6 +423,11 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 		// previous key is sealed again from the same alarm, which the daily run sets.
 		const sealAt = this.#sealingDue();
 		if (sealAt !== null) void ctx.blockConcurrencyWhile(() => this.#alarmBy(sealAt));
+	}
+
+	/** Reads for Gateweave Backup, run together and rolled back (`../backup-read.ts`). */
+	backupRead(statements: unknown): BackupRow[][] {
+		return readForBackup(this.ctx.storage, statements);
 	}
 
 	/** The ids of the deployment's keys, or null when it has no key to seal with. */

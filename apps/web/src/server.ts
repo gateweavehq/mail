@@ -10,6 +10,7 @@ import { resealSecrets } from "./server/reseal-secrets";
 import { dropUnusedWebhooks } from "./server/resend-inbound";
 import { newNonce, withSecurityHeaders } from "./server/security-headers";
 
+export { Backup } from "./server/backup";
 export { Mailbox } from "./server/mailbox";
 export { RateLimiter } from "./server/rate-limit";
 export { Webhooks } from "./server/webhooks";
