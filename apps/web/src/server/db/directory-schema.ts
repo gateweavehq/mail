@@ -401,3 +401,16 @@ export const imageSender = sqliteTable(
 	},
 	(table) => [primaryKey({ columns: [table.memberId, table.domain] })],
 );
+
+/**
+ * A workspace whose webhooks object last told the daily run, after `SECRETS_KEY` changed, that it
+ * holds no webhook secret that needs the previous key, under the keys `sealed_under` names
+ * (`keysDone`). The run asks the workspaces without one, so that the previous key may go once none
+ * is left. See `resealWebhooks`.
+ */
+export const webhooksSealed = sqliteTable("webhooks_sealed", {
+	organizationId: text("organization_id")
+		.primaryKey()
+		.references(() => organization.id, { onDelete: "cascade" }),
+	sealedUnder: text("sealed_under").notNull(),
+});

@@ -9,6 +9,7 @@ import { finishRemovals, mailboxStub, resealMailboxes, storeMail } from "./serve
 import { resealSecrets } from "./server/reseal-secrets";
 import { dropUnusedWebhooks } from "./server/resend-inbound";
 import { newNonce, withSecurityHeaders } from "./server/security-headers";
+import { resealWebhooks } from "./server/webhooks";
 
 export { Backup } from "./server/backup";
 export { Mailbox } from "./server/mailbox";
@@ -59,19 +60,22 @@ export default {
 		(handled.failed ? console.error : console.log)(`delivery events: ${JSON.stringify(handled)}`);
 	},
 	// Clears what is past its time, once a day, finishes the removal of mailboxes' mail, and, after
-	// SECRETS_KEY changed, seals workspaces' secrets again under it and wakes mailboxes to do the
-	// same with their mail.
+	// SECRETS_KEY changed, seals workspaces' secrets again under it and wakes mailboxes and webhooks
+	// objects to do the same with their mail and signing secrets.
 	async scheduled() {
 		await pruneExpired(db);
 		await finishRemovals(db);
 		await dropUnusedWebhooks(db);
 		const secrets = await resealSecrets(db, env);
-		// Counts only. While either `left` isn't 0, SECRETS_KEY_PREVIOUS is still needed.
+		// Counts only. While any of the three `left`s isn't 0, SECRETS_KEY_PREVIOUS is still needed.
 		if (secrets && (secrets.resealed > 0 || secrets.left > 0)) {
 			(secrets.unopened > 0 ? console.error : console.log)(`secrets: ${JSON.stringify(secrets)}`);
 		}
 		const mail = await resealMailboxes(db, env);
 		if (mail)
 			(mail.unopened > 0 ? console.error : console.log)(`raw mail: ${JSON.stringify(mail)}`);
+		const hooks = await resealWebhooks(db, env);
+		if (hooks)
+			(hooks.unopened > 0 ? console.error : console.log)(`webhooks: ${JSON.stringify(hooks)}`);
 	},
 } satisfies ExportedHandler<Cloudflare.Env>;

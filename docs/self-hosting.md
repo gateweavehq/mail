@@ -154,9 +154,11 @@ pnpm wrangler secret put SECRETS_KEY
 
 Wrangler never shows a secret again. **Mail encrypted under one `SECRETS_KEY` can't be read under
 another**, so losing it loses that mail, and the workspaces' Resend keys (see [Email](#email))
-with it. A key shorter than 32 bytes, or not base64, encrypts nothing, and the Worker's log says
-so. Once mail is encrypted, update Mail forward only: a version from before encryption can't read
-it, and one from before key changes can't read what a later version encrypted.
+and their webhooks' signing secrets with it. A key shorter than 32 bytes, or not base64, encrypts
+nothing, and the Worker's log says so. Once mail is encrypted, update Mail forward only: a version
+from before encryption can't read it, and one from before key changes can't read what a later
+version encrypted. Webhook secrets kept before a key was set are encrypted as each workspace's
+webhooks object next wakes, and a version from before that can't sign with them.
 
 **Changing the key.** To replace `SECRETS_KEY`, as when it may have leaked, keep the old one as
 `SECRETS_KEY_PREVIOUS` first, then set the new one:
@@ -171,14 +173,18 @@ From then on, everything new is encrypted under the new key, and what is under t
 opens. Each day the Cron Trigger encrypts again under the new key what is under the old one, and
 the Worker's log says how far it got:
 
-- `secrets:` for the workspaces' Resend keys and webhook secrets, as
+- `secrets:` for the workspaces' Resend keys and the secrets of Resend's webhooks, as
   `{"resealed":3,"unopened":0,"left":0}`, up to 500 a run, which is usually all of them.
 - `raw mail:` for mail in R2, as `{"asked":12,"messages":340,"unopened":0,"left":3}`. The run asks
   up to 200 mailboxes a day what they hold under the old key, which wakes each to encrypt it again
   in the background, a few messages at a time; `left` is how many mailboxes haven't said they are
   done. A mailbox that is read or gets mail starts on it too.
+- `webhooks:` for the signing secrets of the workspaces' own webhooks, as
+  `{"asked":40,"unopened":0,"left":0}`. The run asks up to 200 workspaces a day, each of which
+  encrypts its secrets again as it answers; `left` is how many haven't said they are done.
+  A workspace whose webhooks are used, or whose page is opened, does it then too.
 
-Once both say `"left":0`, nothing needs the old key, and it can go:
+Once all three say `"left":0`, nothing needs the old key, and it can go:
 
 ```sh
 pnpm wrangler secret delete SECRETS_KEY_PREVIOUS
@@ -187,7 +193,9 @@ pnpm wrangler secret delete SECRETS_KEY_PREVIOUS
 Until then, **keep `SECRETS_KEY_PREVIOUS` set**: removing it loses what is still under the old
 key, and so does changing the key a second time, as there is room for one previous key only. An
 `unopened` count is a secret or a message that neither key opens, which removing the old key
-doesn't change: a secret is mended only by adding that workspace's key again. If `unopened` is
+doesn't change: a Resend secret is mended only by adding that workspace's key again, and a
+webhook's by giving it a new secret on the Webhooks page; until then each try of its deliveries
+fails with a note saying so, and after the last try, about 18 hours on, they fail for good. If `unopened` is
 most of your mail, `SECRETS_KEY_PREVIOUS` is likely not the key you had: put the right one, and
 every mailbox is asked again. Setting a new key
 without `SECRETS_KEY_PREVIOUS` loses everything under the old one, as losing it does, and mail
@@ -217,27 +225,27 @@ pnpm wrangler secret put BETTER_AUTH_URL
 Keep tokens, keys and email addresses as secrets. Plain variables stay through a deploy too,
 because `wrangler.jsonc` sets `keep_vars`.
 
-| Name                       | What it does                                                                                                       |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `BETTER_AUTH_SECRET`       | Signs sessions and the ids of the mail Mail sends. Required.                                                       |
-| `BETTER_AUTH_URL`          | The address people use, such as `https://mail.example.com`. Inferred from each request when unset.                 |
-| `GITHUB_CLIENT_ID`         | Turns on "Sign in with GitHub", with `GITHUB_CLIENT_SECRET`.                                                       |
-| `GITHUB_CLIENT_SECRET`     | The client secret of the same GitHub OAuth app.                                                                    |
-| `OIDC_ISSUER`              | Turns on an OpenID Connect provider, with the two below. See [below](#sign-in-through-an-openid-connect-provider). |
-| `OIDC_CLIENT_ID`           | This deployment's client ID at the provider.                                                                       |
-| `OIDC_CLIENT_SECRET`       | Its client secret there.                                                                                           |
-| `OIDC_PROVIDER_NAME`       | What the sign-in button calls it. Unset: "single sign-on".                                                         |
-| `EMAIL_FROM`               | Turns on email (invitations, password reset), such as `Gateweave Mail <mail@example.com>`.                         |
-| `MAILBOX_BYTES`            | How many bytes one mailbox may hold, as a whole number. Unset: 1 GiB.                                              |
-| `SEND_PER_DAY`             | How many messages one workspace may send from its mailboxes a day, as a whole number. Unset: 200.                  |
-| `DIRECT_DELIVERY`          | `off` sends mail to this deployment's own addresses through Email Service or Resend too. Unset: straight there.    |
-| `SECRETS_KEY`              | Encrypts mail in R2 and workspaces' keys: 32 random bytes, base64. See [Where mail is kept](#where-mail-is-kept).  |
-| `SECRETS_KEY_PREVIOUS`     | The previous `SECRETS_KEY`, which only opens what it encrypted. See [Where mail is kept](#where-mail-is-kept).     |
-| `EMAIL_SENDING_ACCOUNT_ID` | Your account ID, with the token below, so that removing a suppression also clears Email Service's own list.        |
-| `EMAIL_SENDING_API_TOKEN`  | An API token for that account with Email Sending: Edit. See [Email](#email), under Suppressions.                   |
-| `LEGAL_NOTICE_URL`         | The address of your legal notice. See [below](#your-legal-pages).                                                  |
-| `PRIVACY_POLICY_URL`       | The address of your privacy policy.                                                                                |
-| `TERMS_URL`                | The address of your terms.                                                                                         |
+| Name                       | What it does                                                                                                                       |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `BETTER_AUTH_SECRET`       | Signs sessions and the ids of the mail Mail sends. Required.                                                                       |
+| `BETTER_AUTH_URL`          | The address people use, such as `https://mail.example.com`. Inferred from each request when unset.                                 |
+| `GITHUB_CLIENT_ID`         | Turns on "Sign in with GitHub", with `GITHUB_CLIENT_SECRET`.                                                                       |
+| `GITHUB_CLIENT_SECRET`     | The client secret of the same GitHub OAuth app.                                                                                    |
+| `OIDC_ISSUER`              | Turns on an OpenID Connect provider, with the two below. See [below](#sign-in-through-an-openid-connect-provider).                 |
+| `OIDC_CLIENT_ID`           | This deployment's client ID at the provider.                                                                                       |
+| `OIDC_CLIENT_SECRET`       | Its client secret there.                                                                                                           |
+| `OIDC_PROVIDER_NAME`       | What the sign-in button calls it. Unset: "single sign-on".                                                                         |
+| `EMAIL_FROM`               | Turns on email (invitations, password reset), such as `Gateweave Mail <mail@example.com>`.                                         |
+| `MAILBOX_BYTES`            | How many bytes one mailbox may hold, as a whole number. Unset: 1 GiB.                                                              |
+| `SEND_PER_DAY`             | How many messages one workspace may send from its mailboxes a day, as a whole number. Unset: 200.                                  |
+| `DIRECT_DELIVERY`          | `off` sends mail to this deployment's own addresses through Email Service or Resend too. Unset: straight there.                    |
+| `SECRETS_KEY`              | Encrypts mail in R2, workspaces' keys and webhook secrets: 32 random bytes, base64. See [Where mail is kept](#where-mail-is-kept). |
+| `SECRETS_KEY_PREVIOUS`     | The previous `SECRETS_KEY`, which only opens what it encrypted. See [Where mail is kept](#where-mail-is-kept).                     |
+| `EMAIL_SENDING_ACCOUNT_ID` | Your account ID, with the token below, so that removing a suppression also clears Email Service's own list.                        |
+| `EMAIL_SENDING_API_TOKEN`  | An API token for that account with Email Sending: Edit. See [Email](#email), under Suppressions.                                   |
+| `LEGAL_NOTICE_URL`         | The address of your legal notice. See [below](#your-legal-pages).                                                                  |
+| `PRIVACY_POLICY_URL`       | The address of your privacy policy.                                                                                                |
+| `TERMS_URL`                | The address of your terms.                                                                                                         |
 
 ### Your own domain
 

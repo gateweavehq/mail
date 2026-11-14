@@ -55,10 +55,19 @@ ALTER TABLE webhook ADD COLUMN agent_key_id TEXT;
 ALTER TABLE webhook ADD COLUMN paused_by_admin INTEGER NOT NULL DEFAULT 0;
 `;
 
+// A webhook's secret is sealed under SECRETS_KEY from now on, so the first characters the pages
+// show to tell secrets apart are kept beside it. Every secret is still as made when this runs: 10 is
+// `whsec_` and four more, what `secretStart` keeps.
+const VERSION_3 = `
+ALTER TABLE webhook ADD COLUMN secret_start TEXT NOT NULL DEFAULT '';
+UPDATE webhook SET secret_start = substr(secret, 1, 10);
+`;
+
 /** Each brings the schema from the version before it. Append only: objects keep what they ran. */
 export const MIGRATIONS: ((sql: SqlStorage) => void)[] = [
 	(sql) => sql.exec(VERSION_1),
 	(sql) => sql.exec(VERSION_2),
+	(sql) => sql.exec(VERSION_3),
 ];
 
 /** Runs the migrations this object hasn't, all or none. */
