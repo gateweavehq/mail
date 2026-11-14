@@ -142,7 +142,7 @@ describe("rendering a template", () => {
 		const template = content("Hi {{a}}", "Body {{b}}", ["a", "b"]);
 		expect(renderTemplate(template, { a: "x" })).toEqual({
 			ok: false,
-			error: "b: give a value for it.",
+			error: "No value for b.",
 		});
 		expect(renderTemplate(template, { a: "x", b: "  " })).toEqual({
 			ok: false,
@@ -309,5 +309,98 @@ describe("what a template may be saved as", () => {
 		expect(sampleValues(["a", "b"])).toEqual({ a: "a", b: "b" });
 		expect(nameKey("Welcome")).toBe(nameKey("WELCOME"));
 		expect(MAX_TEMPLATES).toBe(200);
+	});
+});
+
+describe("a variable beside a link", () => {
+	const body = (text: string) => content("Hi", text, ["x"]);
+	const why = (text: string) => {
+		const result = renderTemplate(body(text), { x: ".evil.com" });
+		return result.ok ? null : result.error;
+	};
+
+	it("is refused directly after a link, which would read as one place with it", () => {
+		// `[bank](https://bank.example){{x}}` with ".evil.com" shows "bank.evil.com" to a reader.
+		expect(why("[bank](https://bank.example){{x}}")).toMatch(/\{\{x\}\} is too close to a link/);
+		expect(why("*Hi*\n\n**[bank](https://bank.example)**{{x}}")).toMatch(/too close to a link/);
+	});
+
+	it("is refused directly before a link", () => {
+		expect(why("{{x}}[bank](https://bank.example)")).toMatch(/\{\{x\}\} is too close to a link/);
+		expect(why("{{x}}**[bank](https://bank.example)**")).toMatch(/too close to a link/);
+	});
+
+	it("is refused when only marks or letters separate them, as formatting.ts reads up to a space", () => {
+		expect(why("[bank](https://bank.example)-{{x}}")).toMatch(/too close to a link/);
+		expect(why("[bank](https://bank.example)abc{{x}}")).toMatch(/too close to a link/);
+	});
+
+	it("is allowed after a space or a line break, where formatting.ts stops reading", () => {
+		expect(why("[bank](https://bank.example) {{x}}")).toBeNull();
+		expect(why("{{x}} [bank](https://bank.example)")).toBeNull();
+		expect(why("[bank](https://bank.example)\n{{x}}")).toBeNull();
+	});
+
+	it("is allowed beyond the 64 characters formatting.ts reads around a link", () => {
+		expect(why(`[bank](https://bank.example)${"a".repeat(70)}{{x}}`)).toBeNull();
+		expect(why(`{{x}}${"a".repeat(70)}[bank](https://bank.example)`)).toBeNull();
+		// Just inside the reach it is refused.
+		expect(why(`[bank](https://bank.example)${"a".repeat(60)}{{x}}`)).toMatch(/too close/);
+	});
+
+	it("is refused at save, naming the variable", () => {
+		const parsed = templateInput.safeParse({
+			name: "T",
+			subject: "Hi",
+			body: "[bank](https://bank.example){{x}}",
+			variables: ["x"],
+		});
+		expect(parsed.success).toBe(false);
+		expect(parsed.error?.issues[0]?.message).toContain("{{x}}");
+	});
+
+	it("takes time that grows with the text, with many links", () => {
+		const text = "[a](https://x.example){{x}} ".repeat(3000);
+		const started = performance.now();
+		renderTemplate(body(`${text}\n${"](".repeat(40_000)}`), { x: "v" });
+		expect(performance.now() - started).toBeLessThan(5000);
+	});
+});
+
+describe("names as variables and values", () => {
+	it("looks values up as the template's own, never on Object.prototype", () => {
+		const template = content("Hi {{constructor}}", "Body {{constructor}}", ["constructor"]);
+		expect(renderTemplate(template, {})).toEqual({ ok: false, error: "No value for constructor." });
+		expect(renderTemplate(template, { constructor: "ok" })).toMatchObject({
+			ok: true,
+			subject: "Hi ok",
+		});
+		// A name given that the template doesn't have, among those every object has.
+		for (const name of ["toString", "valueOf", "hasOwnProperty", "constructor"]) {
+			const plain = content("Hi", "Body", []);
+			expect(renderTemplate(plain, { [name]: "x" }), name).toEqual({
+				ok: false,
+				error: `${name}: this template has no such variable.`,
+			});
+		}
+		// As JSON gives it, `__proto__` is a name of its own.
+		const proto = JSON.parse('{"__proto__": "x"}') as Record<string, unknown>;
+		expect(renderTemplate(content("Hi", "Body", []), proto)).toEqual({
+			ok: false,
+			error: "__proto__: this template has no such variable.",
+		});
+		expect(renderTemplate(template, JSON.parse('{"__proto__": "x"}'))).toEqual({
+			ok: false,
+			error: "__proto__: this template has no such variable.",
+		});
+	});
+
+	it("folds a template's name by NFKC, lower case, ß and a final sigma", () => {
+		expect(nameKey("STRASSE")).toBe(nameKey("Straße"));
+		expect(nameKey("Straße")).toBe("strasse");
+		expect(nameKey("ΟΔΟΣ")).toBe(nameKey("οδος"));
+		expect(nameKey("οδος")).toBe(nameKey("οδοσ"));
+		expect(nameKey("Ｗelcome")).toBe("welcome");
+		expect(nameKey("Welcome")).not.toBe(nameKey("Welcomes"));
 	});
 });

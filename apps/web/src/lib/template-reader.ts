@@ -1,7 +1,8 @@
 /*
  * Reads the variables of a template: `{{name}}` in a subject or a body. Nothing is evaluated: a
  * name is looked up and that is all, so a template can't run anything, and a value is never read
- * for variables itself. `\{{` writes `{{` as it is.
+ * for variables itself. `\{{` writes `{{` as it is, and `\\` writes one backslash, so that `\\{{x}}` is
+ * a backslash and then a variable. A backslash anywhere else is only a backslash.
  *
  * It is a single pass over the text, with no regular expression, so the time grows with the text
  * and no input makes it backtrack. A name is looked for only as far as a name may go, so a long
@@ -53,6 +54,13 @@ export function readVariables(source: string): Read {
 	let at = 0;
 	while (at < source.length) {
 		const character = source[at];
+		// `\\` is one backslash, so that `\\{{x}}` is a backslash and then a variable.
+		if (character === "\\" && source[at + 1] === "\\") {
+			literal += `${source.slice(runStart, at)}\\`;
+			at += 2;
+			runStart = at;
+			continue;
+		}
 		if (character === "\\" && source[at + 1] === "{" && source[at + 2] === "{") {
 			literal += `${source.slice(runStart, at)}{{`;
 			at += 3;

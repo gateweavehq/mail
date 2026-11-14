@@ -150,6 +150,10 @@ in. If a template isn't there, or a value is refused, the error says why.
 count against `sending.perDay`, the same refusal for an address that bounced, and the answer's
 `state` means the same. It also says which `template` and `version` it sent.
 
+Templates are not a place for secrets. `list_templates` leaves the body out to keep lists short,
+not to keep it secret: an agent that may send can read what a template says by sending it to an
+address it can read.
+
 ## An address of your own
 
 When a task needs an address that is only for it, such as one for a single sign-up:

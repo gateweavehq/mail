@@ -481,7 +481,7 @@ describe("sending a template as an agent", () => {
 		};
 		expect(await asked({ values: { product: "x", first_name: "y" } })).toEqual({
 			status: 400,
-			error: "code: give a value for it.",
+			error: "No value for code.",
 		});
 		expect(await asked({ values: { ...SAMPLE, extra: "z" } })).toEqual({
 			status: 400,
@@ -602,5 +602,185 @@ describe("sending a template as an agent", () => {
 				.status,
 		).toBe(404);
 		await arrive(space.signUps.address);
+	});
+});
+
+/** How many live templates, and versions, the workspace's object holds, as a backup reads them. */
+async function held(space: Space) {
+	const dump = await world.mail.backup<{ live: number; versions: number }[][]>(
+		"read",
+		`audience.${space.workspaceId}`,
+		[
+			"SELECT count(*) AS live FROM template WHERE removed_at IS NULL",
+			"SELECT count(*) AS versions FROM template_version",
+		],
+	);
+	return { live: dump.result?.[0]?.[0]?.live, versions: dump.result?.[1]?.[0]?.versions };
+}
+
+describe("what the review asked to be held", () => {
+	it("keeps at most 100 versions of a template, and refuses another without changing anything", {
+		timeout: 120_000,
+	}, async () => {
+		const space = await workspace();
+		const made = await save(space, WELCOME);
+		for (let n = 2; n <= 100; n++) {
+			expect((await save(space, WELCOME, made.id)).number).toBe(n);
+		}
+		const past = { action: "save", id: made.id, input: { ...WELCOME, name: "Renamed" } };
+		expect(await refusal(space, past)).toEqual({
+			status: 409,
+			error: "A template can have at most 100 versions. Make a new template instead.",
+		});
+		// Nothing pruned and nothing renamed.
+		expect(await held(space)).toEqual({ live: 1, versions: 100 });
+		const read = (await (await versionsOf(space, made.id)).json()) as {
+			versions: { number: number }[];
+		};
+		expect(read.versions).toHaveLength(100);
+		expect(read.versions[0]?.number).toBe(100);
+		expect(await refusal(space, { action: "save", id: null, input: WELCOME })).toMatchObject({
+			status: 409,
+			error: 'A template called "Welcome" exists.',
+		});
+	});
+
+	it("ends with exactly 200 when two saves race for the last place", {
+		timeout: 120_000,
+	}, async () => {
+		const space = await workspace();
+		const small = (n: number) => ({
+			name: `Racer ${n}`,
+			subject: "Hi",
+			body: "Hello",
+			variables: [],
+		});
+		for (let at = 0; at < 190; at += 19) {
+			await Promise.all(Array.from({ length: 19 }, (_, n) => save(space, small(at + n))));
+		}
+		await Promise.all(Array.from({ length: 9 }, (_, n) => save(space, small(1000 + n))));
+		expect((await held(space)).live).toBe(199);
+		const raced = await Promise.all(
+			[small(2000), small(2001)].map((input) => change(space, { action: "save", id: null, input })),
+		);
+		expect(raced.map((response) => response.status).sort()).toEqual([200, 409]);
+		expect((await held(space)).live).toBe(200);
+	});
+
+	it("refuses a change from another site, and a member's, saving nothing", async () => {
+		const space = await workspace();
+		const member = await join(space, "member", "Plain");
+		const input = { action: "save", id: null, input: WELCOME };
+		expect(await refusal(space, input, { from: "https://elsewhere.example" })).toEqual({
+			status: 403,
+			error: "Not allowed from there.",
+		});
+		// No Origin at all is as foreign as a wrong one.
+		const bare = await world.mail.fetch(`${origin}/api/templates/${space.slug}`, {
+			method: "POST",
+			headers: { ...world.owner.headers, origin: "", "content-type": "application/json" },
+			body: JSON.stringify(input),
+		});
+		expect(bare.status).toBe(403);
+		expect(await refusal(space, input, { headers: member.headers })).toMatchObject({
+			status: 403,
+		});
+		expect((await held(space)).live).toBe(0);
+	});
+
+	it("gives an agent of another workspace the refusal a missing template gets", async () => {
+		const space = await workspace();
+		const other = await workspace();
+		await save(space, { ...WELCOME, name: "Only here" });
+		const stranger = await agentOf(other);
+		const domain = `${other.slug}.example.org`;
+		await auth("/agents/set-policy", {
+			agentId: stranger.id,
+			sendPerDay: 5,
+			allowed: [`@${domain}`],
+		});
+		const box = `/mailboxes/${other.signUps.id}/template-messages`;
+		const ask = async (template: string) => {
+			const answer = await rest(stranger.key, "POST", box, {
+				template,
+				values: SAMPLE,
+				to: [`ada@${domain}`],
+			});
+			return { status: answer.status, error: String(answer.body.error) };
+		};
+		const theirs = await ask("Only here");
+		expect(theirs.status).toBe(404);
+		expect(theirs.error).toBe('No template "Only here". See list_templates.');
+		expect({ ...(await ask("No such template")), error: "" }).toEqual({ ...theirs, error: "" });
+		expect((await world.mail.emails()).some((email) => email.to.includes(`ada@${domain}`))).toBe(
+			false,
+		);
+	});
+
+	it("empties the object when the workspace is deleted", async () => {
+		const space = await workspace();
+		await save(space, WELCOME);
+		await save(space, { ...WELCOME, name: "Second" });
+		expect((await held(space)).live).toBe(2);
+		const deleted = await auth("/organization/delete", { organizationId: space.workspaceId });
+		expect(deleted.status).toBe(200);
+		// A workspace with the same id again, only so that a backup may read the object: it is
+		// listed for none that D1 doesn't have.
+		await world.mail.db
+			.prepare("INSERT INTO organization (id, name, slug, created_at) VALUES (?, ?, ?, 0)")
+			.bind(space.workspaceId, "again", `${space.slug}-again`)
+			.run();
+		// Emptied in the background once the deletion answered.
+		const deadline = Date.now() + 10_000;
+		let now = await held(space);
+		while (now.live !== 0 && Date.now() < deadline) {
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			now = await held(space);
+		}
+		expect(now).toEqual({ live: 0, versions: 0 });
+	});
+
+	it("names the template and its version in the agent's log, sent or held", {
+		timeout: 60_000,
+	}, async () => {
+		const space = await workspace();
+		const agent = await agentOf(space);
+		const domain = `${space.slug}.example.org`;
+		await auth("/agents/set-policy", {
+			agentId: agent.id,
+			sendPerDay: 5,
+			allowed: [`@${domain}`],
+		});
+		const made = await save(space, WELCOME);
+		await save(space, WELCOME, made.id);
+		const box = `/mailboxes/${space.signUps.id}/template-messages`;
+		const stranger = `someone-${space.slug}@elsewhere.example.net`;
+		const sent = await rest(agent.key, "POST", box, {
+			template: "Welcome",
+			values: SAMPLE,
+			to: [`ada@${domain}`],
+		});
+		const held = await rest(agent.key, "POST", box, {
+			template: "Welcome",
+			version: 1,
+			values: SAMPLE,
+			to: [stranger],
+		});
+		expect(sent.body.state).toBe("sent");
+		expect(held.body.state).toBe("held");
+		const log = (await (
+			await world.mail.fetch(`${origin}/api/agents/${space.slug}/${agent.id}/log?kind=mail`, {
+				headers: world.owner.headers,
+			})
+		).json()) as { entries: { action: string; target: string | null; detail: string | null }[] };
+		const entry = (id: unknown) => log.entries.find((one) => one.target === String(id));
+		expect(entry(sent.body.id)).toMatchObject({
+			action: "message.sent",
+			detail: `template Welcome, version 2: ada@${domain}`,
+		});
+		expect(entry(held.body.id)).toMatchObject({
+			action: "message.held",
+			detail: `template Welcome, version 1: ${stranger}`,
+		});
 	});
 });

@@ -562,18 +562,24 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     given itself (`templateInput`), whoever sends it, so a handler is never the only place a
     template is checked. `destroy` runs when the workspace is deleted, and Gateweave Backup reads
     it as `audience.<workspace>`, beside `webhooks.<workspace>` (see Backups).
+    - **Templates are not secret from agents that may send.** An agent that may send can learn a
+      template's rendered text by sending it to an address it can read, and one that reads the
+      mailbox it sent to reads it at once. `list_templates` leaves the body out to keep a list
+      short, not to keep it private, and the page tells people not to put secrets in a template.
     - **A template** is a name, unique among the workspace's live templates ignoring case, and its
       versions. Saving never changes a version: it adds the next number, and may rename the
-      template. A workspace has at most 200 live templates. Removing is soft (`removed_at`): the
+      template, up to 100 versions, and a save past that is refused. A workspace has at most 200 live
+      templates. Removing is soft (`removed_at`): the
       versions stay, the template leaves every list and send, and its name may be used again, as
-      the unique index covers live templates only. A version holds a subject (up to
+      the unique index covers live templates only. Names are compared folded: NFKC, lower case,
+      `ß` as `ss` and a final sigma as `σ` (`nameKey`). A version holds a subject (up to
       `MAX_SUBJECT`), a Markdown body (up to `MAX_TEXT`), its variables as a JSON list, and who
       made it, by membership. People write them on Settings › Templates, through
       `POST /api/templates/<workspace>` (which asks where the request is from) with a live
       preview from sample values, and read a template's versions with
       `GET /api/templates/<workspace>?template=<id>`.
     - **Variables are `{{name}}`**, a name of `[a-z][a-z0-9_]{0,31}`, at most 20 to a template,
-      and `\{{` writes `{{`. One small reader (`lib/template-reader.ts`) finds them in a single
+      and `\{{` writes `{{`, and `\\` a backslash. One small reader (`lib/template-reader.ts`) finds them in a single
       pass with no regular expression and no evaluation: a name is looked up and that is all, and
       a `{{` that doesn't start one is refused, never guessed at. Saving refuses a variable that is
       used and not declared, or declared and not used, and a template that doesn't render.
@@ -584,7 +590,9 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
       escaped. So a value can't make a link, bold, a list, a quote or HTML, whatever it holds, and
       a `{{` in a value is never read again. The characters must come out as many times as they
       went in, as text and outside any tag: a variable in a link's words or address, which would
-      let a value decide what a link says or where it goes, is refused when the template is saved.
+      let a value decide what a link says or where it goes, is refused when the template is saved, and so is one that touches a link, with no space
+      between, within the 64 characters formatting.ts reads around a link, as the words beside a
+      link can make it read as another place (`[bank](https://bank.example){{x}}` with `.evil.com`).
       A value is one line of at most 2,000 characters, with no control character and no mark that
       turns text around, so a value in the subject can't add a header. Rendering refuses a missing
       value and a value for no variable, counts the length of the subject and text before it joins
@@ -595,7 +603,8 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
       suppression list and a pause all hold, and the send is noted in the agent's log as
       `message.sent` or `message.held`, as any send is. A message with formatting goes as its HTML
       alone, so Mail makes the text from it, as for any message an agent writes. Rendering fails
-      before anything is counted. `list_templates` gives name, variables, latest version and
+      before anything is counted. The agent's log entry names the template and its version before
+      whom it went to, held or sent. `list_templates` gives name, variables, latest version and
       subject, never the body.
   - **HTML.** A message's HTML is a page of its own, at `…/<message>/html`, which the message's
     page shows in a frame; its text, or the text made from its HTML, is a click away. What makes

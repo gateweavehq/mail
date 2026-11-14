@@ -50,8 +50,16 @@ export const templateName = z
 	.max(MAX_TEMPLATE_NAME, `A name takes ${MAX_TEMPLATE_NAME} characters at most.`)
 	.refine((name) => !UNSAFE.test(name), "A name can't hold a line break or another control.");
 
-/** Names are the same when they are the same letters, whatever their case. */
-export const nameKey = (name: string) => name.normalize("NFKC").toLowerCase();
+/**
+ * Names are the same when they are the same letters, whatever their case: folded by NFKC, then to
+ * lower case, then with the two letters that lower case leaves different from how a reader sees
+ * them, ß as ss and a final sigma as the usual one, so that "STRASSE" and "Straße" are one name.
+ */
+export const nameKey = (name: string) =>
+	name.normalize("NFKC").toLowerCase().replaceAll("ß", "ss").replaceAll("ς", "σ");
+
+/** The most versions one template keeps. */
+export const MAX_VERSIONS = 100;
 
 export interface TemplateContent {
 	subject: string;
@@ -146,7 +154,7 @@ function joined(pieces: Piece[], of: (name: string) => string): string {
 function readBody(
 	body: Piece[],
 	variables: string[],
-): { html: string; formatting: boolean } | null {
+): { html: string; formatting: boolean } | string {
 	const source = joined(body, (name) => markerOf(variables.indexOf(name)));
 	const { html, formatting } = formatted(source);
 	// Every character must come out once for each time it went in, as text and outside any tag: in
@@ -162,19 +170,67 @@ function readBody(
 		if (character === "<") {
 			// Text is escaped, so a `<` is a tag the reader made.
 			const end = html.indexOf(">", at);
-			if (end === -1) return null;
+			if (end === -1) return IN_A_LINK;
 			const tag = html.slice(at + 1, end);
 			if (tag.startsWith("a ")) inLink = true;
 			else if (tag === "/a") inLink = false;
 			// Whatever it holds, in an attribute, doesn't count as text.
 			at = end;
 		} else if (MARKER.test(character)) {
-			if (inLink) return null;
+			if (inLink) return IN_A_LINK;
 			found.set(character, (found.get(character) ?? 0) + 1);
 		}
 	}
-	for (const [character, count] of wanted) if (found.get(character) !== count) return null;
+	for (const [character, count] of wanted) if (found.get(character) !== count) return IN_A_LINK;
+	if (html.includes("<a ")) {
+		const near = markerNearLink(source);
+		if (near !== null) {
+			const name = variables[near.charCodeAt(0) - FIRST_MARKER] ?? "";
+			return `{{${name}}} is too close to a link: a value touching a link could read as part of what the link says, such as bank.evil.com. Put a space or a new line between them.`;
+		}
+	}
 	return { html, formatting };
+}
+
+/**
+ * How far from a link formatting.ts reads what touches it (`MAX_AROUND`): what shows of a link is
+ * its words and what stands against it up to a space, that far, because a link's words may name a
+ * place together with the text beside them.
+ */
+const LINK_REACH = 64;
+
+/**
+ * The first character standing for a variable that touches something shaped like a link, `[words](address)`,
+ * within the reach formatting.ts reads around it, with no space between. Looser than the reader's
+ * own idea of a link, which is the safe way: it may refuse where nothing would link. One pass, and
+ * each look is at most `LINK_REACH` characters.
+ */
+function markerNearLink(source: string): string | null {
+	const closing = new Int32Array(source.length + 1).fill(-1);
+	for (let at = source.length - 1; at >= 0; at--) {
+		closing[at] = source[at] === ")" ? at : (closing[at + 1] ?? -1);
+	}
+	const isSpace = (character: string | undefined) =>
+		character === undefined || /\s/.test(character);
+	let open = -1;
+	for (let at = 0; at < source.length; at++) {
+		const character = source[at];
+		if (character === "[") open = at;
+		if (character !== "]" || source[at + 1] !== "(" || open === -1) continue;
+		const close = closing[at + 2] ?? -1;
+		if (close === -1) continue;
+		for (let from = open - 1; from >= 0 && open - from <= LINK_REACH; from--) {
+			const before = source[from];
+			if (isSpace(before)) break;
+			if (before !== undefined && MARKER.test(before)) return before;
+		}
+		for (let to = close + 1; to < source.length && to - close <= LINK_REACH; to++) {
+			const after = source[to];
+			if (isSpace(after)) break;
+			if (after !== undefined && MARKER.test(after)) return after;
+		}
+	}
+	return null;
 }
 
 const IN_A_LINK =
@@ -207,13 +263,15 @@ export function renderTemplate(
 ): Rendered {
 	const read = readTemplate(content);
 	if (!read.ok) return read;
+	// Own properties only: `constructor` and the like are on every object, and are no one's value.
+	const has = (name: string) => Object.hasOwn(values, name);
 	const given = Object.keys(values);
 	const unknown = given.find((name) => !content.variables.includes(name));
 	if (unknown !== undefined) {
 		return { ok: false, error: `${unknown}: this template has no such variable.` };
 	}
 	for (const name of content.variables) {
-		if (!(name in values)) return { ok: false, error: `${name}: give a value for it.` };
+		if (!has(name)) return { ok: false, error: `No value for ${name}.` };
 		const refusal = valueRefusal(name, values[name]);
 		if (refusal) return { ok: false, error: refusal };
 	}
@@ -237,7 +295,7 @@ export function renderTemplate(
 	const text = joined(read.body, valueFor);
 	if (!text.trim()) return { ok: false, error: "The body is empty." };
 	const body = readBody(read.body, content.variables);
-	if (!body) return { ok: false, error: IN_A_LINK };
+	if (typeof body === "string") return { ok: false, error: body };
 	if (!body.formatting) return { ok: true, subject, text, html: null };
 	const html = body.html.replace(MARKERS, (character) =>
 		textHtml(valueFor(content.variables[character.charCodeAt(0) - FIRST_MARKER] ?? "")),

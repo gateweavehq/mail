@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import {
 	MAX_TEMPLATES,
+	MAX_VERSIONS,
 	nameKey,
 	type Template,
 	type TemplateVersion,
@@ -24,6 +25,8 @@ type TemplateRow = {
 	createdAt: number;
 	updatedAt: number;
 };
+
+type ListedRow = TemplateRow & VersionRow;
 
 type VersionRow = {
 	number: number;
@@ -68,15 +71,26 @@ export class Audience extends DurableObject<Cloudflare.Env> {
 
 	/** The live templates by name, each as its latest version is. */
 	list(): Template[] {
+		// One query: each template with its highest-numbered version.
 		const rows = this.ctx.storage.sql
-			.exec<TemplateRow>(
-				`SELECT ${TEMPLATE_COLUMNS} FROM template WHERE removed_at IS NULL ORDER BY name_key, id`,
+			.exec<ListedRow>(
+				`SELECT t.id AS id, t.name AS name, t.created_at AS createdAt, t.updated_at AS updatedAt,
+					v.number AS number, v.subject AS subject, v.body AS body, v.variables AS variables,
+					v.made_by AS madeBy, v.made_at AS madeAt
+				FROM template t
+				JOIN template_version v ON v.template_id = t.id
+					AND v.number = (SELECT max(number) FROM template_version WHERE template_id = t.id)
+				WHERE t.removed_at IS NULL
+				ORDER BY t.name_key, t.id`,
 			)
 			.toArray();
-		return rows.flatMap((row) => {
-			const version = this.#version(row.id, null);
-			return version ? [{ ...row, ...version }] : [];
-		});
+		return rows.map((row) => ({
+			id: row.id,
+			name: row.name,
+			createdAt: row.createdAt,
+			updatedAt: row.updatedAt,
+			...toVersion(row),
+		}));
 	}
 
 	/** A live template's versions, newest first; null when there is none with this id. */
@@ -159,6 +173,19 @@ export class Audience extends DurableObject<Cloudflare.Env> {
 				if (live.toArray().length === 0) return refused(404, "No such template.");
 				if (taken && taken.id !== at) {
 					return refused(409, `A template called "${taken.name}" exists.`);
+				}
+				// Before anything is written, so that a refusal changes nothing, a rename included.
+				const { have } = sql
+					.exec<{ have: number }>(
+						"SELECT count(*) AS have FROM template_version WHERE template_id = ?",
+						at,
+					)
+					.one();
+				if (have >= MAX_VERSIONS) {
+					return refused(
+						409,
+						`A template can have at most ${MAX_VERSIONS} versions. Make a new template instead.`,
+					);
 				}
 				sql.exec(
 					"UPDATE template SET name = ?, name_key = ?, updated_at = ? WHERE id = ?",

@@ -86,7 +86,8 @@ export function TemplatesSettings({ data, admin }: { data: WorkspaceTemplates; a
 						<code className="font-mono text-xs">{"{{name}}"}</code> where a value goes, to send over
 						and over: from the mailbox, or by an agent with <code>send_template</code>. The body
 						takes the same formatting as a message you write. Values are only ever put in as text,
-						so what someone gives for a variable can't add formatting, a link or HTML.{" "}
+						so what someone gives for a variable can't add formatting, a link or HTML. Don't put
+						secrets in a template: an agent that may send can read one by sending it to itself.{" "}
 						{admin
 							? "Each time you save, a new version is made, and the old ones stay."
 							: "Owners and admins write them."}

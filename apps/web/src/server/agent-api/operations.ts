@@ -609,6 +609,7 @@ const sendTemplate = operation({
 				from: null,
 				draft: draftId ?? crypto.randomUUID(),
 				context: context ?? null,
+				template: { name: found.template.name, version: found.template.number },
 			}),
 		);
 		return { ...outcome, template: found.template.name, version: found.template.number };

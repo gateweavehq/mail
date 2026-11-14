@@ -85,3 +85,32 @@ describe("reading a template's variables", () => {
 		expect(performance.now() - started).toBeLessThan(5000);
 	});
 });
+
+describe("backslashes in a template", () => {
+	it("reads \\{{ as {{, \\\\ as a backslash, and a lone backslash as itself", () => {
+		// `\{{x}}` is the braces as written.
+		expect(pieces("\\{{x}}")).toEqual([{ text: "{{x}}" }]);
+		// `\\{{x}}` is a backslash and then the variable.
+		expect(pieces("\\\\{{x}}")).toEqual([{ text: "\\" }, { variable: "x" }]);
+		// `\\\{{` is a backslash and then `{{`.
+		expect(pieces("\\\\\\{{")).toEqual([{ text: "\\{{" }]);
+		expect(pieces("\\\\\\\\{{x}}")).toEqual([{ text: "\\\\" }, { variable: "x" }]);
+		// A trailing lone backslash, and one before other characters, are only themselves.
+		expect(pieces("abc\\")).toEqual([{ text: "abc\\" }]);
+		expect(pieces("a\\b {{x}}\\")).toEqual([{ text: "a\\b " }, { variable: "x" }, { text: "\\" }]);
+		expect(pieces("\\\\")).toEqual([{ text: "\\" }]);
+		expect(pieces("\\")).toEqual([{ text: "\\" }]);
+	});
+
+	it("takes time that grows with the text", () => {
+		const started = performance.now();
+		for (const source of [
+			"\\".repeat(2_000_000),
+			"\\\\{{x}}".repeat(300_000),
+			"\\\\\\{{".repeat(500_000),
+		]) {
+			readVariables(source);
+		}
+		expect(performance.now() - started).toBeLessThan(5000);
+	});
+});
