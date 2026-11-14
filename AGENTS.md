@@ -117,7 +117,11 @@ These are load-bearing. Breaking one breaks users' data or security, usually sil
     looking the address up, another mailbox sending to an address here, after looking it up the
     same way (`findAddress`, in `direct.ts`), the queue's delivery events, after looking the sender up (see 17), and
     server code, after checking membership and that the mailbox is in the caller's
-    workspace, reach it. Mail is read only through `openMailbox`
+    workspace, reach it. So does a backup Worker, such as Gateweave Backup's, through the named
+    `Backup` entrypoint (`apps/web/src/server/backup.ts`), which has no route: a service binding
+    from a Worker in the same account is its access. It lists mailboxes from D1 and sends only
+    reads, which the object checks and always rolls back (`apps/web/src/server/backup-read.ts`);
+    a mailbox D1 no longer lists answers null and is never woken. Mail is read only through `openMailbox`
     (`apps/web/src/server/mailbox/read.ts`), which applies `canReadMailbox`: being in the workspace
     is not enough. Every R2 object is named by the mailbox's object, as pending, before it is
     written, so R2 never holds mail a mailbox doesn't know about.
@@ -215,8 +219,9 @@ These are load-bearing. Breaking one breaks users' data or security, usually sil
     workspace's `Webhooks` object queues each event once, whatever the mailbox hands over again
     (`apps/web/src/server/webhooks/durable-object.ts`). That object has no public route: only
     `POST /api/webhooks/<workspace>`, after checking where the request is from and that an owner
-    or admin asks, the agent API, with an agent's key and for that agent's own webhooks, and the
-    workspace's own mailboxes reach it. An agent's own webhook hears only of mailboxes the agent
+    or admin asks, the agent API, with an agent's key and for that agent's own webhooks, the
+    workspace's own mailboxes, and a backup Worker through the `Backup` entrypoint (12), which only
+    reads, reach it. An agent's own webhook hears only of mailboxes the agent
     may read, as `canReadMailbox` decides when each event is queued and again when it is sent,
     never of what the agent did itself, names members by id only, as the agent API does, and goes
     when the key that made it does; admins may pause (which holds), test or delete it, never point

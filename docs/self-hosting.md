@@ -193,6 +193,13 @@ every mailbox is asked again. Setting a new key
 without `SECRETS_KEY_PREVIOUS` loses everything under the old one, as losing it does, and mail
 that arrives before `SECRETS_KEY_PREVIOUS` is set can be searched by its headers only.
 
+**Backups.** Mail's Worker also exports a `Backup` entrypoint, for a backup Worker that has a
+service binding to it, such as Gateweave Backup's. It has no route, so nothing on the internet
+reaches it, and you can ignore it unless you run such a Worker. It reads the mailboxes' and the
+workspaces' webhooks' Durable Objects, which nothing else outside the Worker can; D1 and the R2
+bucket you back up the usual way. See Backups in [docs/architecture.md](architecture.md) for what
+it copies and what it leaves.
+
 R2 storage and Durable Object storage are billed past what the plan includes: see
 [R2 pricing](https://developers.cloudflare.com/r2/pricing/) and
 [Durable Objects pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/).

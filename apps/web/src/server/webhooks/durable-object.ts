@@ -17,6 +17,7 @@ import {
 } from "../../lib/webhooks";
 import { SENT_UNTRUSTED, UNTRUSTED } from "../agent-api/untrusted";
 import { isAgentMembership, pausedAmong } from "../auth/agents";
+import { type BackupRow, readForBackup } from "../backup-read";
 import { createDb, schema } from "../db";
 import type { SentFacts } from "../mailbox/events";
 import { decoded, sender } from "../mailbox/people";
@@ -187,6 +188,11 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 	constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
 		super(ctx, env);
 		migrate(ctx.storage);
+	}
+
+	/** Reads for Gateweave Backup, run together and rolled back (`../backup-read.ts`). */
+	backupRead(statements: unknown): BackupRow[][] {
+		return readForBackup(this.ctx.storage, statements);
 	}
 
 	/** The webhooks the asker may see, oldest first, with each one's latest deliveries. */
