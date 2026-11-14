@@ -21,6 +21,8 @@ import { type BackupRow, readForBackup } from "../backup-read";
 import { createDb, schema } from "../db";
 import type { SentFacts } from "../mailbox/events";
 import { decoded, sender } from "../mailbox/people";
+import { isSealer, type Sealer, sealerFor } from "../secrets";
+import { secretsKeys } from "../secrets-key";
 import { toRole } from "../workspaces";
 import { migrate } from "./schema";
 import {
@@ -30,6 +32,7 @@ import {
 	newSecret,
 	type Outcome,
 	RETRY_DELAYS_MS,
+	SECRET_PREFIX,
 	secretStart,
 	urlRefusal,
 } from "./signing";
@@ -113,6 +116,21 @@ const CONCURRENCY = 10;
 const CLAIM_MS = DELIVERY_TIMEOUT_MS + 60_000;
 /** How soon the alarm runs again when D1 didn't answer it. */
 const D1_RETRY_MS = 60_000;
+/** Why a delivery wasn't sent when its webhook's secret wouldn't open. Retried, as the key may come back. */
+const SECRET_LOST =
+	"The webhook's secret can't be opened: this server no longer has the SECRETS_KEY it was sealed with. Give the webhook a new secret.";
+
+/** Where a webhook's secret is sealed: the seal names it, so that it opens for no other row. */
+const secretPlace = (id: string) => `webhook.${id}.secret`;
+
+/**
+ * What the object holds after sealing its secrets under the current `SECRETS_KEY`: how many still
+ * need the previous one, and how many open with neither.
+ */
+export interface SecretsStatus {
+	left: number;
+	unopened: number;
+}
 
 // Types, not interfaces, so that SQLite's rows can be read as them.
 type WebhookRow = {
@@ -121,7 +139,9 @@ type WebhookRow = {
 	events: string;
 	mailboxIds: string | null;
 	active: number;
+	/** Sealed under SECRETS_KEY, or as made when the deployment has none (see `#stored`). */
 	secret: string;
+	secretStart: string;
 	agentMemberId: string | null;
 	agentKeyId: string | null;
 	pausedByAdmin: number;
@@ -165,6 +185,7 @@ type Claim = {
 };
 
 const WEBHOOK_COLUMNS = `id, url, events, mailbox_ids AS mailboxIds, active, secret,
+	secret_start AS secretStart,
 	agent_member_id AS agentMemberId, agent_key_id AS agentKeyId, paused_by_admin AS pausedByAdmin,
 	created_at AS createdAt, updated_at AS updatedAt`;
 const DELIVERY_COLUMNS = `id, webhook_id AS webhookId, event, status, attempts,
@@ -188,6 +209,26 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 	constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
 		super(ctx, env);
 		migrate(ctx.storage);
+		// Secrets kept as made, from before they were sealed or while the deployment had no key, and
+		// those under the key before the current one, are sealed under the current one as it wakes.
+		void ctx.blockConcurrencyWhile(async () => {
+			try {
+				await this.#sealSecrets();
+			} catch (error) {
+				// Waking goes on: what isn't sealed now is sealed the next time, or by the daily run.
+				console.error("webhooks: sealing secrets as the object woke failed", {
+					name: error instanceof Error ? error.name : "unknown",
+				});
+			}
+		});
+	}
+
+	/**
+	 * Seals what secrets need it, as waking does, and says what is left: for the daily run, which
+	 * asks each workspace's object after `SECRETS_KEY` changed (`resealWebhooks`).
+	 */
+	async secretsStatus(): Promise<SecretsStatus> {
+		return this.#sealSecrets();
 	}
 
 	/** Reads for Gateweave Backup, run together and rolled back (`../backup-read.ts`). */
@@ -227,17 +268,19 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 	 * admin, the agent's own for an agent, which lasts as long as the key it was made with. Each kind
 	 * counts against its own limit.
 	 */
-	create(
+	async create(
 		link: WebhookLink,
 		fields: Fields,
 		asker: Asker,
-	): { ok: true; webhook: Webhook; secret: string } | Refused {
+	): Promise<{ ok: true; webhook: Webhook; secret: string } | Refused> {
 		const refusal = this.#urlRefusal(fields.url, link, asker);
 		if (refusal) return refused(400, refusal);
 		const sql = this.ctx.storage.sql;
-		const now = Date.now();
 		const id = crypto.randomUUID();
 		const secret = newSecret();
+		// Sealed before the write, which stays one synchronous step.
+		const stored = await this.#stored(id, secret);
+		const now = Date.now();
 		const agent = agentOf(asker);
 		const key = "key" in asker ? asker.key : null;
 		return this.ctx.storage.transactionSync(() => {
@@ -252,14 +295,15 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 			}
 			this.#remember(link, asker);
 			sql.exec(
-				`INSERT INTO webhook (id, url, events, mailbox_ids, active, secret, agent_member_id,
-					agent_key_id, created_at, updated_at)
-				VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`,
+				`INSERT INTO webhook (id, url, events, mailbox_ids, active, secret, secret_start,
+					agent_member_id, agent_key_id, created_at, updated_at)
+				VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)`,
 				id,
 				fields.url,
 				JSON.stringify(fields.events),
 				fields.mailboxIds === null ? null : JSON.stringify(fields.mailboxIds),
-				secret,
+				stored,
+				secretStart(secret),
 				agent,
 				key,
 				now,
@@ -278,20 +322,21 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 	 * pauses, resumes or tests one an agent made for itself, and the agent can't resume what an
 	 * admin paused.
 	 */
-	update(
+	async update(
 		link: WebhookLink,
 		id: string,
 		patch: Patch,
 		asker: Asker,
 		renew = false,
-	): { ok: true; webhook: Webhook; secret: string | null } | Refused {
+	): Promise<{ ok: true; webhook: Webhook; secret: string | null } | Refused> {
 		if (patch.url !== undefined) {
 			const refusal = this.#urlRefusal(patch.url, link, asker);
 			if (refusal) return refused(400, refusal);
 		}
 		const sql = this.ctx.storage.sql;
-		const now = Date.now();
 		const secret = renew ? newSecret() : null;
+		const stored = secret === null ? null : await this.#stored(id, secret);
+		const now = Date.now();
 		return this.ctx.storage.transactionSync(() => {
 			const row = this.#row(id, asker);
 			if (!row) return refused(404, "No such webhook.");
@@ -319,13 +364,14 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 					: row.pausedByAdmin;
 			sql.exec(
 				`UPDATE webhook SET url = ?, events = ?, mailbox_ids = ?, active = ?, secret = ?,
-					paused_by_admin = ?, updated_at = ?
+					secret_start = ?, paused_by_admin = ?, updated_at = ?
 				WHERE id = ?`,
 				patch.url ?? row.url,
 				patch.events ? JSON.stringify(patch.events) : row.events,
 				mailboxIds,
 				patch.active === undefined ? row.active : patch.active ? 1 : 0,
-				secret ?? row.secret,
+				stored ?? row.secret,
+				secret === null ? row.secretStart : secretStart(secret),
 				pausedByAdmin,
 				now,
 				id,
@@ -350,17 +396,22 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 	}
 
 	/** Replaces a webhook's secret. Deliveries fail until the receiver has the new one. */
-	rotate(id: string, asker: Asker): { ok: true; webhook: Webhook; secret: string } | Refused {
+	async rotate(
+		id: string,
+		asker: Asker,
+	): Promise<{ ok: true; webhook: Webhook; secret: string } | Refused> {
 		const sql = this.ctx.storage.sql;
 		const secret = newSecret();
+		const stored = await this.#stored(id, secret);
 		return this.ctx.storage.transactionSync(() => {
 			const row = this.#row(id, asker);
 			if (!row) return refused(404, "No such webhook.");
 			// The agent couldn't learn it, and would no longer know its deliveries for Mail's.
 			if ("admin" in asker && row.agentMemberId !== null) return refused(409, AGENTS_SECRET);
 			sql.exec(
-				"UPDATE webhook SET secret = ?, updated_at = ? WHERE id = ?",
-				secret,
+				"UPDATE webhook SET secret = ?, secret_start = ?, updated_at = ? WHERE id = ?",
+				stored,
+				secretStart(secret),
 				Date.now(),
 				id,
 			);
@@ -659,7 +710,20 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 					this.#failOne(claim.id, sending.unwanted, Date.now());
 					continue;
 				}
-				const outcome = await attempt({ id: claim.id, ...sending });
+				let secret: string;
+				try {
+					secret = await this.#opened(sending.webhookId, sending.secret);
+				} catch {
+					const lost: Outcome = { ok: false, responseStatus: null, error: SECRET_LOST };
+					this.ctx.storage.transactionSync(() => this.#record(claim, lost, Date.now()));
+					continue;
+				}
+				const outcome = await attempt({
+					id: claim.id,
+					payload: sending.payload,
+					secret,
+					url: sending.url,
+				});
 				this.ctx.storage.transactionSync(() => this.#record(claim, outcome, Date.now()));
 			}
 		};
@@ -668,12 +732,15 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 	}
 
 	/**
-	 * The body, secret and URL a claimed delivery goes out with now; why its webhook, as it is now,
-	 * no longer wants it; or null when it is no longer waiting at all.
+	 * The body, stored secret and URL a claimed delivery goes out with now; why its webhook, as it
+	 * is now, no longer wants it; or null when it is no longer waiting at all.
 	 */
 	#stillToSend(
 		id: string,
-	): { payload: string; secret: string; url: string } | { unwanted: string } | null {
+	):
+		| { payload: string; secret: string; url: string; webhookId: string }
+		| { unwanted: string }
+		| null {
 		const delivery = this.ctx.storage.sql
 			.exec<{ payload: string; event: string; mailboxId: string | null; webhookId: string }>(
 				`SELECT payload, event, mailbox_id AS mailboxId, webhook_id AS webhookId FROM delivery
@@ -686,7 +753,12 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 		if (!webhook) return { unwanted: "The webhook was deleted." };
 		const reason = unwanted(webhook, delivery);
 		if (reason) return { unwanted: reason };
-		return { payload: delivery.payload, secret: webhook.secret, url: webhook.url };
+		return {
+			payload: delivery.payload,
+			secret: webhook.secret,
+			url: webhook.url,
+			webhookId: webhook.id,
+		};
 	}
 
 	/**
@@ -852,6 +924,86 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 		if ("admin" in asker) return urlRefusal(url, link.origin);
 		if (new URL(url).protocol !== "https:") return "Use an https URL.";
 		return urlRefusal(url, this.#meta("origin") ?? link.origin);
+	}
+
+	/** A sealer for this workspace's secrets, or null when the deployment can't seal. */
+	async #sealer(): Promise<Sealer | null> {
+		// The object's name is its workspace's id, which no caller can choose for another.
+		const workspaceId = this.ctx.id.name;
+		if (!workspaceId) throw new Error("A webhooks object without a name");
+		const sealer = await sealerFor(this.env, workspaceId);
+		return isSealer(sealer) ? sealer : null;
+	}
+
+	/**
+	 * What the row keeps of a new secret: sealed under `SECRETS_KEY`, or as made when the deployment
+	 * has none, which `#sealSecrets` seals once it has.
+	 */
+	async #stored(id: string, secret: string): Promise<string> {
+		const sealer = await this.#sealer();
+		return sealer ? sealer.seal(secretPlace(id), secret) : secret;
+	}
+
+	/** The secret a delivery is signed with. Throws when no key this server has opens it. */
+	async #opened(id: string, stored: string): Promise<string> {
+		if (stored.startsWith(SECRET_PREFIX)) return stored;
+		const sealer = await this.#sealer();
+		if (!sealer) throw new Error("No SECRETS_KEY to open a webhook's secret with");
+		return sealer.open(secretPlace(id), stored);
+	}
+
+	/**
+	 * Seals under the current `SECRETS_KEY` each secret kept as made or under another key, and says
+	 * how many still need the previous key and how many open with neither. Each is sealed only if
+	 * its row didn't change meanwhile: a secret made since is sealed already.
+	 */
+	async #sealSecrets(): Promise<SecretsStatus> {
+		const { current, previous } = await secretsKeys(this.env);
+		const sealer = current ? await this.#sealer() : null;
+		if (!current || !sealer) return { left: 0, unopened: 0 };
+		const sql = this.ctx.storage.sql;
+		const under = `v2.${current.id}.`;
+		const rows = sql
+			.exec<{ id: string; secret: string }>(
+				"SELECT id, secret FROM webhook WHERE substr(secret, 1, ?) != ?",
+				under.length,
+				under,
+			)
+			.toArray();
+		const sealed: { id: string; was: string; now: string }[] = [];
+		const unopened = new Set<string>();
+		for (const row of rows) {
+			try {
+				const secret = await this.#opened(row.id, row.secret);
+				const now = await sealer.seal(secretPlace(row.id), secret);
+				sealed.push({ id: row.id, was: row.secret, now });
+			} catch {
+				unopened.add(row.id);
+			}
+		}
+		if (sealed.length > 0) {
+			this.ctx.storage.transactionSync(() => {
+				for (const { id, was, now } of sealed) {
+					sql.exec("UPDATE webhook SET secret = ? WHERE id = ? AND secret = ?", now, id, was);
+				}
+			});
+		}
+		if (unopened.size > 0) {
+			console.error("webhooks: secrets that open with neither key", { count: unopened.size });
+		}
+		// What opens with nothing this server has can't be helped by keeping the previous key.
+		const before = previous ? `v2.${previous.id}.` : null;
+		const left = before
+			? sql
+					.exec<{ id: string }>(
+						"SELECT id FROM webhook WHERE substr(secret, 1, ?) = ?",
+						before.length,
+						before,
+					)
+					.toArray()
+					.filter(({ id }) => !unopened.has(id)).length
+			: 0;
+		return { left, unopened: unopened.size };
 	}
 
 	#meta(key: "workspace" | "origin"): string | null {
@@ -1117,7 +1269,7 @@ function toWebhook(row: WebhookRow): Webhook {
 		events: JSON.parse(row.events) as WebhookEventType[],
 		mailboxIds: row.mailboxIds === null ? null : (JSON.parse(row.mailboxIds) as string[]),
 		active: row.active === 1,
-		secretStart: secretStart(row.secret),
+		secretStart: row.secretStart,
 		agentMemberId: row.agentMemberId,
 		pausedByAdmin: row.pausedByAdmin === 1,
 		createdAt: row.createdAt,

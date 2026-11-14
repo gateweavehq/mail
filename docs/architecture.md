@@ -470,6 +470,18 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     - **One object per workspace** (`Webhooks`) holds them, their secrets and the deliveries on
       their way. Nothing but the gateway and the workspace's mailboxes reach it, and secrets never
       leave it but in the answer that makes one, which the page shows once.
+    - **Secrets are sealed under `SECRETS_KEY`** as provider keys are (`secrets.ts`, under the
+      workspace's id, which is the object's name, with `webhook.<id>.secret` as the place), sealed
+      before the write so that the write stays one synchronous step; `secret_start` keeps the
+      first ten characters the page tells them apart by (schema version 3). A deployment without
+      the key keeps them as made. Waking, the object seals what is kept as made or under another
+      key than the current one, each row only if it is still the value read, and a delivery opens
+      its webhook's secret just before it is signed. One no key opens fails that try with a note
+      to give the webhook a new secret, and is retried as any failure is. After `SECRETS_KEY`
+      changes, the daily run asks up to 200 workspaces' objects (`resealWebhooks`, ten at a time)
+      what they still hold under the previous key, which seals it, and notes in
+      `webhooks_sealed` those that hold none, under both keys' ids, logging `webhooks:` with how
+      many it asked, what neither key opened and how many workspaces are left.
     - **From an outbox.** A mailbox's object writes an event (`event`, schema version 8) in the
       transaction that makes the change it tells of, so mail that is kept is always told of and
       mail that isn't, such as a second delivery of the same message, never is. One about mail the
@@ -1042,7 +1054,8 @@ code reads their SQLite. So the Worker exports a named entrypoint, `Backup`
     date, sizes and delivery state, threads, the `outgoing` requests of mail sent (their text and
     recipients), and the delivery record. Each message's `seal` is the random salt its raw mail was
     sealed with in R2, which opens nothing without `SECRETS_KEY`.
-  - A webhooks object's rows hold each webhook's URL and, in the clear, its signing secret, and the
+  - A webhooks object's rows hold each webhook's URL, its signing secret sealed under
+    `SECRETS_KEY` (as made on a deployment without one) with its first ten characters, and the
     deliveries on their way, with the body each was queued with. Treat a backup of it as secret.
   - Not in a dump: raw mail and attachments, which are in R2 (`RAW_MAIL`), and everything in D1
     (accounts, the address directory, and the workspaces' provider keys and Resend secrets, which

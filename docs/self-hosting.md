@@ -154,9 +154,11 @@ pnpm wrangler secret put SECRETS_KEY
 
 Wrangler never shows a secret again. **Mail encrypted under one `SECRETS_KEY` can't be read under
 another**, so losing it loses that mail, and the workspaces' Resend keys (see [Email](#email))
-with it. A key shorter than 32 bytes, or not base64, encrypts nothing, and the Worker's log says
-so. Once mail is encrypted, update Mail forward only: a version from before encryption can't read
-it, and one from before key changes can't read what a later version encrypted.
+and their webhooks' signing secrets with it. A key shorter than 32 bytes, or not base64, encrypts
+nothing, and the Worker's log says so. Once mail is encrypted, update Mail forward only: a version
+from before encryption can't read it, and one from before key changes can't read what a later
+version encrypted. Webhook secrets kept before a key was set are encrypted as each workspace's
+webhooks object next wakes, and a version from before that can't sign with them.
 
 **Changing the key.** To replace `SECRETS_KEY`, as when it may have leaked, keep the old one as
 `SECRETS_KEY_PREVIOUS` first, then set the new one:
@@ -171,14 +173,18 @@ From then on, everything new is encrypted under the new key, and what is under t
 opens. Each day the Cron Trigger encrypts again under the new key what is under the old one, and
 the Worker's log says how far it got:
 
-- `secrets:` for the workspaces' Resend keys and webhook secrets, as
+- `secrets:` for the workspaces' Resend keys and the secrets of Resend's webhooks, as
   `{"resealed":3,"unopened":0,"left":0}`, up to 500 a run, which is usually all of them.
 - `raw mail:` for mail in R2, as `{"asked":12,"messages":340,"unopened":0,"left":3}`. The run asks
   up to 200 mailboxes a day what they hold under the old key, which wakes each to encrypt it again
   in the background, a few messages at a time; `left` is how many mailboxes haven't said they are
   done. A mailbox that is read or gets mail starts on it too.
+- `webhooks:` for the signing secrets of the workspaces' own webhooks, as
+  `{"asked":40,"unopened":0,"left":0}`. The run asks up to 200 workspaces a day, each of which
+  encrypts its secrets again as it answers; `left` is how many haven't said they are done.
+  A workspace whose webhooks are used, or whose page is opened, does it then too.
 
-Once both say `"left":0`, nothing needs the old key, and it can go:
+Once all three say `"left":0`, nothing needs the old key, and it can go:
 
 ```sh
 pnpm wrangler secret delete SECRETS_KEY_PREVIOUS
@@ -187,7 +193,9 @@ pnpm wrangler secret delete SECRETS_KEY_PREVIOUS
 Until then, **keep `SECRETS_KEY_PREVIOUS` set**: removing it loses what is still under the old
 key, and so does changing the key a second time, as there is room for one previous key only. An
 `unopened` count is a secret or a message that neither key opens, which removing the old key
-doesn't change: a secret is mended only by adding that workspace's key again. If `unopened` is
+doesn't change: a Resend secret is mended only by adding that workspace's key again, and a
+webhook's by giving it a new secret on the Webhooks page; until then its deliveries wait, each try
+failing with a note saying so. If `unopened` is
 most of your mail, `SECRETS_KEY_PREVIOUS` is likely not the key you had: put the right one, and
 every mailbox is asked again. Setting a new key
 without `SECRETS_KEY_PREVIOUS` loses everything under the old one, as losing it does, and mail

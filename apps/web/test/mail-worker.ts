@@ -176,6 +176,10 @@ function builtModules(): V4ModuleDefinition[] {
  *
  * Requests to a host in `hosts` reach its handler, as a provider elsewhere would be reached. The
  * other settings go in `settings`.
+ *
+ * With `keptIn`, D1, R2 and the Durable Objects are kept in that folder, so that a later start with
+ * the same folder finds them, as a deployment's next version does. Pass `BETTER_AUTH_SECRET` in
+ * `settings` for sessions to last across starts.
  */
 export async function startMail(
 	origin: string,
@@ -187,6 +191,7 @@ export async function startMail(
 		plainMail = false,
 		settings = {},
 		isolateSettings = [],
+		keptIn,
 	}: {
 		isolates?: number;
 		hosts?: Record<string, (request: Request) => Response | Promise<Response>>;
@@ -198,6 +203,7 @@ export async function startMail(
 		settings?: Record<string, string>;
 		/** Settings that only this copy has, as a deployment's old and new versions would differ. */
 		isolateSettings?: Record<string, string>[];
+		keptIn?: string;
 	} = {},
 ) {
 	const config = JSON.parse(readFileSync(join(serverDir, "wrangler.json"), "utf8")) as BuiltConfig;
@@ -212,6 +218,7 @@ export async function startMail(
 	const mf = new Miniflare(
 		convertV4MiniflareOptions({
 			unsafeTriggerHandlers: true,
+			...(keptIn ? { resourcePersistencePath: keptIn } : {}),
 			// Keep what the Worker logs for `logs`, and still show it as Miniflare would.
 			handleStructuredLogs: (log) => {
 				logs.push(log);
@@ -282,7 +289,11 @@ export async function startMail(
 	// Miniflare's types for the bucket don't come through, so this names the part tests use.
 	const bucket = (await mf.getR2Bucket("RAW_MAIL")) as unknown as TestBucket;
 	const migrations = join(app, "migrations");
-	for (const file of readdirSync(migrations)
+	// A database kept from an earlier start is migrated already.
+	const migrated = await db
+		.prepare("SELECT 1 AS yes FROM sqlite_master WHERE type = 'table' AND name = 'user'")
+		.first();
+	for (const file of (migrated ? [] : readdirSync(migrations))
 		.filter((name) => name.endsWith(".sql"))
 		.sort()) {
 		const statements = readFileSync(join(migrations, file), "utf8")

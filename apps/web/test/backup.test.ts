@@ -73,16 +73,17 @@ describe("the Backup entrypoint", () => {
 		expect(await count(`mailbox.${space.billing.id}`, "message")).toBe(0);
 	});
 
-	it("reads a workspace's webhooks, secrets as they are kept", async () => {
+	it("reads a workspace's webhooks, secrets sealed as they are kept", async () => {
 		const space = await world.workspace();
 		await addWebhook(space.slug, "/backed-up");
 		const dump = await read(`webhooks.${space.workspaceId}`, [
 			"SELECT url, active FROM webhook",
-			"SELECT substr(secret, 1, 6) AS start FROM webhook",
+			"SELECT substr(secret, 1, 3) AS start FROM webhook",
 		]);
 		expect(dump.result).toEqual([
 			[{ url: `https://${RECEIVER}/backed-up`, active: 1 }],
-			[{ start: "whsec_" }],
+			// Sealed under SECRETS_KEY, which a backup doesn't hold.
+			[{ start: "v2." }],
 		]);
 	});
 
