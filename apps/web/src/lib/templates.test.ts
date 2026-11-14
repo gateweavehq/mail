@@ -109,7 +109,9 @@ describe("rendering a template", () => {
 			"***both***",
 		]) {
 			const result = rendered("Hi", "*Hi*\n\n{{x}}", { x: value });
-			expect(result.html, value).toBe(`<p><em>Hi</em></p>\n<p>${value.replace(">", "&gt;")}</p>\n`);
+			expect(result.html, value).toBe(
+				`<p><em>Hi</em></p>\n<p>${value.replaceAll(">", "&gt;")}</p>\n`,
+			);
 		}
 		// Even beside the template's own marks, a value's are only characters.
 		expect(rendered("Hi", "**{{a}}** and *{{b}}*", { a: "*x*", b: "**y**" }).html).toBe(
