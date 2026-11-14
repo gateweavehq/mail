@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import type { AgentLogAction } from "../../lib/agent-log";
 import { currentCaller } from "../access";
 import { noteAgent } from "../agent-log";
+import { audienceStub } from "../audience";
 import { db } from "../auth";
 import { AGENT_PAUSED, agentPolicyOf, findAgentByKey, isAgentKey } from "../auth/agents";
 import { schema } from "../db";
@@ -232,6 +233,15 @@ export function accessFor(slug: string, key: string): MailAccess {
 			const queued = await stub.test(link, id, asker);
 			if (!queued.ok) throw refusal(queued);
 			await note("webhook.tested", id);
+		},
+		// Read as the key's workspace, which `caller` checks, a paused agent's too.
+		async templates() {
+			const { workspaceId } = await caller();
+			return audienceStub(workspaceId).list();
+		},
+		async template(name, version) {
+			const { workspaceId } = await caller();
+			return audienceStub(workspaceId).find(name, version);
 		},
 	};
 }

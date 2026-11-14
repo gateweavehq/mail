@@ -64,6 +64,8 @@ describe("MailClient", () => {
 			"waitForEmail",
 			"getVerificationCode",
 			"sendEmail",
+			"listTemplates",
+			"sendTemplate",
 			"reply",
 			"listAddresses",
 			"createAddress",

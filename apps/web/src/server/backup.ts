@@ -1,12 +1,13 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { asc, eq, gt, inArray } from "drizzle-orm";
 import { z } from "zod";
+import { audienceStub } from "./audience";
 import type { BackupRow } from "./backup-read";
 import { createDb, schema } from "./db";
 import { mailboxStub } from "./mailbox/store";
 import { webhooksStub } from "./webhooks";
 
-/** How many workspaces a page of `objects` covers: each is its webhooks and its mailboxes. */
+/** How many workspaces a page of `objects` covers: each is its webhooks, audience and mailboxes. */
 const PAGE = 20;
 
 /** A workspace's or a mailbox's id, as a backup's file name can hold it. */
@@ -14,18 +15,21 @@ const PART = /^[A-Za-z0-9_-]{1,64}$/;
 
 const cursorOf = z.string().regex(PART);
 
-/** Which object a backup's name is: `mailbox.<mailbox id>` or `webhooks.<workspace id>`. */
-function objectOf(name: unknown): { kind: "mailbox" | "webhooks"; id: string } | null {
+/**
+ * Which object a backup's name is: `mailbox.<mailbox id>`, `webhooks.<workspace id>` or
+ * `audience.<workspace id>`.
+ */
+function objectOf(name: unknown): { kind: "mailbox" | "webhooks" | "audience"; id: string } | null {
 	if (typeof name !== "string") return null;
 	const parts = name.split(".");
 	const [kind, id] = parts;
 	if (parts.length !== 2 || id === undefined || !PART.test(id)) return null;
-	return kind === "mailbox" || kind === "webhooks" ? { kind, id } : null;
+	return kind === "mailbox" || kind === "webhooks" || kind === "audience" ? { kind, id } : null;
 }
 
 /**
- * Gateweave Backup's way in (docs/architecture.md, "Backups"). It lists each workspace's webhooks
- * and mailboxes, then reads one's Durable Object with the SELECTs of a SQLite dump, which the object
+ * Gateweave Backup's way in (docs/architecture.md, "Backups"). It lists each workspace's webhooks,
+ * audience and mailboxes, then reads one's Durable Object with the SELECTs of a SQLite dump, which the object
  * runs together and rolls back. A named entrypoint has no route: only a Worker in the same account
  * with a service binding to it can call it, so that binding is the access, the way the gateways'
  * checks are for people and agents. Only what D1 still lists is read, so a backup never wakes a
@@ -34,8 +38,8 @@ function objectOf(name: unknown): { kind: "mailbox" | "webhooks"; id: string } |
  */
 export class Backup extends WorkerEntrypoint<Cloudflare.Env> {
 	/**
-	 * The objects' names, a page of workspaces at a time: each one's `webhooks.<workspace>`, then
-	 * `mailbox.<id>` for each of its mailboxes. Pass back `cursor` for the next page.
+	 * The objects' names, a page of workspaces at a time: each one's `webhooks.<workspace>` and
+	 * `audience.<workspace>`, then `mailbox.<id>` for each of its mailboxes. Pass back `cursor` for the next page.
 	 */
 	async objects(cursor?: string): Promise<{ names: string[]; cursor?: string }> {
 		const after = cursor === undefined ? undefined : cursorOf.parse(cursor);
@@ -57,7 +61,7 @@ export class Backup extends WorkerEntrypoint<Cloudflare.Env> {
 						.orderBy(asc(schema.mailbox.id));
 		const names: string[] = [];
 		for (const id of ids) {
-			names.push(`webhooks.${id}`);
+			names.push(`webhooks.${id}`, `audience.${id}`);
 			for (const box of boxes) if (box.workspaceId === id) names.push(`mailbox.${box.id}`);
 		}
 		const last = ids[ids.length - 1];
@@ -83,6 +87,9 @@ export class Backup extends WorkerEntrypoint<Cloudflare.Env> {
 			.from(schema.organization)
 			.where(eq(schema.organization.id, object.id))
 			.get();
-		return found ? webhooksStub(found.id).backupRead(statements) : null;
+		if (!found) return null;
+		return object.kind === "audience"
+			? audienceStub(found.id).backupRead(statements)
+			: webhooksStub(found.id).backupRead(statements);
 	}
 }

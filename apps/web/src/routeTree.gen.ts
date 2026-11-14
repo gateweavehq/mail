@@ -25,12 +25,14 @@ import { Route as WorkspaceSettingsDomainsRouteImport } from './routes/$workspac
 import { Route as WorkspaceSettingsImagesRouteImport } from './routes/$workspace/settings.images'
 import { Route as WorkspaceSettingsMembersRouteImport } from './routes/$workspace/settings.members'
 import { Route as WorkspaceSettingsSuppressionsRouteImport } from './routes/$workspace/settings.suppressions'
+import { Route as WorkspaceSettingsTemplatesRouteImport } from './routes/$workspace/settings.templates'
 import { Route as WorkspaceSettingsWebhooksRouteImport } from './routes/$workspace/settings.webhooks'
 import { Route as WorkspaceSettingsWorkspaceRouteImport } from './routes/$workspace/settings.workspace'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 import { Route as ApiDirectoryWorkspaceRouteImport } from './routes/api/directory/$workspace'
 import { Route as ApiImagesWorkspaceRouteImport } from './routes/api/images/$workspace'
 import { Route as ApiSuppressionsWorkspaceRouteImport } from './routes/api/suppressions/$workspace'
+import { Route as ApiTemplatesWorkspaceRouteImport } from './routes/api/templates/$workspace'
 import { Route as ApiV1SplatRouteImport } from './routes/api/v1/$'
 import { Route as ApiWebhooksWorkspaceRouteImport } from './routes/api/webhooks/$workspace'
 import { Route as WorkspaceMailboxesMailboxIndexRouteImport } from './routes/$workspace/mailboxes.$mailbox.index'
@@ -134,6 +136,12 @@ const WorkspaceSettingsSuppressionsRoute =
     path: '/suppressions',
     getParentRoute: () => WorkspaceSettingsRoute,
   } as any)
+const WorkspaceSettingsTemplatesRoute =
+  WorkspaceSettingsTemplatesRouteImport.update({
+    id: '/templates',
+    path: '/templates',
+    getParentRoute: () => WorkspaceSettingsRoute,
+  } as any)
 const WorkspaceSettingsWebhooksRoute =
   WorkspaceSettingsWebhooksRouteImport.update({
     id: '/webhooks',
@@ -167,6 +175,11 @@ const ApiSuppressionsWorkspaceRoute =
     path: '/api/suppressions/$workspace',
     getParentRoute: () => rootRouteImport,
   } as any)
+const ApiTemplatesWorkspaceRoute = ApiTemplatesWorkspaceRouteImport.update({
+  id: '/api/templates/$workspace',
+  path: '/api/templates/$workspace',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiV1SplatRoute = ApiV1SplatRouteImport.update({
   id: '/api/v1/$',
   path: '/api/v1/$',
@@ -294,12 +307,14 @@ export interface FileRoutesByFullPath {
   '/$workspace/settings/images': typeof WorkspaceSettingsImagesRoute
   '/$workspace/settings/members': typeof WorkspaceSettingsMembersRoute
   '/$workspace/settings/suppressions': typeof WorkspaceSettingsSuppressionsRoute
+  '/$workspace/settings/templates': typeof WorkspaceSettingsTemplatesRoute
   '/$workspace/settings/webhooks': typeof WorkspaceSettingsWebhooksRoute
   '/$workspace/settings/workspace': typeof WorkspaceSettingsWorkspaceRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/directory/$workspace': typeof ApiDirectoryWorkspaceRoute
   '/api/images/$workspace': typeof ApiImagesWorkspaceRoute
   '/api/suppressions/$workspace': typeof ApiSuppressionsWorkspaceRoute
+  '/api/templates/$workspace': typeof ApiTemplatesWorkspaceRoute
   '/api/v1/$': typeof ApiV1SplatRoute
   '/api/webhooks/$workspace': typeof ApiWebhooksWorkspaceRoute
   '/$workspace/settings/': typeof WorkspaceSettingsIndexRoute
@@ -335,12 +350,14 @@ export interface FileRoutesByTo {
   '/$workspace/settings/images': typeof WorkspaceSettingsImagesRoute
   '/$workspace/settings/members': typeof WorkspaceSettingsMembersRoute
   '/$workspace/settings/suppressions': typeof WorkspaceSettingsSuppressionsRoute
+  '/$workspace/settings/templates': typeof WorkspaceSettingsTemplatesRoute
   '/$workspace/settings/webhooks': typeof WorkspaceSettingsWebhooksRoute
   '/$workspace/settings/workspace': typeof WorkspaceSettingsWorkspaceRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/directory/$workspace': typeof ApiDirectoryWorkspaceRoute
   '/api/images/$workspace': typeof ApiImagesWorkspaceRoute
   '/api/suppressions/$workspace': typeof ApiSuppressionsWorkspaceRoute
+  '/api/templates/$workspace': typeof ApiTemplatesWorkspaceRoute
   '/api/v1/$': typeof ApiV1SplatRoute
   '/api/webhooks/$workspace': typeof ApiWebhooksWorkspaceRoute
   '/$workspace/settings': typeof WorkspaceSettingsIndexRoute
@@ -379,12 +396,14 @@ export interface FileRoutesById {
   '/$workspace/settings/images': typeof WorkspaceSettingsImagesRoute
   '/$workspace/settings/members': typeof WorkspaceSettingsMembersRoute
   '/$workspace/settings/suppressions': typeof WorkspaceSettingsSuppressionsRoute
+  '/$workspace/settings/templates': typeof WorkspaceSettingsTemplatesRoute
   '/$workspace/settings/webhooks': typeof WorkspaceSettingsWebhooksRoute
   '/$workspace/settings/workspace': typeof WorkspaceSettingsWorkspaceRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/directory/$workspace': typeof ApiDirectoryWorkspaceRoute
   '/api/images/$workspace': typeof ApiImagesWorkspaceRoute
   '/api/suppressions/$workspace': typeof ApiSuppressionsWorkspaceRoute
+  '/api/templates/$workspace': typeof ApiTemplatesWorkspaceRoute
   '/api/v1/$': typeof ApiV1SplatRoute
   '/api/webhooks/$workspace': typeof ApiWebhooksWorkspaceRoute
   '/$workspace/settings/': typeof WorkspaceSettingsIndexRoute
@@ -424,12 +443,14 @@ export interface FileRouteTypes {
     | '/$workspace/settings/images'
     | '/$workspace/settings/members'
     | '/$workspace/settings/suppressions'
+    | '/$workspace/settings/templates'
     | '/$workspace/settings/webhooks'
     | '/$workspace/settings/workspace'
     | '/api/auth/$'
     | '/api/directory/$workspace'
     | '/api/images/$workspace'
     | '/api/suppressions/$workspace'
+    | '/api/templates/$workspace'
     | '/api/v1/$'
     | '/api/webhooks/$workspace'
     | '/$workspace/settings/'
@@ -465,12 +486,14 @@ export interface FileRouteTypes {
     | '/$workspace/settings/images'
     | '/$workspace/settings/members'
     | '/$workspace/settings/suppressions'
+    | '/$workspace/settings/templates'
     | '/$workspace/settings/webhooks'
     | '/$workspace/settings/workspace'
     | '/api/auth/$'
     | '/api/directory/$workspace'
     | '/api/images/$workspace'
     | '/api/suppressions/$workspace'
+    | '/api/templates/$workspace'
     | '/api/v1/$'
     | '/api/webhooks/$workspace'
     | '/$workspace/settings'
@@ -508,12 +531,14 @@ export interface FileRouteTypes {
     | '/$workspace/settings/images'
     | '/$workspace/settings/members'
     | '/$workspace/settings/suppressions'
+    | '/$workspace/settings/templates'
     | '/$workspace/settings/webhooks'
     | '/$workspace/settings/workspace'
     | '/api/auth/$'
     | '/api/directory/$workspace'
     | '/api/images/$workspace'
     | '/api/suppressions/$workspace'
+    | '/api/templates/$workspace'
     | '/api/v1/$'
     | '/api/webhooks/$workspace'
     | '/$workspace/settings/'
@@ -549,6 +574,7 @@ export interface RootRouteChildren {
   ApiDirectoryWorkspaceRoute: typeof ApiDirectoryWorkspaceRoute
   ApiImagesWorkspaceRoute: typeof ApiImagesWorkspaceRoute
   ApiSuppressionsWorkspaceRoute: typeof ApiSuppressionsWorkspaceRoute
+  ApiTemplatesWorkspaceRoute: typeof ApiTemplatesWorkspaceRoute
   ApiV1SplatRoute: typeof ApiV1SplatRoute
   ApiWebhooksWorkspaceRoute: typeof ApiWebhooksWorkspaceRoute
   ApiInboundResendChannelRoute: typeof ApiInboundResendChannelRoute
@@ -680,6 +706,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof WorkspaceSettingsSuppressionsRouteImport
       parentRoute: typeof WorkspaceSettingsRoute
     }
+    '/$workspace/settings/templates': {
+      id: '/$workspace/settings/templates'
+      path: '/templates'
+      fullPath: '/$workspace/settings/templates'
+      preLoaderRoute: typeof WorkspaceSettingsTemplatesRouteImport
+      parentRoute: typeof WorkspaceSettingsRoute
+    }
     '/$workspace/settings/webhooks': {
       id: '/$workspace/settings/webhooks'
       path: '/webhooks'
@@ -720,6 +753,13 @@ declare module '@tanstack/react-router' {
       path: '/api/suppressions/$workspace'
       fullPath: '/api/suppressions/$workspace'
       preLoaderRoute: typeof ApiSuppressionsWorkspaceRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/templates/$workspace': {
+      id: '/api/templates/$workspace'
+      path: '/api/templates/$workspace'
+      fullPath: '/api/templates/$workspace'
+      preLoaderRoute: typeof ApiTemplatesWorkspaceRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/v1/$': {
@@ -864,6 +904,7 @@ interface WorkspaceSettingsRouteChildren {
   WorkspaceSettingsImagesRoute: typeof WorkspaceSettingsImagesRoute
   WorkspaceSettingsMembersRoute: typeof WorkspaceSettingsMembersRoute
   WorkspaceSettingsSuppressionsRoute: typeof WorkspaceSettingsSuppressionsRoute
+  WorkspaceSettingsTemplatesRoute: typeof WorkspaceSettingsTemplatesRoute
   WorkspaceSettingsWebhooksRoute: typeof WorkspaceSettingsWebhooksRoute
   WorkspaceSettingsWorkspaceRoute: typeof WorkspaceSettingsWorkspaceRoute
   WorkspaceSettingsIndexRoute: typeof WorkspaceSettingsIndexRoute
@@ -876,6 +917,7 @@ const WorkspaceSettingsRouteChildren: WorkspaceSettingsRouteChildren = {
   WorkspaceSettingsImagesRoute: WorkspaceSettingsImagesRoute,
   WorkspaceSettingsMembersRoute: WorkspaceSettingsMembersRoute,
   WorkspaceSettingsSuppressionsRoute: WorkspaceSettingsSuppressionsRoute,
+  WorkspaceSettingsTemplatesRoute: WorkspaceSettingsTemplatesRoute,
   WorkspaceSettingsWebhooksRoute: WorkspaceSettingsWebhooksRoute,
   WorkspaceSettingsWorkspaceRoute: WorkspaceSettingsWorkspaceRoute,
   WorkspaceSettingsIndexRoute: WorkspaceSettingsIndexRoute,
@@ -919,6 +961,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiDirectoryWorkspaceRoute: ApiDirectoryWorkspaceRoute,
   ApiImagesWorkspaceRoute: ApiImagesWorkspaceRoute,
   ApiSuppressionsWorkspaceRoute: ApiSuppressionsWorkspaceRoute,
+  ApiTemplatesWorkspaceRoute: ApiTemplatesWorkspaceRoute,
   ApiV1SplatRoute: ApiV1SplatRoute,
   ApiWebhooksWorkspaceRoute: ApiWebhooksWorkspaceRoute,
   ApiInboundResendChannelRoute: ApiInboundResendChannelRoute,

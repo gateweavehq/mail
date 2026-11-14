@@ -34,3 +34,18 @@ describe("where delivery events come from", () => {
 		expect(consumed("staging")).toEqual(["gateweave-mail-staging-events"]);
 	});
 });
+
+describe("the Durable Objects each environment binds", () => {
+	it("gives each environment the same ones, the audience's among them", () => {
+		// Bindings aren't inherited: an environment without one would fail on its first use.
+		const config = resolve(import.meta.dirname, "../../../wrangler.jsonc");
+		const bound = (env?: string) =>
+			unstable_readConfig({ config, env }, { hideWarnings: true })
+				.durable_objects.bindings.map(
+					({ name, class_name }: { name: string; class_name: string }) => `${name}:${class_name}`,
+				)
+				.sort();
+		expect(bound()).toContain("AUDIENCE:Audience");
+		expect(bound("staging")).toEqual(bound());
+	});
+});

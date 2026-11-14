@@ -112,14 +112,16 @@ describe("the Backup entrypoint", () => {
 		expect(workspaces).toEqual([...workspaces].sort());
 		expect(workspaces).toEqual(expect.arrayContaining(ids.map((id) => `webhooks.${id}`)));
 		const at = names.indexOf("webhooks.paged-007");
-		expect(names.slice(at, at + 3)).toEqual([
+		expect(names.slice(at, at + 4)).toEqual([
 			"webhooks.paged-007",
+			"audience.paged-007",
 			"mailbox.paged-box-a",
 			"mailbox.paged-box-b",
 		]);
 		expect(names).toEqual(
 			expect.arrayContaining([
 				`webhooks.${space.workspaceId}`,
+				`audience.${space.workspaceId}`,
 				`mailbox.${space.signUps.id}`,
 				`mailbox.${space.billing.id}`,
 			]),

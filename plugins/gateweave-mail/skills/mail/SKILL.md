@@ -129,6 +129,27 @@ When a run, an issue or a pull request is behind a message, pass it as `context`
 long. Whoever approves the message, or reads it later, sees the link beside it as your words, and
 webhooks carry it. It never goes into the mail, but don't put anything secret in it either.
 
+## Templates
+
+A workspace keeps message templates that its owners and admins wrote: a subject and a body with
+variables in them, to send over and over with different values.
+
+- `list_templates` (`GET /templates`) gives each template's `name`, its `variables`, its latest
+  `version` and its `subject`, but not its body.
+- `send_template` (`POST /mailboxes/{mailbox}/template-messages`) sends one: the `mailbox`, the
+  `template` by name (in any case), `values` with a text for each of its `variables` by name, and
+  `to` and `cc`, with a `draftId` and a `context` as for `send_email`. It sends the latest
+  `version` unless you pass another.
+
+Each value is one line of 2000 characters at most, and you give one for every variable and none
+for a name the template doesn't have. A value is only ever text: it can't add formatting, a link
+or HTML to the message, so don't try to. You can't change the template's own words, only fill it
+in. If a template isn't there, or a value is refused, the error says why.
+
+`send_template` goes through the same checks as `send_email`: the same approval rules, the same
+count against `sending.perDay`, the same refusal for an address that bounced, and the answer's
+`state` means the same. It also says which `template` and `version` it sent.
+
 ## An address of your own
 
 When a task needs an address that is only for it, such as one for a single sign-up:

@@ -33,18 +33,20 @@
 	"r2_buckets": [{ "binding": "RAW_MAIL", "bucket_name": "gateweave-mail" }],
 	// Rate limits on sign-in, password reset and email are counted in one Durable Object per client
 	// address or recipient. Each mailbox has one too, which holds the index of its messages, and each
-	// workspace one for its webhooks.
+	// workspace one for its webhooks and one for its audience (its templates).
 	"durable_objects": {
 		"bindings": [
 			{ "name": "RATE_LIMITER", "class_name": "RateLimiter" },
 			{ "name": "MAILBOX", "class_name": "Mailbox" },
-			{ "name": "WEBHOOKS", "class_name": "Webhooks" }
+			{ "name": "WEBHOOKS", "class_name": "Webhooks" },
+			{ "name": "AUDIENCE", "class_name": "Audience" }
 		]
 	},
 	"exports": {
 		"RateLimiter": { "type": "durable-object", "storage": "sqlite" },
 		"Mailbox": { "type": "durable-object", "storage": "sqlite" },
-		"Webhooks": { "type": "durable-object", "storage": "sqlite" }
+		"Webhooks": { "type": "durable-object", "storage": "sqlite" },
+		"Audience": { "type": "durable-object", "storage": "sqlite" }
 	},
 	// Email through Cloudflare Email Service. Nothing is sent until EMAIL_FROM names a sender on a
 	// domain onboarded to Email Sending; without it, Mail runs with email off.
@@ -84,7 +86,8 @@
 				"bindings": [
 					{ "name": "RATE_LIMITER", "class_name": "RateLimiter" },
 					{ "name": "MAILBOX", "class_name": "Mailbox" },
-					{ "name": "WEBHOOKS", "class_name": "Webhooks" }
+					{ "name": "WEBHOOKS", "class_name": "Webhooks" },
+					{ "name": "AUDIENCE", "class_name": "Audience" }
 				]
 			},
 			"send_email": [{ "name": "EMAIL" }],

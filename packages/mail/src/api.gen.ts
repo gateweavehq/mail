@@ -398,6 +398,64 @@ export interface SendEmailOutput {
 	[key: string]: unknown;
 }
 
+/** What `listTemplates` takes: the inputs of its path, query string and body in one. */
+export type ListTemplatesInput = Record<string, never>;
+
+/** What `listTemplates` gives. */
+export interface ListTemplatesOutput {
+	templates: {
+		name: string;
+		/** The variables to give a value for in send_template's values. */
+		variables: string[];
+		/** The latest version, which send_template uses unless told. */
+		version: number;
+		/** The latest version's subject, with its variables in it. */
+		subject: string;
+		[key: string]: unknown;
+	}[];
+	[key: string]: unknown;
+}
+
+/** What `sendTemplate` takes: the inputs of its path, query string and body in one. */
+export interface SendTemplateInput {
+	/** The mailbox's id, its name, or one of its addresses, from list_mailboxes. */
+	mailbox: string;
+	/** The template's name, in any case, from list_templates. */
+	template: string;
+	/** A version of the template, from 1. The latest unless you say. */
+	version?: number | undefined;
+	/** A value, as text, for each of the template's variables by name, and none for any it doesn't have. Each is one line of 2000 characters at most. A value is only ever text: it can't add formatting, a link or HTML to the message. */
+	values: {
+		[key: string]: unknown;
+	};
+	/** To and cc together take 20 at most. */
+	to: string[];
+	/** To and cc together take 20 at most. */
+	cc?: string[] | undefined;
+	/** A UUID of your own for this message. Send again with the same one, as after a timeout, and it isn't sent twice. */
+	draftId?: string | undefined;
+	/** What this message is for: the run, issue or pull request behind it. People in the workspace see it beside the message, and webhooks carry it, as your own words. It never goes into the mail, so put nothing secret in it. */
+	context?: {
+		/** An https link, such as https://github.com/acme/app/actions/runs/123. It is kept as a browser writes it, so it may read back a little different. */
+		url: string;
+		/** A few words for it, such as: CI run 123, or Issue ENG-42. */
+		label?: string | null | undefined;
+	} | undefined;
+}
+
+/** What `sendTemplate` gives. */
+export interface SendTemplateOutput {
+	id: string;
+	threadId: string;
+	/** "held" when it waits for a person to approve it, as your policy has mail to anyone else wait; otherwise how sending it went. */
+	state: string;
+	/** The template's name, as the workspace has it. */
+	template: string;
+	/** The version of it that was sent. */
+	version: number;
+	[key: string]: unknown;
+}
+
 /** What `reply` takes: the inputs of its path, query string and body in one. */
 export interface ReplyInput {
 	/** The mailbox's id, its name, or one of its addresses, from list_mailboxes. */
@@ -633,6 +691,8 @@ export interface Operations {
 	wait_for_email: { input: WaitForEmailInput; output: WaitForEmailOutput };
 	get_verification_code: { input: GetVerificationCodeInput; output: GetVerificationCodeOutput };
 	send_email: { input: SendEmailInput; output: SendEmailOutput };
+	list_templates: { input: ListTemplatesInput; output: ListTemplatesOutput };
+	send_template: { input: SendTemplateInput; output: SendTemplateOutput };
 	reply: { input: ReplyInput; output: ReplyOutput };
 	list_addresses: { input: ListAddressesInput; output: ListAddressesOutput };
 	create_address: { input: CreateAddressInput; output: CreateAddressOutput };
@@ -701,6 +761,20 @@ export const ROUTES = {
 	send_email: {
 		method: "POST",
 		path: "/mailboxes/{mailbox}/messages",
+		pathParams: ["mailbox"],
+		queryParams: [],
+		body: true,
+	},
+	list_templates: {
+		method: "GET",
+		path: "/templates",
+		pathParams: [],
+		queryParams: [],
+		body: false,
+	},
+	send_template: {
+		method: "POST",
+		path: "/mailboxes/{mailbox}/template-messages",
 		pathParams: ["mailbox"],
 		queryParams: [],
 		body: true,
@@ -843,6 +917,24 @@ export interface MailMethods {
 	 * `POST /mailboxes/{mailbox}/messages`, as the MCP tool `send_email`.
 	 */
 	sendEmail(input: SendEmailInput, options?: CallOptions): Promise<SendEmailOutput>;
+
+	/**
+	 * List templates.
+	 *
+	 * Lists the workspace's message templates: each one's name, the variables to give a value for, its latest version and its subject. The body isn't given. Send one with send_template.
+	 *
+	 * `GET /templates`, as the MCP tool `list_templates`.
+	 */
+	listTemplates(input?: ListTemplatesInput, options?: CallOptions): Promise<ListTemplatesOutput>;
+
+	/**
+	 * Send template.
+	 *
+	 * Sends a message made from one of the workspace's templates, from a mailbox you may send from, with a value for each of its variables. It goes as send_email does: mail to anyone your policy doesn't name waits for a person to approve it (state: held), and counts against your messages a day either way. The template's subject and body, which people in the workspace wrote, can't be changed here, only filled in.
+	 *
+	 * `POST /mailboxes/{mailbox}/template-messages`, as the MCP tool `send_template`.
+	 */
+	sendTemplate(input: SendTemplateInput, options?: CallOptions): Promise<SendTemplateOutput>;
 
 	/**
 	 * Reply.

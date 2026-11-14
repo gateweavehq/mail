@@ -16,10 +16,11 @@ through an OpenID Connect provider), workspaces with members and invitations, a 
 proved domains, mailboxes and addresses, and an `email()` handler that refuses an address that
 doesn't exist and stores mail for one that does, in a Durable Object per mailbox and R2. Members
 read the mailboxes they are given, with formatted mail in a sandboxed frame, and reply to their
-mail and write new mail from them, with formatting and files, through Cloudflare Email Service. Agents read theirs
+mail and write new mail from them, with formatting and files, through Cloudflare Email Service. Owners and admins
+write message templates, with `{{variables}}`, that anyone in the workspace reads and agents send. Agents read theirs
 with a key, over MCP (`/mcp`) or the API (`/api/v1`, with an OpenAPI document), and send from the mailboxes that let them, in HTML and with files too: what goes to
 anyone their policy doesn't name waits for a person to approve it, and they can make addresses for
-themselves within limits an owner or admin sets. Aliases and transactional sending are planned, not built.
+themselves within limits an owner or admin sets. Aliases and transactional sending in Resend's shape are planned, not built.
 
 Read [docs/architecture.md](docs/architecture.md) before changing auth or the `email()` handler.
 
@@ -237,6 +238,15 @@ These are load-bearing. Breaking one breaks users' data or security, usually sil
     seals again mail under `SECRETS_KEY_PREVIOUS` (`resealing.ts`): the copy is written and opened
     first, the row switches to it (object and seal) in one synchronous step, and only then, after a
     grace window (`stale_at`), is the original deleted. Keep that order.
+20. **A workspace's `Audience` object has no public route, and a template's values are only ever
+    text.** Only the gateway (`apps/web/src/server/audience/gateway.ts`), after the D1 membership
+    check and with `isAdminRole` for any change, the agent API with an agent's key, to read, the
+    workspace's deletion, and a backup Worker through the `Backup` entrypoint (12), which only
+    reads, reach it. A template is rendered only by `renderTemplate`
+    (`apps/web/src/lib/templates.ts`), which reads the body as formatted text first and puts the
+    values in after, escaped, so a value can't make a link, formatting or HTML; never join a value
+    into a body before `formatted` reads it, and never allow a variable in a link's words or
+    address. `send_template` sends through `access.outbox` like `send_email`, never around it.
 
 ## Code style
 

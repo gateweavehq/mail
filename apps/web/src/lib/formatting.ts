@@ -25,7 +25,7 @@ const escapeHtml = (text: string) =>
 	text.replace(/[&<>"']/g, (character) => ESCAPED[character] ?? "");
 
 /** Text as HTML shows it as typed: escaped, with its runs of spaces kept. */
-const textHtml = (text: string) => escapeHtml(text).replace(/ (?= )/g, "&nbsp;");
+export const textHtml = (text: string) => escapeHtml(text).replace(/ (?= )/g, "&nbsp;");
 
 /** A line as HTML shows it as typed, a space it starts with kept too. */
 const lineHtml = (text: string) => textHtml(text).replace(/^ /, "&nbsp;");

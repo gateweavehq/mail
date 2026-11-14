@@ -76,6 +76,8 @@ and gives its answer:
 | `waitForEmail`        | `GET /wait`                                                         |
 | `getVerificationCode` | `GET /verification-code`                                            |
 | `sendEmail`           | `POST /mailboxes/{mailbox}/messages`                                |
+| `listTemplates`       | `GET /templates`                                                    |
+| `sendTemplate`        | `POST /mailboxes/{mailbox}/template-messages`                       |
 | `reply`               | `POST /mailboxes/{mailbox}/messages/{messageId}/reply`              |
 | `listAddresses`       | `GET /mailboxes/{mailbox}/addresses`                                |
 | `createAddress`       | `POST /mailboxes/{mailbox}/addresses`                               |

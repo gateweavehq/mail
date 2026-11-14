@@ -1,4 +1,5 @@
 import { env, waitUntil } from "cloudflare:workers";
+import { removeAudience } from "../audience";
 import { createDb } from "../db";
 import { mailer } from "../email";
 import { removeMailboxes } from "../mailbox";
@@ -80,6 +81,7 @@ function buildAuth() {
 		allowSpentTriesEmail,
 		removeMailboxes,
 		removeWebhooks,
+		removeAudience,
 		providers: {
 			secrets: env,
 			resendApi: env.RESEND_API_URL,

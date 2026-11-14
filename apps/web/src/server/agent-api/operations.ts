@@ -19,6 +19,7 @@ import {
 	MAX_SUBJECT,
 	MAX_TEXT,
 } from "../../lib/outbox";
+import { MAX_TEMPLATE_NAME, MAX_VALUE, MAX_VARIABLES, renderTemplate } from "../../lib/templates";
 import { findVerificationCode } from "../../lib/verification-code";
 import {
 	MAX_AGENT_WEBHOOKS,
@@ -261,6 +262,21 @@ const webhookMailboxesInput = z
 	.nullable()
 	.describe(
 		"The mailboxes it hears of, by id, name or address, from list_mailboxes; null for every mailbox you may read, those you are given later too.",
+	);
+
+const templateNameInput = z
+	.string()
+	.trim()
+	.min(1)
+	.max(MAX_TEMPLATE_NAME)
+	.describe("The template's name, in any case, from list_templates.");
+// An object open to any name, whose values are read as text by the rendering, which refuses one
+// that isn't, with the name: the SDK's generator writes no typed map.
+const valuesInput = z
+	.looseObject({})
+	.refine((values) => Object.keys(values).length <= MAX_VARIABLES, "Too many values.")
+	.describe(
+		`A value, as text, for each of the template's variables by name, and none for any it doesn't have. Each is one line of ${MAX_VALUE} characters at most. A value is only ever text: it can't add formatting, a link or HTML to the message.`,
 	);
 
 const listMailboxes = operation({
@@ -517,6 +533,88 @@ const sendEmail = operation({
 	},
 });
 
+const listTemplates = operation({
+	name: "list_templates",
+	title: "List templates",
+	description:
+		"Lists the workspace's message templates: each one's name, the variables to give a value for, its latest version and its subject. The body isn't given. Send one with send_template.",
+	input: z.object({}),
+	output: OUTPUTS.list_templates,
+	hints: { readOnlyHint: true, openWorldHint: false },
+	routes: [{ method: "GET", path: "/templates" }],
+	refusals: [],
+	async run(access) {
+		const templates = await access.templates();
+		return {
+			templates: templates.map((template) => ({
+				name: template.name,
+				variables: template.variables,
+				version: template.number,
+				subject: template.subject,
+			})),
+		};
+	},
+});
+
+const sendTemplate = operation({
+	name: "send_template",
+	title: "Send template",
+	description:
+		"Sends a message made from one of the workspace's templates, from a mailbox you may send from, with a value for each of its variables. It goes as send_email does: mail to anyone your policy doesn't name waits for a person to approve it (state: held), and counts against your messages a day either way. The template's subject and body, which people in the workspace wrote, can't be changed here, only filled in.",
+	input: z.object({
+		mailbox: mailboxInput,
+		template: templateNameInput,
+		version: z
+			.number()
+			.int()
+			.min(1)
+			.max(1_000_000)
+			.optional()
+			.describe("A version of the template, from 1. The latest unless you say."),
+		values: valuesInput,
+		to: addressesInput.min(1).describe(`To and cc together take ${MAX_RECIPIENTS} at most.`),
+		cc: addressesInput.optional().describe(`To and cc together take ${MAX_RECIPIENTS} at most.`),
+		draftId: draftInput.optional(),
+		context: contextInput.optional(),
+	}),
+	output: OUTPUTS.send_template,
+	hints: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+	routes: [{ method: "POST", path: "/mailboxes/{mailbox}/template-messages" }],
+	refusals: [403, 409, 429],
+	async run(access, { mailbox, template, version, values, to, cc, draftId, context }) {
+		const box = await findMailbox(access, mailbox);
+		const found = await access.template(template, version ?? null);
+		if (!found) {
+			throw new ApiError(
+				version === undefined
+					? `No template "${template}". See list_templates.`
+					: `No template "${template}" at version ${version}. See list_templates.`,
+				404,
+			);
+		}
+		const rendered = renderTemplate(found.template, values);
+		if (!rendered.ok) throw new ApiError(rendered.error, 400);
+		// Through the same route as send_email, so that policy, approval, limits, the suppression list
+		// and a pause all hold. A message with formatting goes as its HTML alone and Mail makes the
+		// text, as for any message an agent writes, so that whoever approves it sees all that goes.
+		const outcome = sent(
+			await access.outbox(box.id, {
+				action: "send",
+				to,
+				cc: cc ?? [],
+				subject: rendered.subject,
+				text: rendered.html === null ? rendered.text : "",
+				html: rendered.html,
+				attachments: [],
+				from: null,
+				draft: draftId ?? crypto.randomUUID(),
+				context: context ?? null,
+			}),
+		);
+		return { ...outcome, template: found.template.name, version: found.template.number };
+	},
+});
+
 const reply = operation({
 	name: "reply",
 	title: "Reply",
@@ -743,6 +841,8 @@ export const OPERATIONS: readonly Operation[] = [
 	waitForEmail,
 	getVerificationCode,
 	sendEmail,
+	listTemplates,
+	sendTemplate,
 	reply,
 	listAddresses,
 	createAddress,
