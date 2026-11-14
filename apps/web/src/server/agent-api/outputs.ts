@@ -63,6 +63,10 @@ const sendOutput = z.looseObject({
 			'"held" when it waits for a person to approve it, as your policy has mail to anyone else wait; otherwise how sending it went.',
 		),
 });
+const sendTemplateOutput = sendOutput.extend({
+	template: z.string().describe("The template's name, as the workspace has it."),
+	version: z.number().describe("The version of it that was sent."),
+});
 const addressOutput = z.looseObject({
 	id: z.string(),
 	address: z.string(),
@@ -188,6 +192,19 @@ export const OUTPUTS = {
 	}),
 	send_email: sendOutput,
 	reply: sendOutput,
+	list_templates: z.looseObject({
+		templates: z.array(
+			z.looseObject({
+				name: z.string(),
+				variables: z
+					.array(z.string())
+					.describe("The variables to give a value for in send_template's values."),
+				version: z.number().describe("The latest version, which send_template uses unless told."),
+				subject: z.string().describe("The latest version's subject, with its variables in it."),
+			}),
+		),
+	}),
+	send_template: sendTemplateOutput,
 	list_addresses: z.looseObject({
 		addresses: z.array(addressOutput),
 		live: z.number().describe("Live addresses you made, in every mailbox."),

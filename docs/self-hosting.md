@@ -10,6 +10,7 @@ reply and write, formatted and with files, from people and agents. It uses:
 - a Durable Object that counts rate limits, one per client address or recipient;
 - a Durable Object per workspace for its webhooks, which holds their secrets and what they are
   still to deliver;
+- a Durable Object per workspace for its audience, which holds its message templates;
 - a queue, `gateweave-mail-events`, for Email Service's delivery events;
 - optionally, Cloudflare Email Service, to send password resets, verification and invitations,
   and the mail people write from mailboxes.
@@ -204,7 +205,7 @@ that arrives before `SECRETS_KEY_PREVIOUS` is set can be searched by its headers
 **Backups.** Mail's Worker also exports a `Backup` entrypoint, for a backup Worker that has a
 service binding to it, such as Gateweave Backup's. It has no route, so nothing on the internet
 reaches it, and you can ignore it unless you run such a Worker. It reads the mailboxes' and the
-workspaces' webhooks' Durable Objects, which nothing else outside the Worker can; D1 and the R2
+workspaces' webhooks' and audience Durable Objects, which nothing else outside the Worker can; D1 and the R2
 bucket you back up the usual way. See Backups in [docs/architecture.md](architecture.md) for what
 it copies and what it leaves.
 

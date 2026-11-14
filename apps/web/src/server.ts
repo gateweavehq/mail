@@ -11,6 +11,7 @@ import { dropUnusedWebhooks } from "./server/resend-inbound";
 import { newNonce, withSecurityHeaders } from "./server/security-headers";
 import { resealWebhooks } from "./server/webhooks";
 
+export { Audience } from "./server/audience";
 export { Backup } from "./server/backup";
 export { Mailbox } from "./server/mailbox";
 export { RateLimiter } from "./server/rate-limit";

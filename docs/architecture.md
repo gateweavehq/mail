@@ -382,9 +382,10 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     Owners and admins see on the workspace's page which agent made each address, and can remove
     it.
   - **The MCP server and the agent API** (`server/mcp/` at `/mcp`, `server/agent-api/` under
-    `/api/v1`). An agent reaches with its key what the REST routes give it, as sixteen
+    `/api/v1`). An agent reaches with its key what the REST routes give it, as eighteen
     operations: `list_mailboxes`, `search_email`, `read_email`, `get_attachment`, `wait_for_email`,
-    `get_verification_code`, `send_email`, `reply`, `list_addresses`, `create_address`,
+    `get_verification_code`, `send_email`, `list_templates`, `send_template`, `reply`,
+    `list_addresses`, `create_address`,
     `end_address`, and for webhooks of its own `list_webhooks`, `create_webhook`, `update_webhook`,
     `delete_webhook` and `test_webhook`. Each is defined
     once, in `agent-api/operations.ts`: its input and output as zod schemas (the outputs in
@@ -547,6 +548,64 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     - **Its own zone.** The Worker runs with `global_fetch_strictly_public`, so a webhook to a host
       on Mail's own zone goes in through Cloudflare, past that host's security settings and to
       whatever Worker serves it, as anyone's request would, never straight to the origin.
+  - **The `Audience` object and templates** (`server/audience/`, `lib/templates.ts`,
+    `lib/template-reader.ts`). Each workspace has one `Audience` Durable Object, named by its id as
+    the `Webhooks` object is, for what a workspace keeps to write mail with apart from its
+    mailboxes. Today that is its templates; people's own data stays in the workspace's objects, and
+    D1 has no table for it. Nothing but the gateway (`audience/gateway.ts`) and the agent API
+    reach it. The gateway checks D1 membership first, as every route does: a stranger, a
+    workspace that isn't there and a template of another workspace all get the same 404, and
+    only owners and admins (`isAdminRole`) may change one, while any person in the workspace may
+    read. An agent reads them with its key, as `list_templates` and `send_template`. Its handlers
+    are synchronous and each change is one `transactionSync`; its tables (`schema.ts`, versions
+    kept in `schema_migration`) are `template` and `template_version`. The object reads what it is
+    given itself (`templateInput`), whoever sends it, so a handler is never the only place a
+    template is checked. `destroy` runs when the workspace is deleted, and Gateweave Backup reads
+    it as `audience.<workspace>`, beside `webhooks.<workspace>` (see Backups).
+    - **Templates are not secret from agents that may send.** An agent that may send can learn a
+      template's rendered text by sending it to an address it can read, and one that reads the
+      mailbox it sent to reads it at once. `list_templates` leaves the body out to keep a list
+      short, not to keep it private, and the page tells people not to put secrets in a template.
+    - **A template** is a name, unique among the workspace's live templates ignoring case, and its
+      versions. Saving never changes a version: it adds the next number, and may rename the
+      template, up to 100 versions, and a save past that is refused. A workspace has at most 200 live
+      templates. Removing is soft (`removed_at`): the
+      versions stay, the template leaves every list and send, and its name may be used again, as
+      the unique index covers live templates only. Names are compared folded: NFKC, lower case,
+      `ß` as `ss` and a final sigma as `σ` (`nameKey`). A version holds a subject (up to
+      `MAX_SUBJECT`), a Markdown body (up to `MAX_TEXT`), its variables as a JSON list, and who
+      made it, by membership. People write them on Settings › Templates, through
+      `POST /api/templates/<workspace>` (which asks where the request is from) with a live
+      preview from sample values, and read a template's versions with
+      `GET /api/templates/<workspace>?template=<id>`.
+    - **Variables are `{{name}}`**, a name of `[a-z][a-z0-9_]{0,31}`, at most 20 to a template,
+      and `\{{` writes `{{`, and `\\` a backslash. One small reader (`lib/template-reader.ts`) finds them in a single
+      pass with no regular expression and no evaluation: a name is looked up and that is all, and
+      a `{{` that doesn't start one is refused, never guessed at. Saving refuses a variable that is
+      used and not declared, or declared and not used, and a template that doesn't render.
+    - **A value is only ever text.** The body is read as the composer's text is
+      (`lib/formatting.ts`: bold, italic, links, lists and quotes), and the values go in after.
+      While it is read, each variable is one private-use character (a template may not hold any of
+      its own), and in the HTML that comes out each is swapped, in one pass, for its value
+      escaped. So a value can't make a link, bold, a list, a quote or HTML, whatever it holds, and
+      a `{{` in a value is never read again. The characters must come out as many times as they
+      went in, as text and outside any tag: a variable in a link's words or address, which would
+      let a value decide what a link says or where it goes, is refused when the template is saved, and so is one that touches a link, with no space
+      between, within the 64 characters formatting.ts reads around a link, as the words beside a
+      link can make it read as another place (`[bank](https://bank.example){{x}}` with `.evil.com`).
+      A value is one line of at most 2,000 characters, with no control character and no mark that
+      turns text around, so a value in the subject can't add a header. Rendering refuses a missing
+      value and a value for no variable, counts the length of the subject and text before it joins
+      them, and keeps the HTML within `MAX_HTML`. A body that uses no formatting has no HTML and
+      goes as text alone, as the composer's does.
+    - **`send_template` is `send_email`.** It renders, then calls the same `access.outbox` with the
+      agent's key, so the agent's grant, policy, approval, daily count, the workspace's limits, the
+      suppression list and a pause all hold, and the send is noted in the agent's log as
+      `message.sent` or `message.held`, as any send is. A message with formatting goes as its HTML
+      alone, so Mail makes the text from it, as for any message an agent writes. Rendering fails
+      before anything is counted. The agent's log entry names the template and its version before
+      whom it went to, held or sent. `list_templates` gives name, variables, latest version and
+      subject, never the body.
   - **HTML.** A message's HTML is a page of its own, at `…/<message>/html`, which the message's
     page shows in a frame; its text, or the text made from its HTML, is a click away. What makes
     it safe is the policy it is served with (`framePolicy` in `html.ts`): `sandbox` without
@@ -1034,12 +1093,13 @@ code reads their SQLite. So the Worker exports a named entrypoint, `Backup`
   Cloudflare account with a service binding to it (`entrypoint: "Backup"`) can call it, so that
   binding is the access, the way the gateways' checks are for people and agents.
 - **`objects(cursor)`** lists, 20 workspaces at a time from D1 in order of id, each one's
-  `webhooks.<workspace>` and then `mailbox.<id>` for each of its mailboxes. Removed mailboxes and
+  `webhooks.<workspace>` and `audience.<workspace>` and then `mailbox.<id>` for each of its
+  mailboxes. Removed mailboxes and
   deleted workspaces aren't listed. The rate limiter is left out: it holds counters that expire.
 - **`read(name, statements)`** runs the SELECTs of a SQLite dump in that object, after checking in
   D1 that the mailbox's row, or the workspace, still exists, so a backup never wakes a removed
-  mailbox's object. For any other name, or one that isn't plainly `mailbox.<id>` or
-  `webhooks.<id>`, it answers null. The object's `backupRead`
+  mailbox's object. For any other name, or one that isn't plainly `mailbox.<id>`,
+  `webhooks.<id>` or `audience.<id>`, it answers null. The object's `backupRead`
   (`apps/web/src/server/backup-read.ts`) takes only `SELECT` and `PRAGMA table_list`,
   `table_info` or `table_xinfo`, one statement each, at most 1,000 of 100 kB, and runs them
   together in one transaction that it always rolls back. They see one moment, and nothing they run
@@ -1050,7 +1110,7 @@ code reads their SQLite. So the Worker exports a named entrypoint, `Backup`
   whether a workspace ever had a webhook (the admins' own leave no trace there), so every workspace
   is listed and a backup may create an empty one: a few empty tables and no alarm, nothing the app
   doesn't make itself when someone opens the webhooks page. It is harmless, and the next backup finds
-  it empty.
+  it empty. The same goes for a workspace's `Audience` object.
 - **What a dump holds, sealed or not.** A dump copies rows as they are; nothing is opened.
   - A mailbox's rows hold what its index needs, in the clear: each message's addresses, subject,
     date, sizes and delivery state, threads, the `outgoing` requests of mail sent (their text and
@@ -1059,6 +1119,9 @@ code reads their SQLite. So the Worker exports a named entrypoint, `Backup`
   - A webhooks object's rows hold each webhook's URL, its signing secret sealed under
     `SECRETS_KEY` (as made on a deployment without one) with its first ten characters, and the
     deliveries on their way, with the body each was queued with. Treat a backup of it as secret.
+  - An audience object's rows hold the workspace's templates: their names, and every version's
+    subject, body and variables, in the clear, with the membership that made it. Removed templates
+    are there too, with `removed_at` set.
   - Not in a dump: raw mail and attachments, which are in R2 (`RAW_MAIL`), and everything in D1
     (accounts, the address directory, and the workspaces' provider keys and Resend secrets, which
     D1 holds sealed under `SECRETS_KEY`). Back those up separately, and keep `SECRETS_KEY`:
@@ -1075,7 +1138,7 @@ mailbox and R2 for raw mail.
 - **Aliases that point at a mailbox.**
 - **Images in the composer's HTML**, as agents send them already, forwarding, and replying to
   all.
-- **Transactional sending and templates**, through Cloudflare Email Service.
+- **Transactional sending in Resend's shape**, through Cloudflare Email Service.
 
 ## What Cloudflare does with mail
 

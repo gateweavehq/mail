@@ -8,6 +8,7 @@ import type {
 	ThreadPage,
 	ThreadsPage,
 } from "../../lib/mailbox";
+import type { Template } from "../../lib/templates";
 import type { Webhook, WebhookDelivery, WebhookEventType } from "../../lib/webhooks";
 import type { AgentAddressAction } from "../directory/agent-addresses";
 import type { SentFile } from "../mailbox/download";
@@ -106,6 +107,16 @@ export interface MailAccess {
 	deleteWebhook(id: string): Promise<void>;
 	/** Queues a `webhook.test` delivery to one of its webhooks. */
 	testWebhook(id: string): Promise<void>;
+	/** The workspace's live templates by name, each as its latest version is. */
+	templates(): Promise<Template[]>;
+	/**
+	 * A live template by its name, in any case, as the version numbered says or its latest; with the
+	 * number of its latest. Null when there is none.
+	 */
+	template(
+		name: string,
+		version: number | null,
+	): Promise<{ template: Template; latest: number } | null>;
 }
 
 /** The statuses a failure the caller can act on answers with, over REST. */

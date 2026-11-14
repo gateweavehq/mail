@@ -1656,6 +1656,250 @@
         }
       }
     },
+    "/templates": {
+      "get": {
+        "operationId": "list_templates",
+        "summary": "List templates",
+        "description": "Lists the workspace's message templates: each one's name, the variables to give a value for, its latest version and its subject. The body isn't given. Send one with send_template.",
+        "x-mcp-tool": "list_templates",
+        "responses": {
+          "200": {
+            "description": "Done.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "templates": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "name": {
+                            "type": "string"
+                          },
+                          "variables": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "The variables to give a value for in send_template's values."
+                          },
+                          "version": {
+                            "type": "number",
+                            "description": "The latest version, which send_template uses unless told."
+                          },
+                          "subject": {
+                            "type": "string",
+                            "description": "The latest version's subject, with its variables in it."
+                          }
+                        },
+                        "required": [
+                          "name",
+                          "variables",
+                          "version",
+                          "subject"
+                        ],
+                        "additionalProperties": {}
+                      }
+                    }
+                  },
+                  "required": [
+                    "templates"
+                  ],
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Failed400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Failed401"
+          },
+          "404": {
+            "$ref": "#/components/responses/Failed404"
+          },
+          "500": {
+            "$ref": "#/components/responses/Failed500"
+          }
+        }
+      }
+    },
+    "/mailboxes/{mailbox}/template-messages": {
+      "post": {
+        "operationId": "send_template",
+        "summary": "Send template",
+        "description": "Sends a message made from one of the workspace's templates, from a mailbox you may send from, with a value for each of its variables. It goes as send_email does: mail to anyone your policy doesn't name waits for a person to approve it (state: held), and counts against your messages a day either way. The template's subject and body, which people in the workspace wrote, can't be changed here, only filled in.",
+        "x-mcp-tool": "send_template",
+        "parameters": [
+          {
+            "name": "mailbox",
+            "in": "path",
+            "required": true,
+            "description": "The mailbox's id, its name, or one of its addresses, from list_mailboxes.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 300
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "template": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "description": "The template's name, in any case, from list_templates."
+                  },
+                  "version": {
+                    "description": "A version of the template, from 1. The latest unless you say.",
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1000000
+                  },
+                  "values": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": {},
+                    "description": "A value, as text, for each of the template's variables by name, and none for any it doesn't have. Each is one line of 2000 characters at most. A value is only ever text: it can't add formatting, a link or HTML to the message."
+                  },
+                  "to": {
+                    "minItems": 1,
+                    "maxItems": 20,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 3,
+                      "maxLength": 254
+                    },
+                    "description": "To and cc together take 20 at most."
+                  },
+                  "cc": {
+                    "description": "To and cc together take 20 at most.",
+                    "maxItems": 20,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 3,
+                      "maxLength": 254
+                    }
+                  },
+                  "draftId": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                    "description": "A UUID of your own for this message. Send again with the same one, as after a timeout, and it isn't sent twice."
+                  },
+                  "context": {
+                    "type": "object",
+                    "properties": {
+                      "url": {
+                        "type": "string",
+                        "maxLength": 2000,
+                        "description": "An https link, such as https://github.com/acme/app/actions/runs/123. It is kept as a browser writes it, so it may read back a little different."
+                      },
+                      "label": {
+                        "description": "A few words for it, such as: CI run 123, or Issue ENG-42.",
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "maxLength": 100
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "url"
+                    ],
+                    "description": "What this message is for: the run, issue or pull request behind it. People in the workspace see it beside the message, and webhooks carry it, as your own words. It never goes into the mail, so put nothing secret in it."
+                  }
+                },
+                "required": [
+                  "template",
+                  "values",
+                  "to"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Done.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "threadId": {
+                      "type": "string"
+                    },
+                    "state": {
+                      "type": "string",
+                      "description": "\"held\" when it waits for a person to approve it, as your policy has mail to anyone else wait; otherwise how sending it went."
+                    },
+                    "template": {
+                      "type": "string",
+                      "description": "The template's name, as the workspace has it."
+                    },
+                    "version": {
+                      "type": "number",
+                      "description": "The version of it that was sent."
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "threadId",
+                    "state",
+                    "template",
+                    "version"
+                  ],
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Failed400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Failed401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Failed403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Failed404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Failed409"
+          },
+          "413": {
+            "$ref": "#/components/responses/Failed413"
+          },
+          "429": {
+            "$ref": "#/components/responses/Failed429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Failed500"
+          }
+        }
+      }
+    },
     "/mailboxes/{mailbox}/messages/{messageId}/reply": {
       "post": {
         "operationId": "reply",

@@ -8,6 +8,7 @@ const TABS = [
 	{ to: "/$workspace/settings/members", label: "Members" },
 	{ to: "/$workspace/settings/agents", label: "Agents" },
 	{ to: "/$workspace/settings/webhooks", label: "Webhooks" },
+	{ to: "/$workspace/settings/templates", label: "Templates" },
 	{ to: "/$workspace/settings/domains", label: "Domains" },
 	{ to: "/$workspace/settings/suppressions", label: "Suppressions" },
 	{ to: "/$workspace/settings/images", label: "Images" },

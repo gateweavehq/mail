@@ -94,6 +94,14 @@ const Action = z.discriminatedUnion("action", [
 		 * same message again, as when its answer was lost, and isn't sent twice.
 		 */
 		draft: z.uuid(),
+		/**
+		 * The template an agent's message was made from, as `send_template` says, for the agent's log
+		 * to name beside whom it went to. Only the log reads it, and the log shows it as the agent's.
+		 */
+		template: z
+			.object({ name: z.string().max(100), version: z.number().int().min(1).max(1_000_000) })
+			.nullable()
+			.default(null),
 		/** What it was written for, as its writer says. Checked by `sentContext`. */
 		context: z
 			.object({
@@ -381,7 +389,9 @@ export async function outboxAnswer(
 			targetId: sent.id,
 			threadId: sent.threadId,
 			subject: message.subject,
-			detail: recipients.join(", "),
+			detail: action.template
+				? `template ${action.template.name}, version ${action.template.version}: ${recipients.join(", ")}`
+				: recipients.join(", "),
 			context,
 		});
 	}

@@ -249,6 +249,7 @@ export async function startMail(
 						RATE_LIMITER: { className: "RateLimiter", useSQLite: true, scriptName: names[0] },
 						MAILBOX: { className: "Mailbox", useSQLite: true, scriptName: names[0] },
 						WEBHOOKS: { className: "Webhooks", useSQLite: true, scriptName: names[0] },
+						AUDIENCE: { className: "Audience", useSQLite: true, scriptName: names[0] },
 					},
 					outboundService: (request: Request) => {
 						outbound.push(request.url);

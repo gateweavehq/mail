@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { z } from "zod";
+import { MAX_VALUE } from "../../lib/templates";
 import { MAX_AGENT_WEBHOOKS, WEBHOOK_EVENTS } from "../../lib/webhooks";
 import { ENDED_ADDRESS_KEPT_DAYS } from "../directory";
 import { OPERATIONS } from "./operations";
@@ -110,6 +111,7 @@ describe("the skill for agents", () => {
 		expect(flat).toContain(`${LOOK_BACK_MS / 60_000} minutes before the call`);
 		expect(flat).toContain(`You can have ${MAX_AGENT_WEBHOOKS} webhooks of your own`);
 		expect(flat).toContain(`can't be made again for ${ENDED_ADDRESS_KEPT_DAYS} days.`);
+		expect(flat).toContain(`one line of ${MAX_VALUE} characters at most`);
 	});
 
 	it("tells agents to pass only inputs the tools take", () => {
@@ -128,6 +130,19 @@ describe("the skill for agents", () => {
 		}
 		expect(takes("send_email")).toEqual(expect.arrayContaining(["to", "cc", "subject", "from"]));
 		expect(takes("create_address")).toEqual(expect.arrayContaining(["localPart", "days"]));
+		expect(takes("send_template")).toEqual(
+			expect.arrayContaining([
+				"mailbox",
+				"template",
+				"version",
+				"values",
+				"to",
+				"cc",
+				"draftId",
+				"context",
+			]),
+		);
+		expect(takes("list_templates")).toEqual([]);
 	});
 });
 

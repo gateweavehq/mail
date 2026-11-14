@@ -89,6 +89,12 @@ tools that run on Cloudflare, next to [Gateweave Track](https://github.com/gatew
   rejected, sent, and delivered, bounced or marked as spam at each recipient. It retries for about
   a day while the receiver fails. An agent can make a few webhooks of its own with its key, which
   hear only of the mailboxes it may read, not of what it did itself, and last as long as the key.
+- **Templates.** Owners and admins write message templates under Settings → Templates: a subject
+  and a Markdown body with `{{name}}` where a value goes, a preview from sample values, and a new
+  version each time one is saved, which are never changed. Anyone in the workspace can read them.
+  An agent lists them (`list_templates`) and sends one (`send_template`) with a value for each
+  variable, through the same send as any message, so its policy, approval, limits and the
+  suppression list all hold. A value is only ever text: it can't add formatting, a link or HTML.
 
 ## Connect an agent
 
@@ -135,7 +141,7 @@ None of this exists yet; it is the direction, and it may change.
 - Agents that act on mail as well as read and send it, such as filing or labelling it.
 - Images in the composer's HTML, forwarding, and replying to all.
 - Aliases that point at a mailbox.
-- Transactional sending and templates, through Cloudflare Email Service.
+- Transactional sending in Resend's shape, through Cloudflare Email Service.
 
 How it is built, and what isn't yet, is in [docs/architecture.md](docs/architecture.md).
 
