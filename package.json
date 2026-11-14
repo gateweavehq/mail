@@ -22,7 +22,7 @@
 		"verify": "pnpm check && pnpm typecheck && pnpm test && pnpm build"
 	},
 	"devDependencies": {
-		"@biomejs/biome": "2.6.5",
+		"@biomejs/biome": "2.6.6",
 		"typescript": "catalog:"
 	},
 	"cloudflare": {
