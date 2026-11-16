@@ -89,11 +89,22 @@ function SignInForm() {
 	const search = Route.useSearch();
 	const next = safeRedirect(search.redirect) ?? "/";
 	const router = useRouter();
-	// While sign-up is closed, the form that makes an account is only for someone an invitation
-	// sent here, which is the one address it can work for. The server decides either way.
-	const offersSignUp = !options.signUpClosed || search.mode === "sign-up";
-	const [mode, setMode] = useState<"sign-in" | "sign-up">(search.mode ?? "sign-in");
-	const [error, setError] = useState(() => signInRefusal(search.error));
+	// While sign-up is closed the form makes no account for anyone, an invited address included:
+	// the server refuses it, so the page never offers it, whatever the link that led here asks.
+	const closed = options.signUpClosed;
+	const [mode, setMode] = useState<"sign-in" | "sign-up">(
+		closed ? "sign-in" : (search.mode ?? "sign-in"),
+	);
+	// Someone new and someone whose account could not be linked are sent back with different
+	// codes. On a closed server both read the same here, so the page says nothing about which.
+	const [error, setError] = useState(() =>
+		signInRefusal(
+			closed && search.error === "account_not_linked" ? "SIGN_UP_CLOSED" : search.error,
+		),
+	);
+	const providers = [options.oidc, options.github ? "GitHub" : null].filter(
+		(name): name is string => Boolean(name),
+	);
 	const [pending, setPending] = useState(false);
 
 	async function onSubmit(event: FormEvent<HTMLFormElement>) {
@@ -140,13 +151,16 @@ function SignInForm() {
 					</p>
 				</div>
 
-				{options.signUpClosed && (
+				{closed && (
 					<div
 						role="note"
 						aria-label="Sign-up is closed"
 						className="space-y-1 rounded-lg border p-3 text-center text-sm text-muted-foreground"
 					>
 						<p>{SIGN_UP_CLOSED_MESSAGE}</p>
+						{providers.length > 0 && (
+							<p>{`Invited? Continue with ${providers.join(" or ")}, under the address your invitation names.`}</p>
+						)}
 						{options.askForAccess && (
 							<p>
 								<a
@@ -233,7 +247,7 @@ function SignInForm() {
 					</LiveButton>
 				</form>
 
-				{(mode === "sign-up" || offersSignUp) && (
+				{!closed && (
 					<p className="text-center text-sm text-muted-foreground">
 						{mode === "sign-in" ? "New to Gateweave Mail? " : "Already have an account? "}
 						<button

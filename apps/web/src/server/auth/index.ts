@@ -1,5 +1,5 @@
 import { env, waitUntil } from "cloudflare:workers";
-import { parseAllowList } from "../../lib/sign-up-allow";
+import { namesNobody, parseAllowList } from "../../lib/sign-up-allow";
 import { removeAudience } from "../audience";
 import { createDb } from "../db";
 import { mailer } from "../email";
@@ -24,7 +24,10 @@ const oidc =
 
 const signUpAllow = parseAllowList(env.SIGN_UP_ALLOW);
 
-/** Whether new accounts are only for listed and invited addresses (`SIGN_UP_ALLOW`). */
+/**
+ * Whether new accounts are only for listed and invited addresses a provider proved
+ * (`SIGN_UP_ALLOW`). A setting that is there but empty closes sign-up too.
+ */
 export const signUpClosed = signUpAllow !== null;
 
 let instance: ReturnType<typeof buildAuth> | undefined;
@@ -75,6 +78,13 @@ function buildAuth() {
 		// people's addresses, which the log does not keep.
 		console.warn(
 			`auth: SIGN_UP_ALLOW: ignored ${signUpAllow.ignored} of its entries, which let nobody in. Each must be an address or an @domain.`,
+		);
+	}
+	if (signUpAllow && namesNobody(signUpAllow)) {
+		// Also once an isolate: an emptied setting closes the server rather than opening it, which
+		// whoever emptied it to open sign-up has to be told. To open it, remove the setting.
+		console.warn(
+			"auth: SIGN_UP_ALLOW is set and names nobody, so only invited addresses can make an account. Remove the setting to open sign-up.",
 		);
 	}
 	return createAuth({

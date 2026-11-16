@@ -15,6 +15,11 @@ export interface AllowList {
  * What every refused address is told, on the sign-in page and by the server alike, so that the
  * words say nothing about any one address.
  */
+/** Whether a list names nobody at all, so that only invited addresses get in. */
+export function namesNobody(list: AllowList): boolean {
+	return list.addresses.size === 0 && list.domains.size === 0;
+}
+
 export const SIGN_UP_CLOSED_MESSAGE =
 	"This server takes new accounts by invitation. If you already have an account, sign in.";
 
@@ -22,16 +27,17 @@ const ADDRESS = /^[^@\s]+@[^@\s]+$/;
 const DOMAIN = /^@[^@\s]+$/;
 
 /**
- * The list a deployment set, or null when it set none and anyone may sign up. A setting with
- * entries that all turn out unusable is still a list, of nobody: a mistake in it must not open
- * the server.
+ * The list a deployment set, or null when it set none and anyone may sign up. Only a setting that
+ * is not there at all is none. One that is there with nothing usable in it, the empty text and
+ * separators alone included, is a list of nobody: a setting someone emptied, or mistyped, must
+ * not open the server.
  */
-export function parseAllowList(setting: string | undefined): AllowList | null {
-	const entries = (setting ?? "")
+export function parseAllowList(setting: string | null | undefined): AllowList | null {
+	if (setting === undefined || setting === null) return null;
+	const entries = String(setting)
 		.split(/[\s,]+/)
 		.map((entry) => entry.toLowerCase())
 		.filter(Boolean);
-	if (entries.length === 0) return null;
 	const addresses = new Set<string>();
 	const domains = new Set<string>();
 	let ignored = 0;

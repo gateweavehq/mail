@@ -3,9 +3,11 @@ import { startMail } from "./mail-worker";
 import { OIDC, OIDC_VARS, standInProvider } from "./oidc-provider";
 
 // A deployment closes sign-up with SIGN_UP_ALLOW. The server decides, wherever an account would
-// come from: the sign-up form, GitHub or the provider. A refusal must leave nothing behind, read
-// the same for every address, and never stop someone who already has an account. The list counts
-// only for an address a provider proved, and a domain on it only for exactly that domain.
+// come from: the sign-up form, GitHub or the provider. On a closed server only an address a
+// provider proved makes an account, one the list names or a workspace invited: the form makes
+// none, for anyone. A refusal must leave nothing behind, read the same for every address, and
+// never stop someone who already has an account. A domain on the list counts only for exactly
+// that domain, and a setting that is there but empty closes the server rather than opening it.
 
 const origin = "https://mail.test";
 const PASSWORD = "a-long-test-password";
@@ -15,8 +17,11 @@ const CLOSED_WORDS =
 	"This server takes new accounts by invitation. If you already have an account, sign in.";
 const REFUSAL = { code: "SIGN_UP_CLOSED", message: CLOSED_WORDS };
 
-/** The copy of the Worker without the setting, which shares the database with the one that has it. */
+// Three copies of the Worker on one database. The first has a list.
+/** The copy without the setting at all, where the accounts "from before the list" are made. */
 const OPEN = 1;
+/** The copy whose setting is there with nothing in it but separators. */
+const EMPTIED = 2;
 
 type Provider = Awaited<ReturnType<typeof standInProvider>>;
 type Mail = Awaited<ReturnType<typeof startMail>>;
@@ -57,16 +62,22 @@ function gitHubApi(request: Request) {
 beforeAll(async () => {
 	provider = await standInProvider();
 	mail = await startMail(origin, {
-		isolates: 2,
+		isolates: 3,
 		settings: {
 			...OIDC_VARS,
 			GITHUB_CLIENT_ID: "github-client-for-tests",
 			GITHUB_CLIENT_SECRET: GITHUB_SECRET,
-			// In mixed case, with an entry that is neither an address nor a domain.
-			SIGN_UP_ALLOW: "Ada@Example.com, @Study.Example\n not-an-entry",
-			SIGN_UP_REQUEST_URL: ASK,
 		},
-		isolateSettings: [{}, { SIGN_UP_ALLOW: "" }],
+		isolateSettings: [
+			{
+				// In mixed case, with an entry that is neither an address nor a domain.
+				SIGN_UP_ALLOW: "Ada@Example.com, @Study.Example\n not-an-entry",
+				SIGN_UP_REQUEST_URL: ASK,
+			},
+			// Not set at all, which is the only thing that leaves sign-up open.
+			{},
+			{ SIGN_UP_ALLOW: " ,\n, " },
+		],
 		hosts: {
 			[new URL(OIDC.issuer).host]: async (request: Request) =>
 				(await provider.outbound(request, new URL(request.url))) ??
@@ -92,7 +103,7 @@ function cookieOf(response: Response) {
 let clients = 0;
 function newClient() {
 	clients += 1;
-	return `198.51.100.${clients}`;
+	return `198.51.${100 + Math.floor(clients / 250)}.${clients % 250}`;
 }
 
 function authApi(path: string, body: object, { isolate = 0, cookie = "" } = {}) {
@@ -116,7 +127,10 @@ function signUp(email: string, isolate = 0) {
 	);
 }
 
-/** How many accounts, ways into them and sessions there are, and whether one has this address. */
+/**
+ * What a refusal must leave as it was: how many accounts, ways into them, sessions and
+ * verifications there are, and whether an account has this address.
+ */
 async function rows(email: string) {
 	const count = async (table: string) =>
 		(await mail.db.prepare(`SELECT count(*) AS n FROM ${table}`).first<{ n: number }>())?.n;
@@ -128,6 +142,7 @@ async function rows(email: string) {
 		users: await count("user"),
 		accounts: await count("account"),
 		sessions: await count("session"),
+		verifications: await count("verification"),
 		hasAccount: person !== null,
 	};
 }
@@ -138,15 +153,31 @@ async function isSignedIn(cookie: string) {
 	return (await response.json()) !== null;
 }
 
+/** The form is refused, in the one answer, and nothing is left of the try. */
+async function expectFormRefused(email: string, isolate = 0) {
+	const before = await rows(email);
+	const response = await signUp(email, isolate);
+	expect(response.status).toBe(403);
+	expect(await response.json()).toEqual(REFUSAL);
+	expect(response.headers.getSetCookie()).toEqual([]);
+	expect(await rows(email)).toEqual(before);
+}
+
 /** To a provider and back with a code. Where Mail sends the browser then, and its cookie. */
 async function through(
 	providerId: "oidc" | "github",
 	code: (authorize: URL) => string,
-	/** Where a refusal goes, as the sign-in page says it. Null says nothing, as the page never does. */
-	errorCallbackURL: string | null = "/login?redirect=%2F",
+	{
+		errorCallbackURL = "/login?redirect=%2F",
+		isolate = 0,
+	}: {
+		/** Where a refusal goes, as the sign-in page says it. Null says nothing, as the page never does. */
+		errorCallbackURL?: string | null;
+		isolate?: number;
+	} = {},
 ) {
 	const client = newClient();
-	const pressed = await mail.fetch(`${origin}/api/auth/sign-in/social`, {
+	const pressed = await mail.fetchIn(isolate, `${origin}/api/auth/sign-in/social`, {
 		method: "POST",
 		headers: { origin, "cf-connecting-ip": client, "content-type": "application/json" },
 		body: JSON.stringify({
@@ -162,7 +193,7 @@ async function through(
 		state: authorize.searchParams.get("state") ?? "",
 		...(providerId === "oidc" && { iss: OIDC.issuer }),
 	});
-	const back = await mail.fetch(`${origin}/api/auth/callback/${providerId}?${query}`, {
+	const back = await mail.fetchIn(isolate, `${origin}/api/auth/callback/${providerId}?${query}`, {
 		headers: { cookie: cookieOf(pressed), "cf-connecting-ip": client },
 	});
 	expect(back.status).toBe(302);
@@ -178,7 +209,7 @@ let subjects = 0;
 function throughProvider(
 	email: string,
 	claims: { email_verified?: unknown } = {},
-	errorCallbackURL?: string | null,
+	options: Parameters<typeof through>[2] = {},
 ) {
 	subjects += 1;
 	const sub = `subject-${subjects}`;
@@ -192,7 +223,7 @@ function throughProvider(
 				email_verified: true,
 				...claims,
 			}),
-		errorCallbackURL,
+		options,
 	);
 }
 
@@ -229,6 +260,7 @@ async function expectAdmitted(
 	expect(location.searchParams.get("error")).toBeNull();
 	expect(await isSignedIn(cookie)).toBe(true);
 	expect((await rows(email)).hasAccount).toBe(true);
+	return cookie;
 }
 
 /** Someone with an account from before the list, a workspace of theirs, and an invitation to it. */
@@ -252,6 +284,17 @@ async function invite(email: string, slug: string) {
 	return ((await invited.json()) as { id: string }).id;
 }
 
+async function page(path: string, isolate = 0) {
+	const response = await mail.fetchIn(isolate, `${origin}${path}`);
+	expect(response.status).toBe(200);
+	return response.text();
+}
+
+/** What the page tells someone, in its alert. */
+function alertOf(html: string) {
+	return /<p role="alert"[^>]*>([^<]*)</.exec(html)?.[1] ?? null;
+}
+
 /** An address that only looks like one the list names, by its domain or by itself. */
 const NEAR_MISSES = [
 	"x@evilstudy.example",
@@ -272,16 +315,35 @@ describe("the sign-up form on a server with a list", () => {
 		["an address at a listed domain", "typed@study.example"],
 		...NEAR_MISSES.map((email) => ["one that only looks listed", email]),
 	])("refuses %s (%s), and leaves nothing behind", async (_which, email) => {
-		const before = await rows(email);
-		const response = await signUp(email);
-		expect(response.status).toBe(403);
-		expect(await response.json()).toEqual(REFUSAL);
-		expect(response.headers.getSetCookie()).toEqual([]);
-		expect(await rows(email)).toEqual(before);
-		expect(before.hasAccount).toBe(false);
+		expect((await rows(email)).hasAccount).toBe(false);
+		await expectFormRefused(email);
 	});
 
-	it("refuses before reading the rest of what was sent", async () => {
+	it("refuses an invited address too, which would otherwise be in ahead of its owner", async () => {
+		const email = "invited-typed@elsewhere.example";
+		await invite(email, "invites-typed");
+		await expectFormRefused(email);
+		expect((await rows(email)).hasAccount).toBe(false);
+	});
+
+	it("so nobody gets in by typing, to make a workspace and invite the next address", async () => {
+		// What a typed, invited address could do before: a session at once, then a workspace of
+		// its own, then an invitation to any other address, which came in the same way.
+		const first = "chain-one@elsewhere.example";
+		await invite(first, "chain");
+		const typed = await signUp(first);
+		expect(typed.status).toBe(403);
+		const cookie = cookieOf(typed);
+		expect(await isSignedIn(cookie)).toBe(false);
+		const workspace = await authApi(
+			"/organization/create",
+			{ name: "chain-two", slug: "chain-two" },
+			{ cookie },
+		);
+		expect(workspace.status).toBe(401);
+	});
+
+	it("refuses before reading what was sent, whatever it is", async () => {
 		for (const body of [{}, { email: 7 }, { email: "stranger@elsewhere.example", name: "" }]) {
 			const response = await authApi("/sign-up/email", body);
 			expect(response.status).toBe(403);
@@ -334,7 +396,7 @@ describe("the provider on a server with a list", () => {
 	it("sends a refusal that names no page of its own to the sign-in page all the same", async () => {
 		const email = "nowhere-to-go@elsewhere.example";
 		const before = await rows(email);
-		const { location, cookie } = await throughProvider(email, {}, null);
+		const { location, cookie } = await throughProvider(email, {}, { errorCallbackURL: null });
 		expect(`${location.origin}${location.pathname}`).toBe(`${origin}/login`);
 		expect(location.searchParams.get("error")).toBe("SIGN_UP_CLOSED");
 		expect(await isSignedIn(cookie)).toBe(false);
@@ -377,27 +439,12 @@ describe("someone who has an account, on a server with a list that does not name
 	it("still signs in through the provider", async () => {
 		const email = "provider-before@elsewhere.example";
 		subjects += 1;
-		const sub = `subject-${subjects}`;
-		const person = { sub, name: "Pat Provider", email, email_verified: true };
+		const person = { sub: `subject-${subjects}`, name: "Pat", email, email_verified: true };
 		// Their account was made while the server had no list.
-		const client = newClient();
-		const pressed = await mail.fetchIn(OPEN, `${origin}/api/auth/sign-in/social`, {
-			method: "POST",
-			headers: { origin, "cf-connecting-ip": client, "content-type": "application/json" },
-			body: JSON.stringify({ provider: "oidc", callbackURL: "/" }),
-		});
-		const authorize = new URL(((await pressed.json()) as { url: string }).url);
-		const query = new URLSearchParams({
-			code: provider.grant(authorize, person),
-			state: authorize.searchParams.get("state") ?? "",
-			iss: OIDC.issuer,
-		});
-		const first = await mail.fetchIn(OPEN, `${origin}/api/auth/callback/oidc?${query}`, {
-			headers: { cookie: cookieOf(pressed), "cf-connecting-ip": client },
-		});
-		expect(first.status).toBe(302);
+		await expectAdmitted(email, () =>
+			through("oidc", (url) => provider.grant(url, person), { isolate: OPEN }),
+		);
 		const made = await rows(email);
-		expect(made.hasAccount).toBe(true);
 
 		const { location, cookie } = await through("oidc", (url) => provider.grant(url, person));
 		expect(location.pathname).toBe("/");
@@ -407,28 +454,31 @@ describe("someone who has an account, on a server with a list that does not name
 });
 
 describe("an invitation on a server with a list", () => {
-	it("lets the invited address make its account with a password, though no list names it", async () => {
-		const email = "invited-typed@elsewhere.example";
-		await invite(email, "invites-typed");
-		const response = await signUp(email);
-		expect(response.status).toBe(200);
-		expect(await isSignedIn(cookieOf(response))).toBe(true);
-		expect((await rows(email)).hasAccount).toBe(true);
-	});
-
-	it("lets the invited address in through the provider, verified there or not", async () => {
+	it("lets the invited address in through the provider that verified it, though no list names it", async () => {
 		await invite("invited-oidc@elsewhere.example", "invites-oidc");
 		await expectAdmitted("invited-oidc@elsewhere.example", () =>
-			throughProvider("Invited-OIDC@elsewhere.example", { email_verified: false }),
+			throughProvider("Invited-OIDC@elsewhere.example"),
 		);
+	});
+
+	it("lets the invited address in through GitHub, which verified it", async () => {
+		await invite("invited-github@elsewhere.example", "invites-github");
+		await expectAdmitted("invited-github@elsewhere.example", () =>
+			throughGitHub("invited-github@elsewhere.example"),
+		);
+	});
+
+	it("lets it in through neither when they did not verify it", async () => {
+		const email = "invited-unproved@elsewhere.example";
+		await invite(email, "invites-unproved");
+		await expectRefused(email, () => throughProvider(email, { email_verified: false }));
+		await expectRefused(email, () => throughGitHub(email, false));
 	});
 
 	it("lets nobody else in", async () => {
 		await invite("invited-one@elsewhere.example", "invites-one");
 		for (const email of ["invited-two@elsewhere.example", "xinvited-one@elsewhere.example"]) {
-			const response = await signUp(email);
-			expect(response.status).toBe(403);
-			expect(await response.json()).toEqual(REFUSAL);
+			await expectRefused(email, () => throughProvider(email));
 		}
 	});
 
@@ -441,36 +491,72 @@ describe("an invitation on a server with a list", () => {
 			const email = `invited-${state}@elsewhere.example`;
 			const id = await invite(email, `invites-${state}`);
 			await mail.db.prepare(`UPDATE invitation SET ${change} WHERE id = ?`).bind(id).run();
-			const before = await rows(email);
-
-			const typed = await signUp(email);
-			expect(typed.status, state).toBe(403);
-			expect(await typed.json()).toEqual(REFUSAL);
 			await expectRefused(email, () => throughProvider(email));
-			expect(await rows(email)).toEqual(before);
 		}
 	});
+});
 
-	it("answers an invited address that has an account as one that was never invited", async () => {
-		const email = "invited-here-already@elsewhere.example";
-		await invite(email, "invites-taken");
-		expect((await signUp(email)).status).toBe(200);
+describe("a setting that is there with nothing in it", () => {
+	it("closes the form, rather than opening the server", async () => {
+		await expectFormRefused("anyone-at-all@elsewhere.example", EMPTIED);
+	});
+
+	it("names nobody, so a verified address gets in only by an invitation", async () => {
+		await expectRefused("ada@example.com.example", () =>
+			throughProvider("ada@example.com.example", {}, { isolate: EMPTIED }),
+		);
+		await invite("invited-emptied@elsewhere.example", "invites-emptied");
+		await expectAdmitted("invited-emptied@elsewhere.example", () =>
+			throughProvider("invited-emptied@elsewhere.example", {}, { isolate: EMPTIED }),
+		);
+	});
+
+	it("says on the sign-in page that sign-up is closed", async () => {
+		const html = await page("/login", EMPTIED);
+		expect(html).toContain(CLOSED_WORDS);
+		expect(html).not.toContain("Create an account");
+	});
+
+	it("tells whoever runs the server, who may have meant to open it", async () => {
+		const told = mail.logs.filter(({ message }) => message.includes("names nobody"));
+		expect(told.length).toBeGreaterThan(0);
+		for (const { level, message } of told) {
+			expect(level).toBe("warn");
+			expect(message).toContain("SIGN_UP_ALLOW");
+			expect(message).toContain("Remove the setting to open sign-up");
+		}
+	});
+});
+
+describe("what the closed answer does and does not hide", () => {
+	it("sends someone whose address has an account they cannot be linked to back with another code", async () => {
+		// Not hidden from whoever a provider vouches for: Better Auth answers before any account
+		// would be made. The address has a password and has not been verified here.
+		const email = "has-password@elsewhere.example";
+		expect((await signUp(email, OPEN)).status).toBe(200);
 		const before = await rows(email);
 
-		const again = await signUp(email);
-		expect(again.status).toBe(403);
-		expect(await again.json()).toEqual(REFUSAL);
+		const { location, cookie } = await throughProvider(email);
+		expect(location.pathname).toBe("/login");
+		expect(location.searchParams.get("error")).toBe("account_not_linked");
+		expect(await isSignedIn(cookie)).toBe(false);
 		expect(await rows(email)).toEqual(before);
+	});
+
+	it("reads the same on the sign-in page either way", async () => {
+		const closed = alertOf(await page("/login?error=SIGN_UP_CLOSED"));
+		expect(closed).toBe(CLOSED_WORDS);
+		expect(alertOf(await page("/login?error=account_not_linked"))).toBe(closed);
+	});
+
+	it("still tells someone on a server without a list why their account was not linked", async () => {
+		expect(alertOf(await page("/login?error=account_not_linked", OPEN))).toContain(
+			"already has an account",
+		);
 	});
 });
 
 describe("the sign-in page", () => {
-	async function page(path: string, isolate = 0) {
-		const response = await mail.fetchIn(isolate, `${origin}${path}`);
-		expect(response.status).toBe(200);
-		return response.text();
-	}
-
 	it("says accounts are by invitation, links to where to ask, and offers no sign-up", async () => {
 		const html = await page("/login");
 		expect(html).toContain(CLOSED_WORDS);
@@ -480,14 +566,19 @@ describe("the sign-in page", () => {
 		expect(html).toContain("Continue with Gateweave");
 	});
 
-	it("still shows the form to someone an invitation sent", async () => {
+	it("offers no sign-up to someone an invitation's old link sent either", async () => {
 		const html = await page("/login?mode=sign-up&email=invited%40elsewhere.example");
-		expect(html).toContain("Create your account");
+		expect(html).not.toContain("Create your account");
+		expect(html).not.toContain("Create an account");
+		expect(html).toContain("Sign in to Gateweave Mail");
+		expect(html).toContain(
+			"Invited? Continue with Gateweave or GitHub, under the address your invitation names.",
+		);
 	});
 
 	it("has words for someone a provider sent back refused", async () => {
 		const html = await page("/login?error=SIGN_UP_CLOSED&error_description=Anything+at+all");
-		expect(html).toContain('role="alert"');
+		expect(alertOf(html)).toBe(CLOSED_WORDS);
 		expect(html).not.toContain("Anything at all");
 	});
 
@@ -496,14 +587,45 @@ describe("the sign-in page", () => {
 		expect(html).toContain("Create an account");
 		expect(html).not.toContain("by invitation");
 		expect(html).not.toContain("Ask for access");
+		expect(await page("/login?mode=sign-up", OPEN)).toContain("Create your account");
 	});
 });
 
-describe("a server without a list", () => {
+describe("an invitation's page", () => {
+	it("sends someone new to sign in, not to a form that would refuse them", async () => {
+		const id = await invite("invited-page@elsewhere.example", "invites-page");
+		const html = await page(`/invite/${id}`);
+		expect(html).toContain("invited-page@elsewhere.example");
+		expect(html).not.toContain("Create an account");
+		expect(html).toContain("continue with the sign-in provider");
+	});
+
+	it("is as it always was on a server without a list", async () => {
+		const id = await invite("invited-open-page@elsewhere.example", "invites-open-page");
+		expect(await page(`/invite/${id}`, OPEN)).toContain("Create an account");
+	});
+});
+
+describe("a server without the setting", () => {
 	it("takes anyone's sign-up, as before", async () => {
 		const response = await signUp("anyone@elsewhere.example", OPEN);
 		expect(response.status).toBe(200);
 		expect(await isSignedIn(cookieOf(response))).toBe(true);
+	});
+
+	it("lets an invited address make its account with a password, as before", async () => {
+		await invite("invited-open@elsewhere.example", "invites-open");
+		expect((await signUp("invited-open@elsewhere.example", OPEN)).status).toBe(200);
+	});
+
+	it("takes anyone the provider knows, verified there or not", async () => {
+		await expectAdmitted("unverified-open@elsewhere.example", () =>
+			throughProvider(
+				"unverified-open@elsewhere.example",
+				{ email_verified: false },
+				{ isolate: OPEN },
+			),
+		);
 	});
 
 	it("still says so when an address has an account", async () => {
@@ -516,11 +638,11 @@ describe("a server without a list", () => {
 
 describe("the list itself", () => {
 	it("tells whoever runs the server how many entries it could not use, and not which", async () => {
-		const told = mail.logs.filter(({ message }) => message.includes("SIGN_UP_ALLOW"));
+		const told = mail.logs.filter(({ message }) => message.includes("ignored"));
 		expect(told.length).toBeGreaterThan(0);
 		for (const { level, message } of told) {
 			expect(level).toBe("warn");
-			expect(message).toContain("ignored 1 of its entries");
+			expect(message).toContain("SIGN_UP_ALLOW: ignored 1 of its entries");
 			expect(message).not.toContain("not-an-entry");
 			expect(message.toLowerCase()).not.toContain("ada@example.com");
 		}

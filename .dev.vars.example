@@ -18,7 +18,8 @@ BETTER_AUTH_SECRET=
 
 # Optional: closes sign-up. Addresses and @domains, separated by commas or spaces, that may make
 # an account by signing in through GitHub or the provider above, which prove an address. Invited
-# addresses still get in, and anyone may sign up when it is unset. See docs/self-hosting.md.
+# addresses get in the same way, and the sign-up form then makes no account. Anyone may sign up
+# only while this line is left out: an empty value closes sign-up. See docs/self-hosting.md.
 # SIGN_UP_ALLOW=you@example.com, @example.org
 # Optional: an https address where people can ask for an account, linked while sign-up is closed.
 # SIGN_UP_REQUEST_URL=

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isListed, parseAllowList } from "./sign-up-allow";
+import { isListed, namesNobody, parseAllowList } from "./sign-up-allow";
 
 function listed(setting: string, email: string) {
 	const list = parseAllowList(setting);
@@ -8,10 +8,23 @@ function listed(setting: string, email: string) {
 }
 
 describe("parseAllowList", () => {
-	it("makes no list from nothing, so sign-up stays open", () => {
+	it("makes no list only from a setting that is not there, so sign-up stays open", () => {
 		expect(parseAllowList(undefined)).toBeNull();
-		expect(parseAllowList("")).toBeNull();
-		expect(parseAllowList(" ,\n, ")).toBeNull();
+		expect(parseAllowList(null)).toBeNull();
+	});
+
+	it("makes a list of nobody from a setting that is there and empty, which closes sign-up", () => {
+		for (const setting of ["", " ", ",", " ,\n, "]) {
+			const list = parseAllowList(setting);
+			expect(list, JSON.stringify(setting)).toEqual({
+				addresses: new Set(),
+				domains: new Set(),
+				ignored: 0,
+			});
+			expect(list && namesNobody(list)).toBe(true);
+		}
+		const some = parseAllowList("ada@example.com");
+		expect(some && namesNobody(some)).toBe(false);
 	});
 
 	it("reads addresses and domains, separated by commas or spaces, in any case", () => {

@@ -17,7 +17,8 @@ declare namespace Cloudflare {
 		OIDC_PROVIDER_NAME?: string;
 		/**
 		 * Who may make an account: addresses and `@domain`s, separated by commas or spaces. Anyone
-		 * may when unset. See "Closing sign-up" in docs/self-hosting.md.
+		 * may only when it is not set at all: set and empty, nobody but invited addresses may. See
+		 * "Closing sign-up" in docs/self-hosting.md.
 		 */
 		SIGN_UP_ALLOW?: string;
 		/** Where to ask for an account, linked from the sign-in page while sign-up is closed. */

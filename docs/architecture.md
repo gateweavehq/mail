@@ -1047,7 +1047,12 @@ Sign-up is open unless a deployment sets `SIGN_UP_ALLOW`, a list of addresses an
 (`apps/web/src/lib/sign-up-allow.ts`). It is a setting and not a table, because it is the smallest
 thing that can close a server: nothing to migrate, no page that changes it and so no session that
 could, and unset it changes nothing. Gateweave Cloud runs with it, and Gateweave Track, which has
-an owner and a page for the same purpose, is where the rules come from.
+an owner and a page for the same purpose, is where the rules started from.
+
+Only a setting that is not there is open. One that is there and empty, or holds nothing usable, is
+a list of nobody (`parseAllowList`), and the log says so: emptying a setting must not open a
+server, and a deployment's plain variables stay through a deploy (`keep_vars`), so an emptied one
+would otherwise stay open unnoticed.
 
 - **One place decides.** Better Auth makes every account through `internalAdapter.createUser`,
   which runs the `user.create.before` hook in `auth/config.ts` before it writes anything: the
@@ -1056,28 +1061,43 @@ an owner and a page for the same purpose, is where the rules come from.
   user is the first of the three to be written, on every path.
   Agents are the one other maker of `user` rows (`auth/agents.ts`): an owner or admin makes them
   at `@agents.invalid`, they never sign in, and the list has nothing to say about them.
-- **The list counts only for a proved address.** `emailVerified` reaches the hook as `true` only
+- **Only a proved address makes an account.** `emailVerified` reaches the hook as `true` only
   when GitHub says the address is verified or the provider's `email_verified` is a JSON `true`; the
-  sign-up form's is always `false`. A typed address proves nothing, so a list that counted for one
-  would let in whoever typed a listed address first, and everyone who made one up at a listed
-  domain. Comparison is of the whole address or the whole domain after the last `@`, in lowercase,
-  as accounts are stored: no suffix, no subdomain.
-- **An invitation is a way in, as it was.** A pending, unexpired invitation to any workspace admits
-  its address, typed or proved, which is Track's rule. An admin named that one address, the
-  invitation was sent to it where email is on, and joining then still wants the address verified
-  (`requireEmailVerificationOnInvitation`).
-- **Every refusal reads the same.** The answer is `403` with the code `SIGN_UP_CLOSED` and one
-  sentence. For the sign-up form, a hook on the request asks before Better Auth looks the address
-  up, and refuses an address that has an account in the same words, an invited one too, so the form
-  cannot be used to ask who is here. Someone coming back from GitHub or the provider is sent to the
-  sign-in page with the code, which `signInRefusal` turns into the same sentence. `onAPIError.errorURL`
-  is `/login`, so even a sign-in that did not name a page to come back to never ends on Better
-  Auth's own error page.
+  sign-up form's is always `false`. A typed address proves nothing, and Mail gives a new account a
+  session at once, so one that counted would let in whoever typed a listed or invited address
+  first, and everyone who made one up at a listed domain. So on a closed server the sign-up form
+  makes no account for anyone: a hook on the request refuses it before Better Auth reads what was
+  sent, and the database hook would refuse it again. Comparison is of the whole address or the
+  whole domain after the last `@`, in lowercase, as accounts are stored: no suffix, no subdomain.
+- **An invitation admits its address, once a provider has proved it.** A pending, unexpired
+  invitation to any workspace is a way in for an address no list names. This is narrower than
+  Track's rule, which takes an invited address typed: there, the account would exist before
+  anything showed whose address it is, and it could make a workspace of its own and invite the
+  next address the same way.
+- **Everyone with an account can admit people.** Any account can create a workspace and invite any
+  address, and the invitation admits it. That is known and kept, as in Track: the list keeps out
+  strangers, not the guests of those it let in. Nothing limits it yet but the length of the list.
+- **Every refusal reads the same, as far as Mail decides it.** The answer is `403` with the code
+  `SIGN_UP_CLOSED` and one sentence, and the form gives it to every request, so it cannot be used
+  to ask who is here. Someone coming back from GitHub or the provider is sent to the sign-in page
+  with the code, which `signInRefusal` turns into the same sentence. `onAPIError.errorURL` is
+  `/login`, so even a sign-in that did not name a page to come back to never ends on Better Auth's
+  own error page.
+- **What that does not hide.** Someone a provider vouches for, whose address has an account here
+  that the sign-in cannot be linked to (one with a password and an address not verified in Mail,
+  say), comes back with `error=account_not_linked` and not `SIGN_UP_CLOSED`: Better Auth answers
+  that before any account would be made, whether or not the provider says the address is verified.
+  So whoever can make a provider name an address of their choosing can tell that it has an
+  account. That takes a provider that hands over an address its person has not proved to it, which
+  GitHub does not and which is the operator's to choose. It was so before there was a list. On a
+  closed server the sign-in page shows both codes as the same sentence; the address bar still
+  differs.
 - **Having an account is enough to sign in.** Signing in makes no account, so the hook never runs
   for someone who has one, and removing an entry removes nobody.
-- **The page only follows.** `getAuthOptions` tells the sign-in page that sign-up is closed, and it
-  then says so, links to `SIGN_UP_REQUEST_URL` if that is an https address, and offers "Create an
-  account" only to someone an invitation sent there (`mode=sign-up`).
+- **The pages only follow.** `getAuthOptions` tells the sign-in page that sign-up is closed, and it
+  then says so, links to `SIGN_UP_REQUEST_URL` if that is an https address, never offers "Create
+  an account", whatever the link that led there asks, and tells an invited person to continue with
+  the provider. An invitation's page sends someone new to sign in for the same reason.
 
 ### Deleting an account
 

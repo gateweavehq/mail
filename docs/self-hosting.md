@@ -426,31 +426,37 @@ that domain, not at its subdomains.
 pnpm wrangler secret put SIGN_UP_ALLOW
 ```
 
-With it set, a new account is made only for:
+With it set, new people come in through GitHub or your
+[OpenID Connect provider](#sign-in-through-an-openid-connect-provider) only, so set one of them up
+first. The sign-up form makes no account for anyone: a typed address proves nothing, so whoever
+knew or guessed a listed or invited address, or made one up at a listed domain, would get in ahead
+of its owner. A new account is made only for an address that comes verified from GitHub or the
+provider, and is:
 
-- **an address on the list that a sign-in provider proved**: one that comes verified from GitHub
-  or from your [OpenID Connect provider](#sign-in-through-an-openid-connect-provider). The list
-  does not count for an address typed into the sign-up form, which proves nothing: anyone who knew
-  or guessed a listed address, or made one up at a listed domain, would get in ahead of its owner.
-  So the list needs GitHub or a provider set up. Without either, people join by invitation only.
-- **an address with a pending invitation to a workspace** that has not expired, by password or
-  through a provider, as before. Any workspace's owner or admin can invite, so close sign-up only if the people who
-  already have accounts may let others in. With [email](#email) on, an invited account still has
-  to verify its address before it can join.
+- **on the list**, or
+- **invited to a workspace**, by an invitation that is pending and has not expired. The invited
+  person continues with the provider under the invited address, and then accepts.
+
+**Everyone with an account can let others in.** Anyone who has an account can create a workspace
+and invite any address to it, and that invitation admits its address. This is a knowing choice,
+the same as Gateweave Track's: closing sign-up keeps strangers out, not the guests of the people
+you let in. There is no setting for less yet, so if you want less, keep the list short.
 
 People who already have an account are not affected, whatever the list says, and taking an entry
 off the list removes nobody. Everyone who is refused is told the same thing, that the server takes
-new accounts by invitation, whether or not the address has an account. The sign-in page says so
-too, and offers to create an account only to someone who comes from an invitation's "Create an
-account". Set `SIGN_UP_REQUEST_URL` to an `https` address, such as a form or a waitlist, and the
-page links to it as "Ask for access".
+new accounts by invitation. The sign-in page says so too, never offers to create an account, and
+tells someone who was invited to continue with the provider. Set `SIGN_UP_REQUEST_URL` to an
+`https` address, such as a form or a waitlist, and the page links to it as "Ask for access".
+
+Only a setting that is not there leaves sign-up open. One that is there with nothing usable in it,
+the empty text included, closes sign-up to everyone but invited addresses, and the Worker's log
+says so once for each isolate: to open sign-up again, delete the setting rather than emptying it.
+An entry that is neither an address nor an `@domain` lets nobody in, and the log says how many
+such entries there are, not which.
 
 Make your own account before you set the list, or put your address on it and sign in through
-GitHub or the provider. An entry that is neither an address nor an `@domain` lets nobody in, and
-the Worker's log says how many such entries there are, not which. A setting with nothing usable in
-it closes sign-up to everyone but invited addresses. The list holds addresses of people who may
-have no account, so it is personal data in your Worker's settings: take an entry out when someone
-asks to be forgotten.
+GitHub or the provider. The list holds addresses of people who may have no account, so it is
+personal data in your Worker's settings: take an entry out when someone asks to be forgotten.
 
 ## When someone deletes their account
 
