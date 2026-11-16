@@ -433,16 +433,17 @@ With it set, a new account is made only for:
   does not count for an address typed into the sign-up form, which proves nothing: anyone who knew
   or guessed a listed address, or made one up at a listed domain, would get in ahead of its owner.
   So the list needs GitHub or a provider set up. Without either, people join by invitation only.
-- **an address with a pending invitation to a workspace**, by password or through a provider, as
-  before. Any workspace's owner or admin can invite, so close sign-up only if the people who
+- **an address with a pending invitation to a workspace** that has not expired, by password or
+  through a provider, as before. Any workspace's owner or admin can invite, so close sign-up only if the people who
   already have accounts may let others in. With [email](#email) on, an invited account still has
   to verify its address before it can join.
 
 People who already have an account are not affected, whatever the list says, and taking an entry
 off the list removes nobody. Everyone who is refused is told the same thing, that the server takes
 new accounts by invitation, whether or not the address has an account. The sign-in page says so
-too and no longer offers to create an account. Set `SIGN_UP_REQUEST_URL` to an `https` address,
-such as a form or a waitlist, and the page links to it as "Ask for access".
+too, and offers to create an account only to someone who comes from an invitation's "Create an
+account". Set `SIGN_UP_REQUEST_URL` to an `https` address, such as a form or a waitlist, and the
+page links to it as "Ask for access".
 
 Make your own account before you set the list, or put your address on it and sign in through
 GitHub or the provider. An entry that is neither an address nor an `@domain` lets nobody in, and
