@@ -7,4 +7,4 @@ export function secretNames(result: {
 	stdout: string;
 	stderr: string;
 }): string[];
-export function refusal(missing: readonly string[], env: string): string;
+export function refusal(missing: readonly string[], env: string, name: string): string;

@@ -13,7 +13,9 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-const { environment, required } = JSON.parse(
+// `worker` is the name wrangler.jsonc gives that environment's Worker, which a test holds equal:
+// Wrangler finds the Worker from the environment, and the name is for the words below.
+const { environment, worker, required } = JSON.parse(
 	readFileSync(new URL("./cloud-secrets.json", import.meta.url), "utf8"),
 );
 
@@ -40,9 +42,9 @@ export function secretNames({ status, stdout, stderr }) {
 }
 
 /** What the release is told when it is stopped. */
-export function refusal(missing, env) {
+export function refusal(missing, env, name) {
 	return [
-		`This release is stopped: the "${env}" Worker lacks ${missing.length === 1 ? "a secret" : "secrets"} it must have before it answers anyone.`,
+		`This release is stopped: the Worker "${name}" (the "${env}" environment) lacks ${missing.length === 1 ? "a secret" : "secrets"} it must have before it answers anyone.`,
 		...missing.map((name) => `  - ${name}`),
 		"Without them it would go live with sign-up open, no sign-in provider, or mail kept unsealed.",
 		`Set each one, then run the release again:  pnpm wrangler secret put <NAME> --env ${env}`,
@@ -67,8 +69,8 @@ function listSecrets() {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
 	const missing = missingSecrets(required, secretNames(listSecrets()));
 	if (missing.length > 0) {
-		console.error(refusal(missing, environment));
+		console.error(refusal(missing, environment, worker));
 		process.exit(1);
 	}
-	console.log(`The "${environment}" Worker has the ${required.length} secrets a release needs.`);
+	console.log(`The Worker "${worker}" has the ${required.length} secrets a release needs.`);
 }

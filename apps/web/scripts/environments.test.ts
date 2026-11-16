@@ -4,10 +4,11 @@ import { loadEnv } from "vite";
 import { describe, expect, it } from "vitest";
 import { unstable_readConfig } from "wrangler";
 import manifest from "../package.json" with { type: "json" };
+import guard from "./cloud-secrets.json" with { type: "json" };
 
 // `vite build --mode <env>` takes the Wrangler environment from apps/web/.env.<env>. Without that
-// file the build silently targets the top-level Worker, which has the name of Gateweave's
-// production, and the `wrangler deploy` that follows would replace it.
+// file the build silently targets the top level, and the `wrangler deploy` that follows would
+// deploy that instead of the environment: a Worker nobody meant, with resources of its own.
 const web = fileURLToPath(new URL("..", import.meta.url));
 const config = fileURLToPath(new URL("../../../wrangler.jsonc", import.meta.url));
 
@@ -34,13 +35,25 @@ describe("environment builds", () => {
 	});
 
 	// Gateweave Cloud's production deploys the `cloud` environment, which the build, the deploy
-	// script and Wrangler take from CLOUDFLARE_ENV (.github/workflows/deploy.yml). It is the Worker
-	// the top level names, with the same bindings, so the code finds what it expects, and its own
-	// database, bucket and queue, so a self-hoster's names are never Gateweave's.
-	it("deploys Cloud's production as the top-level Worker, with resources of its own", () => {
+	// script and Wrangler take from CLOUDFLARE_ENV (.github/workflows/deploy.yml). It has the top
+	// level's bindings, so the code finds what it expects, and its own database, bucket and queue.
+	//
+	// Its name must be its own too. Were it the top level's, a plain `pnpm run deploy` in
+	// Gateweave's account, or the Deploy button there, whose form picks an existing Worker of the
+	// same name, would put the top level's config on production: a new, empty database and bucket
+	// outside the EU, in place of the ones that hold everyone's mail. With a name of its own, such
+	// a deploy makes a second Worker and touches nothing. The same goes for staging's.
+	it("gives Cloud's production a Worker name no other deploy has, and resources of its own", () => {
 		const production = unstable_readConfig({ config }, { hideWarnings: true });
 		const cloud = unstable_readConfig({ config, env: "cloud" }, { hideWarnings: true });
-		expect(cloud.name).toBe(production.name);
+		const rehearsal = unstable_readConfig({ config, env: "staging" }, { hideWarnings: true });
+		expect(cloud.name).toBe("gateweave-mail-cloud");
+		expect(cloud.name).not.toBe(production.name);
+		expect(cloud.name).not.toBe(rehearsal.name);
+		expect(rehearsal.name).not.toBe(production.name);
+		// The guard looks at the Worker a release deploys, and says its name.
+		expect(guard.worker).toBe(cloud.name);
+		expect(guard.environment).toBe("cloud");
 		expect(cloud.durable_objects.bindings).toEqual(production.durable_objects.bindings);
 		const bindings = ({ d1_databases, r2_buckets, send_email }: typeof production) => [
 			...d1_databases.map((d1: { binding: string }) => d1.binding),

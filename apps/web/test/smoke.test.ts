@@ -1,5 +1,3 @@
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { CHECKS, type Deployment, isOwnAnswer, smokeChecks } from "../smoke/checks";
 import { startMail } from "./mail-worker";
@@ -32,12 +30,7 @@ describe("the smoke checks, on an open deployment with a sign-in provider", () =
 	});
 });
 
-// Closing sign-up (`SIGN_UP_ALLOW`) came in its own pull request, which merges before this one.
-// Until the Worker has it, a deployment with the setting is open, and there is nothing closed to
-// check: the stand-ins below hold the checks to their word meanwhile.
-const closes = existsSync(resolve(import.meta.dirname, "../src/lib/sign-up-allow.ts"));
-
-describe.runIf(closes)("the smoke checks, on a deployment that closed sign-up", () => {
+describe("the smoke checks, on a deployment that closed sign-up", () => {
 	let mail: Mail;
 
 	beforeAll(async () => {

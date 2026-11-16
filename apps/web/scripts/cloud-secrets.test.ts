@@ -44,8 +44,8 @@ describe("the secrets Cloud's production must have before a release", () => {
 	it("are all missing on a Worker that does not exist yet, which a first release would make", () => {
 		// Wrangler's own words, with an environment (measured with 4.160 on 2026-11-16) and without.
 		for (const stderr of [
-			'\u001b[31m✘ \u001b[41;31m[\u001b[41;97mERROR\u001b[41;31m]\u001b[0m \u001b[1mWorker "gateweave-mail" (env: cloud) not found.\u001b[0m\n\n  If this is a new Worker, run `wrangler deploy` first to create it.',
-			'✘ [ERROR] Worker "gateweave-mail" not found.',
+			'\u001b[31m✘ \u001b[41;31m[\u001b[41;97mERROR\u001b[41;31m]\u001b[0m \u001b[1mWorker "gateweave-mail-cloud" (env: cloud) not found.\u001b[0m\n\n  If this is a new Worker, run `wrangler deploy` first to create it.',
+			'✘ [ERROR] Worker "gateweave-mail-cloud" not found.',
 		]) {
 			const names = secretNames({ status: 1, stdout: "", stderr });
 			expect(names).toEqual([]);
@@ -68,7 +68,8 @@ describe("the secrets Cloud's production must have before a release", () => {
 	});
 
 	it("say which are missing and how to set them, and never a value", () => {
-		const words = refusal(["SIGN_UP_ALLOW", "SECRETS_KEY"], "cloud");
+		const words = refusal(["SIGN_UP_ALLOW", "SECRETS_KEY"], guard.environment, guard.worker);
+		expect(words).toContain('the Worker "gateweave-mail-cloud" (the "cloud" environment)');
 		expect(words).toContain("  - SIGN_UP_ALLOW\n  - SECRETS_KEY");
 		expect(words).toContain("pnpm wrangler secret put <NAME> --env cloud");
 		expect(words).toContain("Nothing was migrated or deployed");

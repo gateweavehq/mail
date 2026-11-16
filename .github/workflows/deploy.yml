@@ -62,8 +62,9 @@ jobs:
       - run: pnpm install --frozen-lockfile
       # Before anything changes. Production must never go live open: a first deploy of a Worker
       # with no secrets would answer with sign-up open to anyone, no sign-in provider and mail kept
-      # unsealed. This lists the Worker's secrets by name and stops the release unless every one in
-      # apps/web/scripts/cloud-secrets.json is there. A Worker that does not exist yet has none.
+      # unsealed. This lists the secrets of the Worker `gateweave-mail-cloud` by name and stops the
+      # release unless every one in apps/web/scripts/cloud-secrets.json is there. A Worker that
+      # does not exist yet has none.
       - name: Check that the Worker has its secrets
         run: pnpm --filter @gateweave/mail-web deploy:guard:cloud
       # Also before anything changes: the queue for delivery events, made in the EU if it is

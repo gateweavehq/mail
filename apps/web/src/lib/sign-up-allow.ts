@@ -11,15 +11,15 @@ export interface AllowList {
 	ignored: number;
 }
 
-/**
- * What every refused address is told, on the sign-in page and by the server alike, so that the
- * words say nothing about any one address.
- */
 /** Whether a list names nobody at all, so that only invited addresses get in. */
 export function namesNobody(list: AllowList): boolean {
 	return list.addresses.size === 0 && list.domains.size === 0;
 }
 
+/**
+ * What every refused address is told, on the sign-in page and by the server alike, so that the
+ * words say nothing about any one address.
+ */
 export const SIGN_UP_CLOSED_MESSAGE =
 	"This server takes new accounts by invitation. If you already have an account, sign in.";
 
