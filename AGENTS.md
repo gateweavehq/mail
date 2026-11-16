@@ -252,6 +252,14 @@ These are load-bearing. Breaking one breaks users' data or security, usually sil
     values in after, escaped, so a value can't make a link, formatting or HTML; never join a value
     into a body before `formatted` reads it, and never allow a variable in a link's words or
     address. `send_template` sends through `access.outbox` like `send_email`, never around it.
+21. **A person's account is made only through Better Auth, where `SIGN_UP_ALLOW` is asked.** Its
+    `user.create.before` hook (`apps/web/src/server/auth/config.ts`) is the one place every such
+    path passes, and `mayMakeAccount` (`auth/sign-up.ts`) decides there: on a server with the
+    setting, only an address a provider proved makes an account, one the list names or a pending
+    invitation admits, and a typed one never does, so the sign-up form is refused for everyone.
+    Only a setting that is not there is open: an empty one is a list of nobody. Never insert a
+    person's `user` row around it, never compare an address by its ending, and keep every refusal
+    the same words and code, whether or not the address has an account.
 
 ## Code style
 

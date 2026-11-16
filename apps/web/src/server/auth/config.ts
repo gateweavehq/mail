@@ -5,6 +5,7 @@ import { betterAuth } from "better-auth/minimal";
 import { organization } from "better-auth/plugins";
 import { tanstackStartCookies } from "better-auth/tanstack-start";
 import { and, count, eq, gt } from "drizzle-orm";
+import type { AllowList } from "../../lib/sign-up-allow";
 import { slugProblem } from "../../lib/slug";
 import type { Database } from "../db";
 import { schema } from "../db";
@@ -16,6 +17,7 @@ import { deleteAccount } from "./delete-account";
 import { type OidcProvider, oidcDatabaseHooks, oidcSignIn } from "./oidc-sign-in";
 import { passwordTries, tellOfSpentTries } from "./password-tries";
 import { type ProviderSettings, providerKeys } from "./provider-keys";
+import { mayMakeAccount, SIGN_UP_CLOSED } from "./sign-up";
 
 export interface AuthConfig {
 	db: Database;
@@ -47,6 +49,8 @@ export interface AuthConfig {
 	removeAudience?: ((workspaceId: string) => Promise<void>) | undefined;
 	/** What workspaces' provider keys need. Without `secrets`, none can be added. */
 	providers?: ProviderSettings | undefined;
+	/** Who may make an account (the `SIGN_UP_ALLOW` setting). Anyone without it. */
+	signUpAllow?: AllowList | null | undefined;
 }
 
 /**
@@ -57,6 +61,7 @@ export interface AuthConfig {
  */
 export function createAuth(config: AuthConfig) {
 	const { mailer } = config;
+	const signUpAllow = config.signUpAllow ?? null;
 	const oidcHooks = oidcDatabaseHooks();
 
 	return betterAuth({
@@ -64,6 +69,10 @@ export function createAuth(config: AuthConfig) {
 		baseURL: config.baseURL,
 		database: drizzleAdapter(config.db, { provider: "sqlite", schema }),
 		telemetry: { enabled: false },
+		// Where a sign-in through GitHub or the provider comes back to when it is refused and did
+		// not say where itself, as a request the sign-in page did not make would not. Otherwise
+		// that is Better Auth's own error page, which shows the words in the link it was given.
+		onAPIError: { errorURL: "/login" },
 		// Better Auth only turns its limiter on by itself when NODE_ENV is "production", which a
 		// Worker never sets. Its built-in rules allow 3 sign-ins per 10 seconds per client. It
 		// stays on in local dev too, so what works there works deployed.
@@ -123,8 +132,21 @@ export function createAuth(config: AuthConfig) {
 				create: {
 					// A picture is fetched by the browser of everyone in someone's workspaces, so whoever
 					// chooses its address learns who is looking and from where. The form sends none.
-					before: async (_user, context) =>
-						context?.path === "/sign-up/email" ? { data: { image: null } } : undefined,
+					//
+					// Every way Better Auth makes an account comes through here, so this is where a
+					// server with a list refuses one: a password, GitHub, the provider, and whatever is
+					// added later. Nothing has been written yet, so a refusal leaves nothing behind.
+					// `emailVerified` is true here only when GitHub or the provider said so: the
+					// sign-up form's is always false, so this refuses it too, should the hook on the
+					// request below ever be passed by.
+					before: async (user, context) => {
+						const allowed = await mayMakeAccount(config.db, signUpAllow, {
+							email: user.email,
+							proved: user.emailVerified === true,
+						});
+						if (!allowed) throw APIError.from("FORBIDDEN", SIGN_UP_CLOSED);
+						return context?.path === "/sign-up/email" ? { data: { image: null } } : undefined;
+					},
 				},
 			},
 			account: oidcHooks.account,
@@ -163,6 +185,11 @@ export function createAuth(config: AuthConfig) {
 			before: createAuthMiddleware(async (ctx) => {
 				if (ctx.path === "/update-user") return { context: { body: validRename(ctx.body) } };
 				if (ctx.path === "/sign-up/email") {
+					// On a server with a list the form makes no account for anyone, listed or invited: a
+					// typed address proves nothing (`mayMakeAccount`). Refused here, before Better Auth
+					// reads what was sent or looks the address up, so that every request gets the one
+					// answer and it says nothing about who has an account.
+					if (signUpAllow) throw APIError.from("FORBIDDEN", SIGN_UP_CLOSED);
 					return { context: { body: { name: validName(ctx.body?.name) } } };
 				}
 				// Whoever knew the old password may be why it is changing, and may be the one asking.
