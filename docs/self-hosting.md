@@ -128,6 +128,32 @@ pnpm wrangler d1 create gateweave-mail --location apac
 Then pick it instead of **+ Create new** on the button's form, or put its id in `wrangler.jsonc` as
 `database_id`.
 
+### Keeping data in one jurisdiction
+
+Cloudflare can keep data inside the EU, the US or FedRAMP data centers. Each part of Mail is set
+on its own, and all of it before the first deploy: a database's, a bucket's and a queue's
+jurisdiction can't change once they exist, and a Durable Object in a jurisdiction is another
+object than the one of the same name outside it.
+
+- **The database**: `pnpm wrangler d1 create gateweave-mail --jurisdiction eu`, then use it as
+  above.
+- **Mail as it arrived**: `pnpm wrangler r2 bucket create gateweave-mail --jurisdiction eu`, and
+  `"jurisdiction": "eu"` on the `RAW_MAIL` binding in `wrangler.jsonc`.
+- **Delivery events**: `pnpm wrangler queues create gateweave-mail-events --jurisdiction eu`.
+  `pnpm run deploy` makes a missing queue there by itself when `wrangler.jsonc` sets the variable
+  below under `vars`.
+- **Mailboxes, webhooks, templates and rate limits**, which are Durable Objects: set
+  `DURABLE_OBJECT_JURISDICTION` to `eu`. Set it before the first mailbox exists. On a deployment
+  that already has mail, its mailboxes, webhooks and templates would seem empty, since the Worker
+  then looks for them in the jurisdiction, and nothing moves them there yet. A value Cloudflare
+  doesn't have is an error, not a place: nothing is kept anywhere else instead.
+
+Leave the variable out of `.dev.vars`: the local runtime has no jurisdictions and refuses one.
+
+If your people are far from the database, the Worker can run near it instead of near each of them,
+so the queries a request makes one after another don't each cross an ocean: set
+`"placement": { "region": "…" }` in `wrangler.jsonc` to a cloud region near the database.
+
 ## Where mail is kept
 
 Each message goes into the R2 bucket as it arrived, one object per message, and each mailbox's
@@ -247,6 +273,10 @@ because `wrangler.jsonc` sets `keep_vars`.
 | `LEGAL_NOTICE_URL`         | The address of your legal notice. See [below](#your-legal-pages).                                                                  |
 | `PRIVACY_POLICY_URL`       | The address of your privacy policy.                                                                                                |
 | `TERMS_URL`                | The address of your terms.                                                                                                         |
+
+One more, `DURABLE_OBJECT_JURISDICTION`, keeps mailboxes, webhooks, templates and rate limits in a
+jurisdiction such as `eu`. It belongs in `wrangler.jsonc` before the first deploy: see
+[Keeping data in one jurisdiction](#keeping-data-in-one-jurisdiction).
 
 ### Your own domain
 
@@ -421,6 +451,25 @@ to it are deleted from D1 at once. An account that is the only owner of a worksp
 until someone else owns it or it is deleted. Workspaces they belonged to stay with the people still
 in them. Cloudflare keeps point-in-time recovery for D1 (30 days on Workers Paid, 7 on Free), and
 restoring D1 to a time before a deletion brings the person back.
+
+## Gateweave Cloud
+
+Gateweave's own deployment is `https://mail.gateweave.com`, the `cloud` environment in
+`wrangler.jsonc`. It is the Worker the top level names, with resources of its own, so that
+everything it keeps stays in the EU: the database `gateweave-mail-eu`, the bucket
+`gateweave-mail-eu` and the queue `gateweave-mail-events-eu` were made with the `eu` jurisdiction,
+and its Durable Objects go there by `DURABLE_OBJECT_JURISDICTION`. The Worker itself runs in
+Frankfurt, near the database. Staging (`https://mail-staging.gateweave.com`) is the `staging`
+environment: every green build of `main` goes there, and its Durable Objects are still outside any
+jurisdiction.
+
+Publishing a GitHub release deploys that tag to production
+(`.github/workflows/deploy.yml`): the migrations are applied to the `cloud` database, the Worker
+is built and deployed with `CLOUDFLARE_ENV=cloud`, and then the smoke tests ask the live
+deployment what a stranger would (`MAIL_SMOKE_URL=https://mail.example.com pnpm test:smoke`): the
+sign-in page with its provider, and `/mcp` and `/api/v1` turning away whoever has no key. They
+sign in to nothing and change nothing, so you can run them against your own deployment too. None
+of this touches the top level, which is what the Deploy button and `pnpm run deploy` use.
 
 ## Updating
 

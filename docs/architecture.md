@@ -1083,6 +1083,33 @@ People change both on `/settings/account`, through Better Auth's `/update-user` 
 - **It ends every session,** whatever the request asks, since whoever knew the old password may be
   why it is changing and may be the one asking.
 
+## Where Durable Objects are kept
+
+A deployment can keep its Durable Objects in one of Cloudflare's jurisdictions, with
+`DURABLE_OBJECT_JURISDICTION` (`apps/web/src/server/jurisdiction.ts`). Gateweave Cloud's production
+sets `eu` in its `cloud` environment, beside a database, a bucket and a queue made there; see
+"Gateweave Cloud" in [self-hosting.md](self-hosting.md).
+
+- **Every id is made from `ownObjects`.** A namespace's `jurisdiction("eu")` is a namespace of its
+  own: the same name there is another object than outside it. So the five places that reach an
+  object by name (`mailboxStub`, `webhooksStub`, `audienceStub`, the rate limiter, and a mailbox
+  telling its workspace's webhooks of mail, from inside a Durable Object) all take their namespace
+  through `ownObjects`, never from the binding. One that did not would keep mail outside the
+  jurisdiction, in an object nothing else reaches. `jurisdiction.test.ts` reads the source for
+  a binding used any other way. Unset, `ownObjects` returns the binding itself, so nothing
+  changes for a deployment without the setting.
+- **Nothing is derived from an object's id but its name.** Objects read `ctx.id.name`, the
+  mailbox's or the workspace's id, and never the id's own text, which differs between
+  jurisdictions. What a workspace's webhooks seal is sealed with `SECRETS_KEY` and the workspace's
+  id, and R2 objects are named by workspace and mailbox, so neither depends on where an object is.
+- **A wrong value is an error.** One Cloudflare doesn't have throws wherever an object would be
+  reached, rather than keeping data somewhere else. Rate limits then count in each isolate, as
+  they do whenever their object can't be reached, and the log says why.
+- **Nothing moves an object yet.** The setting is for a deployment's first day. Setting it later
+  leaves every mailbox, webhook and template where it was, out of the Worker's sight. Local
+  workerd has no jurisdictions and refuses one, so tests show which namespace an id comes from, not
+  where an object ends up.
+
 ## Backups
 
 D1 can be backed up from outside the Worker, but the Durable Objects can't: only the Worker's own

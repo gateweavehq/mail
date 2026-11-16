@@ -53,6 +53,13 @@ declare namespace Cloudflare {
 		 * recipient is an address here goes straight to their mailboxes, without a provider.
 		 */
 		DIRECT_DELIVERY?: string;
+		/**
+		 * The jurisdiction this deployment's Durable Objects are kept in, such as `eu`: mailboxes,
+		 * workspaces' webhooks and audiences, and rate limits. Outside any when unset. Set it before
+		 * the first mailbox exists: the same name is another, empty object in each jurisdiction. A
+		 * value Cloudflare doesn't know is an error wherever an object is reached.
+		 */
+		DURABLE_OBJECT_JURISDICTION?: string;
 		/** Resend's API. `https://api.resend.com` when unset. The browser tests point it at a stand-in. */
 		RESEND_API_URL?: string;
 		/**

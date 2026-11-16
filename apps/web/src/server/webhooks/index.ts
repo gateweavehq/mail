@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { eq, isNull, ne, or, sql } from "drizzle-orm";
 import type { Database } from "../db";
 import { schema } from "../db";
+import { ownObjects } from "../jurisdiction";
 import { keysDone } from "../reseal-state";
 import { type SecretsKeySettings, secretsKeys } from "../secrets-key";
 
@@ -12,7 +13,7 @@ export const RESEAL_WEBHOOKS_PER_RUN = 200;
 
 /** The workspace's webhook object. Only the Worker reaches it, after checking who is asking. */
 export function webhooksStub(workspaceId: string) {
-	return env.WEBHOOKS.getByName(workspaceId);
+	return ownObjects(env.WEBHOOKS).getByName(workspaceId);
 }
 
 /** Removes a deleted workspace's webhooks, with their secrets and what they had not delivered. */

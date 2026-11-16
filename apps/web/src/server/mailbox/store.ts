@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { ownObjects } from "../jurisdiction";
 import type { Arrival, Begun } from "./durable-object";
 import {
 	cloudflareVerdict,
@@ -16,7 +17,8 @@ import { ownId, referencedIds } from "./thread";
 
 /** The mailbox's own instance. Only the Worker reaches it, after checking who is asking. */
 export function mailboxStub(mailboxId: string) {
-	return env.MAILBOX.get(env.MAILBOX.idFromName(mailboxId));
+	const mailboxes = ownObjects(env.MAILBOX);
+	return mailboxes.get(mailboxes.idFromName(mailboxId));
 }
 
 /** What storing asks of the mailbox a message is for: its stub, or the object itself. */

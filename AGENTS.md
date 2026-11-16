@@ -58,6 +58,7 @@ root unless noted.
 | `pnpm typecheck`  | Type-check every package (regenerates Wrangler and route types first)        |
 | `pnpm test`       | Run every test suite                                                         |
 | `pnpm test:e2e`   | Build, then run the browser tests (Playwright, Chromium) on port 4752        |
+| `pnpm test:smoke` | Check a live deployment from outside (`MAIL_SMOKE_URL=https://…`)            |
 | `pnpm build`      | Production build                                                             |
 | `pnpm verify`     | Everything CI runs: check, typecheck, test, build                            |
 | `pnpm run deploy` | Build, apply D1 migrations, deploy                                           |
@@ -125,7 +126,11 @@ These are load-bearing. Breaking one breaks users' data or security, usually sil
     a mailbox D1 no longer lists answers null and is never woken. Mail is read only through `openMailbox`
     (`apps/web/src/server/mailbox/read.ts`), which applies `canReadMailbox`: being in the workspace
     is not enough. Every R2 object is named by the mailbox's object, as pending, before it is
-    written, so R2 never holds mail a mailbox doesn't know about.
+    written, so R2 never holds mail a mailbox doesn't know about. Every Durable Object's id, a
+    mailbox's, a workspace's webhooks' or audience's, or a rate limit's, is made from
+    `ownObjects(env.…)` (`apps/web/src/server/jurisdiction.ts`), never from the binding itself: a
+    deployment may keep its objects in a jurisdiction (`DURABLE_OBJECT_JURISDICTION`), where the
+    same name is another object, and nothing is derived from an object's id but its name.
 13. **A key is an agent's: it reads, and sends only as it was let.** A request with an agent's
     key, a bearer token in Mail's shape (`gwm_…`), is decided by that key alone (`currentCaller`
     in `apps/web/src/server/access.ts`), never by the cookies that come with it, even when the key
@@ -296,6 +301,12 @@ the cost.
   `pnpm --filter @gateweave/mail-web exec playwright install chromium`. They are not part of
   `pnpm verify`; CI runs them as the `e2e` job. Every test signs up its own user and workspace.
   To run them in two checkouts at once, give each its own port with `MAIL_E2E_PORT`.
+- `apps/web/smoke` holds the smoke tests, for a live deployment rather than a local build:
+  `MAIL_SMOKE_URL=https://mail.example.com pnpm test:smoke`. They load the sign-in page and check
+  that `/mcp` and `/api/v1` turn away a stranger, with `fetch` and no browser. They sign in to
+  nothing and change nothing. Gateweave Cloud's deploy runs them after production, with
+  `MAIL_SMOKE_SSO=1` so that the page must offer its provider. `test/smoke.test.ts` runs the same
+  checks against the built Worker, so a check that is wrong fails in CI and not in a release.
 - Every bug fix gets a test that fails without the fix. Never weaken or skip a test to make a
   change pass.
 

@@ -1,10 +1,11 @@
 import { env } from "cloudflare:workers";
+import { ownObjects } from "../jurisdiction";
 
 export { Audience, type Refused } from "./durable-object";
 
 /** The workspace's audience object. Only the Worker reaches it, after checking who is asking. */
 export function audienceStub(workspaceId: string) {
-	return env.AUDIENCE.getByName(workspaceId);
+	return ownObjects(env.AUDIENCE).getByName(workspaceId);
 }
 
 /** Removes a deleted workspace's templates, and whatever else the object holds. */

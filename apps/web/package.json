@@ -12,13 +12,15 @@
 		"deploy": "node scripts/deploy.mjs",
 		"deploy:staging": "vite build --mode staging && wrangler deploy --cwd ../..",
 		"typegen": "wrangler types && tsr generate",
-		"typecheck": "wrangler types && tsr generate && tsc && tsc -p scripts && tsc -p test && tsc -p e2e",
+		"typecheck": "wrangler types && tsr generate && tsc && tsc -p scripts && tsc -p test && tsc -p e2e && tsc -p smoke",
 		"test": "vitest run",
 		"test:e2e": "vite build && playwright test",
+		"test:smoke": "vitest run -c vitest.smoke.config.ts",
 		"db:generate": "drizzle-kit generate",
 		"db:migrate:local": "wrangler d1 migrations apply DB --local --persist-to .wrangler/state",
 		"db:migrate:remote": "wrangler d1 migrations apply DB --remote",
 		"db:migrate:staging": "wrangler d1 migrations apply DB --remote --env staging",
+		"db:migrate:cloud": "wrangler d1 migrations apply DB --remote --env cloud",
 		"auth:schema": "pnpm dlx auth@1.7.16 generate --config src/server/auth/cli.ts --output src/server/db/auth-schema.ts --yes"
 	},
 	"dependencies": {
