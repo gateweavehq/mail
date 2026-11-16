@@ -77,6 +77,8 @@ function workerExists() {
  * (DURABLE_OBJECT_JURISDICTION, as Gateweave Cloud's `cloud` environment) gets its queue there too:
  * delivery events name the people mail went to, and a queue's jurisdiction can't change later.
  */
+const QUEUE_JURISDICTIONS = ["eu", "us", "fedramp"];
+
 function createQueues() {
 	const config = unstable_readConfig({ config: join(root, "wrangler.jsonc") });
 	const jurisdiction = String(config.vars?.DURABLE_OBJECT_JURISDICTION ?? "")
@@ -93,6 +95,13 @@ function createQueues() {
 			}
 			// Anything else, such as a network error, stops the deploy.
 			if (!/does not exist/.test(error.stderr ?? "")) throw error;
+			// Queues has fewer jurisdictions than Durable Objects. One it lacks stops the deploy here,
+			// before anything changes, rather than making the queue somewhere less restricted.
+			if (jurisdiction && !QUEUE_JURISDICTIONS.includes(jurisdiction)) {
+				throw new Error(
+					`wrangler.jsonc keeps Durable Objects in "${jurisdiction}", where Queues can't make a queue (it has ${QUEUE_JURISDICTIONS.join(", ")}). Create the queue ${queue} yourself where it may be kept, then deploy again.`,
+				);
+			}
 			wrangler([
 				"queues",
 				"create",
