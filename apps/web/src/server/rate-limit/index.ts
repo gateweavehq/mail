@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import type { BetterAuthRateLimitOptions } from "better-auth";
 import { DEFAULT_AUTH_LIMIT } from "../auth/config";
 import type { Mailer } from "../email/mailer";
+import { ownObjects } from "../jurisdiction";
 import { type Decision, LocalLimiter, type Rule } from "./gcra";
 
 export { RateLimiter } from "./durable-object";
@@ -144,8 +145,11 @@ export function limitRecipients(mailer: Mailer | undefined): Mailer | undefined 
 async function consumeDurably(key: string, rules: Rule[]): Promise<Decision> {
 	try {
 		// Keys hold addresses, so they are hashed before they become Durable Object names, which
-		// the dashboard can show.
-		return await env.RATE_LIMITER.getByName(await sha256(key)).consume(rules);
+		// the dashboard can show. In the deployment's jurisdiction: counts in objects from before
+		// it was set start again there.
+		return await ownObjects(env.RATE_LIMITER)
+			.getByName(await sha256(key))
+			.consume(rules);
 	} catch (error) {
 		// Counting in this isolate alone is weaker, but better than refusing everyone or no one.
 		console.error("rate limit: Durable Object unavailable, counting in this isolate", error);

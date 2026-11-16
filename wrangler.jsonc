@@ -64,12 +64,62 @@
 		]
 	},
 	// Optional: GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET, OIDC_ISSUER, OIDC_CLIENT_ID,
-	// OIDC_CLIENT_SECRET, OIDC_PROVIDER_NAME, BETTER_AUTH_URL, EMAIL_FROM and the legal page
-	// addresses (see apps/web/src/server/env.d.ts).
+	// OIDC_CLIENT_SECRET, OIDC_PROVIDER_NAME, BETTER_AUTH_URL, EMAIL_FROM, the legal page
+	// addresses and DURABLE_OBJECT_JURISDICTION (see apps/web/src/server/env.d.ts).
 	"secrets": { "required": ["BETTER_AUTH_SECRET"] },
-	// The top level is what self-hosters deploy. Gateweave deploys the staging environment below, a
-	// separate Worker with its own database. Bindings are not inherited, so it repeats them.
+	// The top level is what self-hosters deploy. Gateweave Cloud deploys the environments below:
+	// `cloud` is https://mail.gateweave.com and `staging` its rehearsal, each a Worker of its own
+	// name with its own database. Bindings are not inherited, so each repeats them.
 	"env": {
+		// Everything `cloud` keeps stays in the EU. Its database and its bucket were made with the
+		// `eu` jurisdiction, which nothing can change afterwards. Its Durable Objects (mailboxes,
+		// webhooks, audiences, rate limits) go there by DURABLE_OBJECT_JURISDICTION, which the
+		// deploy script also reads to make the queue there on the first release. Its requests are
+		// placed near Frankfurt, as Gateweave ID's are, close to the database (D1 says EEUR), so
+		// the queries a request makes one after another don't each cross an ocean.
+		//
+		// Its name is its own, not the top level's, on purpose. With the top level's name, a plain
+		// `pnpm run deploy` or the Deploy button in Gateweave's account, whose form picks an
+		// existing Worker of the same name, would have put the top level's config on production:
+		// a new, empty database and bucket outside the EU. docs/self-hosting.md, "Gateweave
+		// Cloud", has the rest.
+		"cloud": {
+			"name": "gateweave-mail-cloud",
+			"routes": [{ "pattern": "mail.gateweave.com", "custom_domain": true }],
+			"placement": { "region": "aws:eu-central-1" },
+			"vars": { "DURABLE_OBJECT_JURISDICTION": "eu" },
+			"d1_databases": [
+				{
+					"binding": "DB",
+					"database_name": "gateweave-mail-eu",
+					"database_id": "c0c5468c-f84b-45b8-a804-6412544febef",
+					"migrations_dir": "apps/web/migrations"
+				}
+			],
+			"r2_buckets": [
+				{ "binding": "RAW_MAIL", "bucket_name": "gateweave-mail-eu", "jurisdiction": "eu" }
+			],
+			"durable_objects": {
+				"bindings": [
+					{ "name": "RATE_LIMITER", "class_name": "RateLimiter" },
+					{ "name": "MAILBOX", "class_name": "Mailbox" },
+					{ "name": "WEBHOOKS", "class_name": "Webhooks" },
+					{ "name": "AUDIENCE", "class_name": "Audience" }
+				]
+			},
+			"send_email": [{ "name": "EMAIL" }],
+			"queues": {
+				"consumers": [
+					{
+						"queue": "gateweave-mail-events-eu",
+						"max_batch_size": 50,
+						"max_batch_timeout": 5,
+						"max_retries": 15
+					}
+				]
+			},
+			"secrets": { "required": ["BETTER_AUTH_SECRET"] }
+		},
 		"staging": {
 			"name": "gateweave-mail-staging",
 			"routes": [{ "pattern": "mail-staging.gateweave.com", "custom_domain": true }],

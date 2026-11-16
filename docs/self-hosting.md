@@ -128,6 +128,32 @@ pnpm wrangler d1 create gateweave-mail --location apac
 Then pick it instead of **+ Create new** on the button's form, or put its id in `wrangler.jsonc` as
 `database_id`.
 
+### Keeping data in one jurisdiction
+
+Cloudflare can keep data inside the EU, the US or FedRAMP data centers. Each part of Mail is set
+on its own, and all of it before the first deploy: a database's, a bucket's and a queue's
+jurisdiction can't change once they exist, and a Durable Object in a jurisdiction is another
+object than the one of the same name outside it.
+
+- **The database**: `pnpm wrangler d1 create gateweave-mail --jurisdiction eu`, then use it as
+  above.
+- **Mail as it arrived**: `pnpm wrangler r2 bucket create gateweave-mail --jurisdiction eu`, and
+  `"jurisdiction": "eu"` on the `RAW_MAIL` binding in `wrangler.jsonc`.
+- **Delivery events**: `pnpm wrangler queues create gateweave-mail-events --jurisdiction eu`.
+  `pnpm run deploy` makes a missing queue there by itself when `wrangler.jsonc` sets the variable
+  below under `vars`.
+- **Mailboxes, webhooks, templates and rate limits**, which are Durable Objects: set
+  `DURABLE_OBJECT_JURISDICTION` to `eu`. Set it before the first mailbox exists. On a deployment
+  that already has mail, its mailboxes, webhooks and templates would seem empty, since the Worker
+  then looks for them in the jurisdiction, and nothing moves them there yet. A value Cloudflare
+  doesn't have is an error, not a place: nothing is kept anywhere else instead.
+
+Leave the variable out of `.dev.vars`: the local runtime has no jurisdictions and refuses one.
+
+If your people are far from the database, the Worker can run near it instead of near each of them,
+so the queries a request makes one after another don't each cross an ocean: set
+`"placement": { "region": "…" }` in `wrangler.jsonc` to a cloud region near the database.
+
 ## Where mail is kept
 
 Each message goes into the R2 bucket as it arrived, one object per message, and each mailbox's
@@ -249,6 +275,10 @@ because `wrangler.jsonc` sets `keep_vars`.
 | `LEGAL_NOTICE_URL`         | The address of your legal notice. See [below](#your-legal-pages).                                                                  |
 | `PRIVACY_POLICY_URL`       | The address of your privacy policy.                                                                                                |
 | `TERMS_URL`                | The address of your terms.                                                                                                         |
+
+One more, `DURABLE_OBJECT_JURISDICTION`, keeps mailboxes, webhooks, templates and rate limits in a
+jurisdiction such as `eu`. It belongs in `wrangler.jsonc` before the first deploy: see
+[Keeping data in one jurisdiction](#keeping-data-in-one-jurisdiction).
 
 ### Your own domain
 
@@ -444,7 +474,9 @@ you let in. There is no setting for less yet, so if you want less, keep the list
 
 People who already have an account are not affected, whatever the list says, and taking an entry
 off the list removes nobody. Everyone who is refused is told the same thing, that the server takes
-new accounts by invitation. The sign-in page says so too, never offers to create an account, and
+new accounts by invitation, in words at least: the address a provider's sign-in comes back to
+carries another `error` code when the address already has an account under another way of signing
+in. The sign-in page says so too, never offers to create an account, and
 tells someone who was invited to continue with the provider. Set `SIGN_UP_REQUEST_URL` to an
 `https` address, such as a form or a waitlist, and the page links to it as "Ask for access".
 
@@ -466,6 +498,65 @@ to it are deleted from D1 at once. An account that is the only owner of a worksp
 until someone else owns it or it is deleted. Workspaces they belonged to stay with the people still
 in them. Cloudflare keeps point-in-time recovery for D1 (30 days on Workers Paid, 7 on Free), and
 restoring D1 to a time before a deletion brings the person back.
+
+## Gateweave Cloud
+
+Gateweave's own deployment is `https://mail.gateweave.com`, the `cloud` environment in
+`wrangler.jsonc`. It is a Worker of its own name, `gateweave-mail-cloud`, with resources of its
+own, so that everything it keeps stays in the EU: the database `gateweave-mail-eu` and the bucket
+`gateweave-mail-eu` were made with the `eu` jurisdiction, the queue `gateweave-mail-events-eu` is
+made there by the first release, and its Durable Objects go there by
+`DURABLE_OBJECT_JURISDICTION`. A throwaway Worker on Cloudflare showed, on 2026-11-16, that an
+object reached through `jurisdiction("eu")` knows its name (`ctx.id.name`) as one outside does,
+reached from the Worker, from another object and in its alarm, which the mailboxes and webhooks
+rely on. The Worker's requests are placed near `aws:eu-central-1` (Frankfurt), close to the
+database. That is where Cloudflare is asked to run them, to save trips to the database, not a
+promise about where anything is processed: only the jurisdictions above are that. Staging
+(`https://mail-staging.gateweave.com`) is the `staging` environment: every green build of `main`
+goes there, and its Durable Objects are still outside any jurisdiction.
+
+Publishing a GitHub release deploys that tag to production (`.github/workflows/deploy.yml`), in
+this order, and stops at the first step that fails:
+
+1. **The Worker must have its secrets.** The job lists `gateweave-mail-cloud`'s by name, never by
+   value, and stops
+   unless all of `SIGN_UP_ALLOW`, `BETTER_AUTH_SECRET`, `SECRETS_KEY`, `BETTER_AUTH_URL`,
+   `OIDC_ISSUER`, `OIDC_CLIENT_ID` and `OIDC_CLIENT_SECRET` are there
+   (`apps/web/scripts/cloud-secrets.json`). A Worker that does not exist yet has none. Without
+   this, a first deploy would answer with a generated `BETTER_AUTH_SECRET` and nothing else:
+   sign-up open to anyone, no sign-in provider, mail kept unsealed.
+2. **The queue**, made with the `eu` jurisdiction if it is missing.
+3. **The migrations**, applied to the `cloud` database.
+4. **The Worker**, built and deployed with `CLOUDFLARE_ENV=cloud`.
+5. **The smoke tests** ask the live deployment what a stranger would
+   (`MAIL_SMOKE_URL=https://mail.example.com pnpm test:smoke`): the sign-in page with its provider
+   (`MAIL_SMOKE_SSO=1`), no offer of an account and the sign-up form refused as closed
+   (`MAIL_SMOKE_CLOSED=1`), and `/mcp` and `/api/v1` turning away whoever has no key. They wait up
+   to three minutes for a new domain to answer as itself, sign in to nothing and change nothing,
+   so you can run them against your own deployment too. Set `MAIL_SMOKE_CLOSED=1` if yours has
+   `SIGN_UP_ALLOW`, since without it the checks want sign-up to be open, and `MAIL_SMOKE_SSO=1`
+   if it has a provider.
+
+None of this changes what the top level is, which the Deploy button and `pnpm run deploy` use, or
+staging. Production's Worker has a name of its own so that the top level can't reach it: a plain
+`pnpm run deploy` in Gateweave's account, without `CLOUDFLARE_ENV=cloud`, or the Deploy button
+there, makes a second, separate Worker named `gateweave-mail` with a new, empty database, bucket
+and queue of its own, outside the EU. That leaves production alone, but it is still not wanted
+there: only the release job deploys in that account, and such a stray Worker is to be deleted.
+
+**The first release** therefore goes: secrets first, then the release, then a look by hand.
+
+1. Put the secrets, each with `pnpm wrangler secret put <NAME> --env cloud`. The first one makes
+   the Worker `gateweave-mail-cloud`, empty and without a route, when Wrangler asks. Check with
+   `pnpm --filter @gateweave/mail-web deploy:guard:cloud`, which is what the release runs first. The seven above are required.
+   `OIDC_PROVIDER_NAME`, `EMAIL_FROM`, `SIGN_UP_REQUEST_URL` and the legal pages' addresses belong
+   with them. `SIGN_UP_ALLOW` holds the addresses that may make an account, the first owner's
+   among them.
+2. Publish the release. The job does the five steps above.
+3. By hand: sign in through the provider as a listed address, try to sign up as a stranger and see
+   it refused, subscribe the queue to the sending domain's delivery events (see [Email](#email),
+   with `gateweave-mail-events-eu` as the queue), and see that the daily run and the first event
+   arrive.
 
 ## Updating
 

@@ -50,6 +50,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: production
+      url: https://mail.gateweave.com
     concurrency: deploy-production
     steps:
       - uses: actions/checkout@v7
@@ -59,8 +60,38 @@ jobs:
           node-version-file: .node-version
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # Builds, applies D1 migrations, then deploys (apps/web/scripts/deploy.mjs), as self-hosters do,
-      # to the Worker the top level of wrangler.jsonc names. It has no custom domain yet, so it answers
-      # on workers.dev until one is added. `run` is needed: `pnpm deploy` is a built-in command.
+      # Before anything changes. Production must never go live open: a first deploy of a Worker
+      # with no secrets would answer with sign-up open to anyone, no sign-in provider and mail kept
+      # unsealed. This lists the secrets of the Worker `gateweave-mail-cloud` by name and stops the
+      # release unless every one in apps/web/scripts/cloud-secrets.json is there. A Worker that
+      # does not exist yet has none.
+      - name: Check that the Worker has its secrets
+        run: pnpm --filter @gateweave/mail-web deploy:guard:cloud
+      # Also before anything changes: the queue for delivery events, made in the EU if it is
+      # missing. A token that can't reach Queues stops the release here, before the schema changes.
+      - name: Make sure of the queue
+        env:
+          CLOUDFLARE_ENV: cloud
+        run: pnpm --filter @gateweave/mail-web deploy:queues
+      # Migrations before the code, so the new code never meets an old schema. The deploy script
+      # applies them too, to the database CLOUDFLARE_ENV selects; here the environment is named, so
+      # a release can't migrate another database than the one it is about to use.
+      - name: Apply D1 migrations
+        run: pnpm --filter @gateweave/mail-web db:migrate:cloud
+      # Builds and deploys (apps/web/scripts/deploy.mjs), as self-hosters do, but with the `cloud`
+      # environment of wrangler.jsonc, which the build, the script and Wrangler read from
+      # CLOUDFLARE_ENV. `run` is needed: `pnpm deploy` is a built-in command.
       - name: Deploy
+        env:
+          CLOUDFLARE_ENV: cloud
         run: pnpm --filter @gateweave/mail-web run deploy
+      # The deployment as a stranger finds it (apps/web/smoke): the sign-in page with its provider
+      # and no offer of an account, the sign-up form refused as closed, and /mcp and /api/v1
+      # turning away whoever has no key. It signs in to nothing and changes nothing. A failure
+      # here fails the release's deploy, so it is seen.
+      - name: Smoke test
+        run: pnpm test:smoke
+        env:
+          MAIL_SMOKE_URL: https://mail.gateweave.com
+          MAIL_SMOKE_SSO: "1"
+          MAIL_SMOKE_CLOSED: "1"

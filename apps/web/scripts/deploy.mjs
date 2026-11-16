@@ -72,9 +72,18 @@ function workerExists() {
  * Creates the queues the Worker consumes that don't exist yet, as Email Service's delivery events
  * queue: Wrangler won't deploy a consumer of a queue that isn't there. The Deploy button makes them
  * itself.
+ *
+ * A deployment whose wrangler.jsonc keeps its Durable Objects in a jurisdiction
+ * (DURABLE_OBJECT_JURISDICTION, as Gateweave Cloud's `cloud` environment) gets its queue there too:
+ * delivery events name the people mail went to, and a queue's jurisdiction can't change later.
  */
+const QUEUE_JURISDICTIONS = ["eu", "us", "fedramp"];
+
 function createQueues() {
 	const config = unstable_readConfig({ config: join(root, "wrangler.jsonc") });
+	const jurisdiction = String(config.vars?.DURABLE_OBJECT_JURISDICTION ?? "")
+		.trim()
+		.toLowerCase();
 	for (const { queue } of config.queues?.consumers ?? []) {
 		try {
 			ask(["queues", "info", queue]);
@@ -86,28 +95,48 @@ function createQueues() {
 			}
 			// Anything else, such as a network error, stops the deploy.
 			if (!/does not exist/.test(error.stderr ?? "")) throw error;
-			wrangler(["queues", "create", queue]);
+			// Queues has fewer jurisdictions than Durable Objects. One it lacks stops the deploy here,
+			// before anything changes, rather than making the queue somewhere less restricted.
+			if (jurisdiction && !QUEUE_JURISDICTIONS.includes(jurisdiction)) {
+				throw new Error(
+					`wrangler.jsonc keeps Durable Objects in "${jurisdiction}", where Queues can't make a queue (it has ${QUEUE_JURISDICTIONS.join(", ")}). Create the queue ${queue} yourself where it may be kept, then deploy again.`,
+				);
+			}
+			wrangler([
+				"queues",
+				"create",
+				queue,
+				...(jurisdiction ? ["--jurisdiction", jurisdiction] : []),
+			]);
 		}
 	}
 }
 
 const migrate = () => wrangler(["d1", "migrations", "apply", "DB", "--remote"]);
 
-run("vite", "vite", ["build"]);
-createQueues();
-const exists = databaseExists();
-if (exists) migrate();
-if (workerExists()) {
-	wrangler(["deploy"]);
-} else {
-	const directory = mkdtempSync(join(tmpdir(), "mail-deploy-"));
-	const secrets = join(directory, "secrets.json");
-	try {
-		const secret = randomBytes(32).toString("base64");
-		writeFileSync(secrets, JSON.stringify({ BETTER_AUTH_SECRET: secret }), { mode: 0o600 });
-		wrangler(["deploy", "--secrets-file", secrets]);
-	} finally {
-		rmSync(directory, { recursive: true, force: true });
+function deploy() {
+	run("vite", "vite", ["build"]);
+	createQueues();
+	const exists = databaseExists();
+	if (exists) migrate();
+	if (workerExists()) {
+		wrangler(["deploy"]);
+	} else {
+		const directory = mkdtempSync(join(tmpdir(), "mail-deploy-"));
+		const secrets = join(directory, "secrets.json");
+		try {
+			const secret = randomBytes(32).toString("base64");
+			writeFileSync(secrets, JSON.stringify({ BETTER_AUTH_SECRET: secret }), { mode: 0o600 });
+			wrangler(["deploy", "--secrets-file", secrets]);
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
 	}
+	if (!exists) migrate();
 }
-if (!exists) migrate();
+
+// `--queues` makes sure of the queues and nothing more, for a release job that applies its
+// migrations in a step of its own: the queues come before them there too, so a token that can't
+// reach Queues stops the release before the schema changes.
+if (process.argv.includes("--queues")) createQueues();
+else deploy();

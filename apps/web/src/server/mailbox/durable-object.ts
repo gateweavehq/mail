@@ -15,6 +15,7 @@ import { heldWriters } from "../auth/agents";
 import { type BackupRow, readForBackup } from "../backup-read";
 import { createDb } from "../db";
 import { DEFAULT_DNS_RESOLVER, dnsLookup } from "../directory/dns";
+import { ownObjects } from "../jurisdiction";
 import { openProviderKey } from "../providers/keys";
 import { RESEND_API, type ResendFailure, sendWithResend } from "../providers/resend";
 import { sealedUnderUnknown } from "../reseal-state";
@@ -1848,11 +1849,10 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 		});
 		if (place && events.length > 0) {
 			try {
-				await this.env.WEBHOOKS.getByName(place.workspaceId).accept(
-					place.workspaceId,
-					place.mailboxId,
-					events,
-				);
+				// The workspace's webhooks are where the Worker reaches them (`webhooksStub`).
+				await ownObjects(this.env.WEBHOOKS)
+					.getByName(place.workspaceId)
+					.accept(place.workspaceId, place.mailboxId, events);
 			} catch (error) {
 				console.error("mailbox: telling webhooks of mail failed; the alarm tries again", {
 					name: error instanceof Error ? error.name : "unknown",
