@@ -462,7 +462,9 @@ made there by the first release, and its Durable Objects go there by
 `DURABLE_OBJECT_JURISDICTION`. A throwaway Worker on Cloudflare showed, on 2026-11-16, that an
 object reached through `jurisdiction("eu")` knows its name (`ctx.id.name`) as one outside does,
 reached from the Worker, from another object and in its alarm, which the mailboxes and webhooks
-rely on. The Worker itself runs in Frankfurt, near the database. Staging
+rely on. The Worker's requests are placed near `aws:eu-central-1` (Frankfurt), close to the
+database. That is where Cloudflare is asked to run them, to save trips to the database, not a
+promise about where anything is processed: only the jurisdictions above are that. Staging
 (`https://mail-staging.gateweave.com`) is the `staging` environment: every green build of `main`
 goes there, and its Durable Objects are still outside any jurisdiction.
 
@@ -483,10 +485,15 @@ this order, and stops at the first step that fails:
    (`MAIL_SMOKE_SSO=1`), no offer of an account and the sign-up form refused as closed
    (`MAIL_SMOKE_CLOSED=1`), and `/mcp` and `/api/v1` turning away whoever has no key. They wait up
    to three minutes for a new domain to answer as itself, sign in to nothing and change nothing,
-   so you can run them against your own deployment too, without the two variables.
+   so you can run them against your own deployment too. Set `MAIL_SMOKE_CLOSED=1` if yours has
+   `SIGN_UP_ALLOW`, since without it the checks want sign-up to be open, and `MAIL_SMOKE_SSO=1`
+   if it has a provider.
 
-None of this touches the top level, which is what the Deploy button and `pnpm run deploy` use, or
-staging.
+None of this changes what the top level is, which the Deploy button and `pnpm run deploy` use, or
+staging. In Gateweave's own account, though, the top level must never be deployed: it has the
+Worker's name, so a plain `pnpm run deploy` there, without `CLOUDFLARE_ENV=cloud`, would replace
+production with a Worker bound to a new database and bucket outside the EU. Only the release job
+deploys there.
 
 **The first release** therefore goes: secrets first, then the release, then a look by hand.
 
