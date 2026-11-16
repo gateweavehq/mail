@@ -41,7 +41,7 @@ early: expect breaking changes until 1.0.
 - **Sign-up can be closed.** Set `SIGN_UP_ALLOW` to the addresses and domains that may make an
   account. With it, the sign-up form makes no account, and a new one is made only for a listed or
   invited address that a provider proved. Without it sign-up is open: anyone who can reach the
-  address can make an account and a workspace. See "Who can sign up" in `docs/self-hosting.md`.
+  address can make an account and a workspace. See "Closing sign-up" in `docs/self-hosting.md`.
   ([#59](https://github.com/gateweavehq/mail/pull/59))
 - **Set `SECRETS_KEY` before mail arrives**, and keep a copy: stored mail opens only with it.
 - **Durable Objects can be kept in a jurisdiction** with `DURABLE_OBJECT_JURISDICTION`, set before
