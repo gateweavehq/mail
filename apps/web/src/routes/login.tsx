@@ -10,6 +10,7 @@ import { authClient } from "#/lib/auth-client";
 import { safeRedirect } from "#/lib/redirect";
 import { getAuthOptions, getSession } from "#/lib/session";
 import { signInRefusal } from "#/lib/sign-in-refusal";
+import { SIGN_UP_CLOSED_MESSAGE } from "#/lib/sign-up-allow";
 
 const loginSearch = z.object({
 	/** Where to go once signed in, such as the invitation that sent the user here. */
@@ -88,6 +89,9 @@ function SignInForm() {
 	const search = Route.useSearch();
 	const next = safeRedirect(search.redirect) ?? "/";
 	const router = useRouter();
+	// While sign-up is closed, the form that makes an account is only for someone an invitation
+	// sent here, which is the one address it can work for. The server decides either way.
+	const offersSignUp = !options.signUpClosed || search.mode === "sign-up";
 	const [mode, setMode] = useState<"sign-in" | "sign-up">(search.mode ?? "sign-in");
 	const [error, setError] = useState(() => signInRefusal(search.error));
 	const [pending, setPending] = useState(false);
@@ -135,6 +139,28 @@ function SignInForm() {
 						Mailboxes for people and agents, on Cloudflare.
 					</p>
 				</div>
+
+				{options.signUpClosed && (
+					<div
+						role="note"
+						aria-label="Sign-up is closed"
+						className="space-y-1 rounded-lg border p-3 text-center text-sm text-muted-foreground"
+					>
+						<p>{SIGN_UP_CLOSED_MESSAGE}</p>
+						{options.askForAccess && (
+							<p>
+								<a
+									href={options.askForAccess}
+									target="_blank"
+									rel="noreferrer"
+									className="font-medium text-foreground underline underline-offset-4"
+								>
+									Ask for access
+								</a>
+							</p>
+						)}
+					</div>
+				)}
 
 				{(options.oidc || options.github) && (
 					<>
@@ -207,19 +233,21 @@ function SignInForm() {
 					</LiveButton>
 				</form>
 
-				<p className="text-center text-sm text-muted-foreground">
-					{mode === "sign-in" ? "New to Gateweave Mail? " : "Already have an account? "}
-					<button
-						type="button"
-						className="font-medium text-foreground underline-offset-4 hover:underline"
-						onClick={() => {
-							setMode(mode === "sign-in" ? "sign-up" : "sign-in");
-							setError(null);
-						}}
-					>
-						{mode === "sign-in" ? "Create an account" : "Sign in"}
-					</button>
-				</p>
+				{(mode === "sign-up" || offersSignUp) && (
+					<p className="text-center text-sm text-muted-foreground">
+						{mode === "sign-in" ? "New to Gateweave Mail? " : "Already have an account? "}
+						<button
+							type="button"
+							className="font-medium text-foreground underline-offset-4 hover:underline"
+							onClick={() => {
+								setMode(mode === "sign-in" ? "sign-up" : "sign-in");
+								setError(null);
+							}}
+						>
+							{mode === "sign-in" ? "Create an account" : "Sign in"}
+						</button>
+					</p>
+				)}
 
 				<LegalLinks links={options.legal} agreeing />
 			</div>

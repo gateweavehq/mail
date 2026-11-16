@@ -1,4 +1,5 @@
 import { env, waitUntil } from "cloudflare:workers";
+import { parseAllowList } from "../../lib/sign-up-allow";
 import { removeAudience } from "../audience";
 import { createDb } from "../db";
 import { mailer } from "../email";
@@ -20,6 +21,11 @@ const oidc =
 				clientSecret: env.OIDC_CLIENT_SECRET,
 			}
 		: undefined;
+
+const signUpAllow = parseAllowList(env.SIGN_UP_ALLOW);
+
+/** Whether new accounts are only for listed and invited addresses (`SIGN_UP_ALLOW`). */
+export const signUpClosed = signUpAllow !== null;
 
 let instance: ReturnType<typeof buildAuth> | undefined;
 
@@ -63,7 +69,16 @@ export async function postToAuth(request: Request): Promise<Response> {
 }
 
 function buildAuth() {
+	if (signUpAllow && signUpAllow.ignored > 0) {
+		// Said once an isolate, and as a count: whoever wrote an entry that is neither an address
+		// nor an `@domain` would otherwise believe its people can sign up. The entries may be
+		// people's addresses, which the log does not keep.
+		console.warn(
+			`auth: SIGN_UP_ALLOW: ignored ${signUpAllow.ignored} of its entries, which let nobody in. Each must be an address or an @domain.`,
+		);
+	}
 	return createAuth({
+		signUpAllow,
 		db,
 		secret: env.BETTER_AUTH_SECRET,
 		baseURL,

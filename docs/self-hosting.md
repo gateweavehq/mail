@@ -236,6 +236,8 @@ because `wrangler.jsonc` sets `keep_vars`.
 | `OIDC_CLIENT_ID`           | This deployment's client ID at the provider.                                                                                       |
 | `OIDC_CLIENT_SECRET`       | Its client secret there.                                                                                                           |
 | `OIDC_PROVIDER_NAME`       | What the sign-in button calls it. Unset: "single sign-on".                                                                         |
+| `SIGN_UP_ALLOW`            | Closes sign-up to all but these addresses and `@domain`s. Unset: anyone may sign up. See [below](#closing-sign-up).                |
+| `SIGN_UP_REQUEST_URL`      | An `https` address where people can ask for an account, linked from the sign-in page while sign-up is closed.                      |
 | `EMAIL_FROM`               | Turns on email (invitations, password reset), such as `Gateweave Mail <mail@example.com>`.                                         |
 | `MAILBOX_BYTES`            | How many bytes one mailbox may hold, as a whole number. Unset: 1 GiB.                                                              |
 | `SEND_PER_DAY`             | How many messages one workspace may send from its mailboxes a day, as a whole number. Unset: 200.                                  |
@@ -412,6 +414,42 @@ A Worker cannot reach another on its own zone through a route, and two on `worke
 each other at all: Cloudflare answers with error 1042, and the button says it could not reach the
 provider. If they have to stay on `workers.dev`, add `global_fetch_strictly_public` to
 `compatibility_flags` in each one's `wrangler.jsonc`.
+
+### Closing sign-up
+
+Anyone who reaches a new server can make an account on it. To close it, set `SIGN_UP_ALLOW` to the
+people who may: whole addresses (`ada@example.com`) and domains with an `@` in front
+(`@example.com`), separated by commas or spaces, in any case. A domain covers addresses at exactly
+that domain, not at its subdomains.
+
+```sh
+pnpm wrangler secret put SIGN_UP_ALLOW
+```
+
+With it set, a new account is made only for:
+
+- **an address on the list that a sign-in provider proved**: one that comes verified from GitHub
+  or from your [OpenID Connect provider](#sign-in-through-an-openid-connect-provider). The list
+  does not count for an address typed into the sign-up form, which proves nothing: anyone who knew
+  or guessed a listed address, or made one up at a listed domain, would get in ahead of its owner.
+  So the list needs GitHub or a provider set up. Without either, people join by invitation only.
+- **an address with a pending invitation to a workspace**, by password or through a provider, as
+  before. Any workspace's owner or admin can invite, so close sign-up only if the people who
+  already have accounts may let others in. With [email](#email) on, an invited account still has
+  to verify its address before it can join.
+
+People who already have an account are not affected, whatever the list says, and taking an entry
+off the list removes nobody. Everyone who is refused is told the same thing, that the server takes
+new accounts by invitation, whether or not the address has an account. The sign-in page says so
+too and no longer offers to create an account. Set `SIGN_UP_REQUEST_URL` to an `https` address,
+such as a form or a waitlist, and the page links to it as "Ask for access".
+
+Make your own account before you set the list, or put your address on it and sign in through
+GitHub or the provider. An entry that is neither an address nor an `@domain` lets nobody in, and
+the Worker's log says how many such entries there are, not which. A setting with nothing usable in
+it closes sign-up to everyone but invited addresses. The list holds addresses of people who may
+have no account, so it is personal data in your Worker's settings: take an entry out when someone
+asks to be forgotten.
 
 ## When someone deletes their account
 

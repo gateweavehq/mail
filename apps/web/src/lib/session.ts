@@ -35,12 +35,18 @@ export const getAccount = createServerFn({ method: "GET" }).handler(async () => 
 });
 
 export const getAuthOptions = createServerFn({ method: "GET" }).handler(async () => {
-	const { emailEnabled, githubEnabled, oidcProviderName } = await import("#/server/auth");
+	const { emailEnabled, githubEnabled, oidcProviderName, signUpClosed } = await import(
+		"#/server/auth"
+	);
 	const { legalLinks } = await import("#/server/legal");
+	const { signUpRequestUrl } = await import("#/server/sign-up-request");
 	return {
 		github: githubEnabled,
 		oidc: oidcProviderName,
 		email: emailEnabled,
+		/** New accounts are only for listed and invited addresses. The server decides, not the page. */
+		signUpClosed,
+		askForAccess: signUpClosed ? signUpRequestUrl() : null,
 		legal: legalLinks(),
 	};
 });

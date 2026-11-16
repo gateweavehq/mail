@@ -1,8 +1,12 @@
+import { SIGN_UP_CLOSED_MESSAGE } from "./sign-up-allow";
+
 const REFUSALS: Record<string, string> = {
 	access_denied: "You chose not to sign in that way.",
 	account_not_linked:
 		"This address already has an account here, and we could not confirm it is yours. Sign in with your password. If you have not verified the address yet, do that first.",
 	email_not_found: "We were not given an email address for you, and an account needs one.",
+	// The words the server has for every address it refuses, so this says nothing about any one.
+	SIGN_UP_CLOSED: SIGN_UP_CLOSED_MESSAGE,
 };
 
 /**
