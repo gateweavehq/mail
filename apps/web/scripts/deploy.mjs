@@ -114,21 +114,29 @@ function createQueues() {
 
 const migrate = () => wrangler(["d1", "migrations", "apply", "DB", "--remote"]);
 
-run("vite", "vite", ["build"]);
-createQueues();
-const exists = databaseExists();
-if (exists) migrate();
-if (workerExists()) {
-	wrangler(["deploy"]);
-} else {
-	const directory = mkdtempSync(join(tmpdir(), "mail-deploy-"));
-	const secrets = join(directory, "secrets.json");
-	try {
-		const secret = randomBytes(32).toString("base64");
-		writeFileSync(secrets, JSON.stringify({ BETTER_AUTH_SECRET: secret }), { mode: 0o600 });
-		wrangler(["deploy", "--secrets-file", secrets]);
-	} finally {
-		rmSync(directory, { recursive: true, force: true });
+function deploy() {
+	run("vite", "vite", ["build"]);
+	createQueues();
+	const exists = databaseExists();
+	if (exists) migrate();
+	if (workerExists()) {
+		wrangler(["deploy"]);
+	} else {
+		const directory = mkdtempSync(join(tmpdir(), "mail-deploy-"));
+		const secrets = join(directory, "secrets.json");
+		try {
+			const secret = randomBytes(32).toString("base64");
+			writeFileSync(secrets, JSON.stringify({ BETTER_AUTH_SECRET: secret }), { mode: 0o600 });
+			wrangler(["deploy", "--secrets-file", secrets]);
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
 	}
+	if (!exists) migrate();
 }
-if (!exists) migrate();
+
+// `--queues` makes sure of the queues and nothing more, for a release job that applies its
+// migrations in a step of its own: the queues come before them there too, so a token that can't
+// reach Queues stops the release before the schema changes.
+if (process.argv.includes("--queues")) createQueues();
+else deploy();

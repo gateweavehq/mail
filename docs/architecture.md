@@ -1102,6 +1102,11 @@ sets `eu` in its `cloud` environment, beside a database, a bucket and a queue ma
   mailbox's or the workspace's id, and never the id's own text, which differs between
   jurisdictions. What a workspace's webhooks seal is sealed with `SECRETS_KEY` and the workspace's
   id, and R2 objects are named by workspace and mailbox, so neither depends on where an object is.
+  The name has to be there, though: a webhooks object without one throws, and a mailbox without
+  one stops telling webhooks of mail. Local workerd can't show it, so a throwaway Worker on
+  Cloudflare did (2026-11-16): reached through `jurisdiction("eu")` by `getByName` and by
+  `get(idFromName(…))`, from the Worker and from another object, and in its alarm, an object's
+  `ctx.id.name` was the name it was asked for, and its id's text differed from the one outside.
 - **A wrong value is an error.** One Cloudflare doesn't have throws wherever an object would be
   reached, rather than keeping data somewhere else. Rate limits then count in each isolate, as
   they do whenever their object can't be reached, and the log says why.

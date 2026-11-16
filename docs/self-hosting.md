@@ -456,20 +456,50 @@ restoring D1 to a time before a deletion brings the person back.
 
 Gateweave's own deployment is `https://mail.gateweave.com`, the `cloud` environment in
 `wrangler.jsonc`. It is the Worker the top level names, with resources of its own, so that
-everything it keeps stays in the EU: the database `gateweave-mail-eu`, the bucket
-`gateweave-mail-eu` and the queue `gateweave-mail-events-eu` were made with the `eu` jurisdiction,
-and its Durable Objects go there by `DURABLE_OBJECT_JURISDICTION`. The Worker itself runs in
-Frankfurt, near the database. Staging (`https://mail-staging.gateweave.com`) is the `staging`
-environment: every green build of `main` goes there, and its Durable Objects are still outside any
-jurisdiction.
+everything it keeps stays in the EU: the database `gateweave-mail-eu` and the bucket
+`gateweave-mail-eu` were made with the `eu` jurisdiction, the queue `gateweave-mail-events-eu` is
+made there by the first release, and its Durable Objects go there by
+`DURABLE_OBJECT_JURISDICTION`. A throwaway Worker on Cloudflare showed, on 2026-11-16, that an
+object reached through `jurisdiction("eu")` knows its name (`ctx.id.name`) as one outside does,
+reached from the Worker, from another object and in its alarm, which the mailboxes and webhooks
+rely on. The Worker itself runs in Frankfurt, near the database. Staging
+(`https://mail-staging.gateweave.com`) is the `staging` environment: every green build of `main`
+goes there, and its Durable Objects are still outside any jurisdiction.
 
-Publishing a GitHub release deploys that tag to production
-(`.github/workflows/deploy.yml`): the migrations are applied to the `cloud` database, the Worker
-is built and deployed with `CLOUDFLARE_ENV=cloud`, and then the smoke tests ask the live
-deployment what a stranger would (`MAIL_SMOKE_URL=https://mail.example.com pnpm test:smoke`): the
-sign-in page with its provider, and `/mcp` and `/api/v1` turning away whoever has no key. They
-sign in to nothing and change nothing, so you can run them against your own deployment too. None
-of this touches the top level, which is what the Deploy button and `pnpm run deploy` use.
+Publishing a GitHub release deploys that tag to production (`.github/workflows/deploy.yml`), in
+this order, and stops at the first step that fails:
+
+1. **The Worker must have its secrets.** The job lists them by name, never by value, and stops
+   unless all of `SIGN_UP_ALLOW`, `BETTER_AUTH_SECRET`, `SECRETS_KEY`, `BETTER_AUTH_URL`,
+   `OIDC_ISSUER`, `OIDC_CLIENT_ID` and `OIDC_CLIENT_SECRET` are there
+   (`apps/web/scripts/cloud-secrets.json`). A Worker that does not exist yet has none. Without
+   this, a first deploy would answer with a generated `BETTER_AUTH_SECRET` and nothing else:
+   sign-up open to anyone, no sign-in provider, mail kept unsealed.
+2. **The queue**, made with the `eu` jurisdiction if it is missing.
+3. **The migrations**, applied to the `cloud` database.
+4. **The Worker**, built and deployed with `CLOUDFLARE_ENV=cloud`.
+5. **The smoke tests** ask the live deployment what a stranger would
+   (`MAIL_SMOKE_URL=https://mail.example.com pnpm test:smoke`): the sign-in page with its provider
+   (`MAIL_SMOKE_SSO=1`), no offer of an account and the sign-up form refused as closed
+   (`MAIL_SMOKE_CLOSED=1`), and `/mcp` and `/api/v1` turning away whoever has no key. They wait up
+   to three minutes for a new domain to answer as itself, sign in to nothing and change nothing,
+   so you can run them against your own deployment too, without the two variables.
+
+None of this touches the top level, which is what the Deploy button and `pnpm run deploy` use, or
+staging.
+
+**The first release** therefore goes: secrets first, then the release, then a look by hand.
+
+1. Put the secrets, each with `pnpm wrangler secret put <NAME> --env cloud`. The first one makes
+   the Worker, empty and without a route, when Wrangler asks. The seven above are required.
+   `OIDC_PROVIDER_NAME`, `EMAIL_FROM`, `SIGN_UP_REQUEST_URL` and the legal pages' addresses belong
+   with them. `SIGN_UP_ALLOW` holds the addresses that may make an account, the first owner's
+   among them.
+2. Publish the release. The job does the five steps above.
+3. By hand: sign in through the provider as a listed address, try to sign up as a stranger and see
+   it refused, subscribe the queue to the sending domain's delivery events (see [Email](#email),
+   with `gateweave-mail-events-eu` as the queue), and see that the daily run and the first event
+   arrive.
 
 ## Updating
 

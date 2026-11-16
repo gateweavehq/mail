@@ -71,10 +71,10 @@
 	// `cloud` is https://mail.gateweave.com, the Worker the top level names, and `staging` a
 	// separate Worker with its own database. Bindings are not inherited, so each repeats them.
 	"env": {
-		// Everything `cloud` keeps stays in the EU. Its database, its bucket and its queue were made
-		// with the `eu` jurisdiction, which nothing can change afterwards, and its Durable Objects
-		// (mailboxes, webhooks, audiences, rate limits) go there by DURABLE_OBJECT_JURISDICTION,
-		// which `pnpm run deploy` also reads to make a missing queue there. The Worker runs in
+		// Everything `cloud` keeps stays in the EU. Its database and its bucket were made with the
+		// `eu` jurisdiction, which nothing can change afterwards. Its Durable Objects (mailboxes,
+		// webhooks, audiences, rate limits) go there by DURABLE_OBJECT_JURISDICTION, which the
+		// deploy script also reads to make the queue there on the first release. The Worker runs in
 		// Frankfurt, as Gateweave ID's does, near the database (D1 says EEUR), so the queries a
 		// request makes one after another don't each cross an ocean. docs/self-hosting.md,
 		// "Gateweave Cloud", has the rest.

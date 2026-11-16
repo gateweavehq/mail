@@ -11,6 +11,8 @@
 		"preview": "vite preview",
 		"deploy": "node scripts/deploy.mjs",
 		"deploy:staging": "vite build --mode staging && wrangler deploy --cwd ../..",
+		"deploy:guard:cloud": "node scripts/check-cloud-secrets.mjs",
+		"deploy:queues": "node scripts/deploy.mjs --queues",
 		"typegen": "wrangler types && tsr generate",
 		"typecheck": "wrangler types && tsr generate && tsc && tsc -p scripts && tsc -p test && tsc -p e2e && tsc -p smoke",
 		"test": "vitest run",

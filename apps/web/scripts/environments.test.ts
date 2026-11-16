@@ -96,6 +96,33 @@ describe("environment builds", () => {
 		expect(manifest.scripts["db:migrate:cloud"]).toContain("--remote --env cloud");
 	});
 
+	it("changes nothing in a release before it knows the Worker has its secrets and its queue", () => {
+		// A first deploy of a Worker without secrets would go live open, and a token that can't reach
+		// Queues would stop the deploy after the schema had changed. Both come before the migrations.
+		const workflow = readFileSync(
+			new URL("../../../.github/workflows/deploy.yml", import.meta.url),
+			"utf8",
+		).replaceAll("\r\n", "\n");
+		const at = workflow.indexOf("\n  production:\n");
+		const production = workflow.slice(at);
+		const guard = production.indexOf("run: pnpm --filter @gateweave/mail-web deploy:guard:cloud");
+		const queues = production.indexOf(
+			"env:\n          CLOUDFLARE_ENV: cloud\n        run: pnpm --filter @gateweave/mail-web deploy:queues",
+		);
+		const migrate = production.indexOf("run: pnpm --filter @gateweave/mail-web db:migrate:cloud");
+		expect(guard).toBeGreaterThan(production.indexOf("pnpm install --frozen-lockfile"));
+		expect(queues).toBeGreaterThan(guard);
+		expect(migrate).toBeGreaterThan(queues);
+		expect(manifest.scripts["deploy:queues"]).toBe("node scripts/deploy.mjs --queues");
+		// The release then proves from outside that the deployment is closed and has its provider.
+		expect(production).toContain('MAIL_SMOKE_SSO: "1"\n          MAIL_SMOKE_CLOSED: "1"');
+		// Staging is not held to it, and self-hosters' deploys never run it.
+		expect(workflow.slice(0, at)).not.toContain("deploy:guard");
+		expect(manifest.scripts.deploy).toBe("node scripts/deploy.mjs");
+		const script = readFileSync(new URL("./deploy.mjs", import.meta.url), "utf8");
+		expect(script).not.toContain("cloud-secrets");
+	});
+
 	// Staging keeps the objects it has, outside any jurisdiction, until they are moved.
 	it("keeps Cloud's Durable Objects in the EU, and leaves staging's where they are", () => {
 		const vars = (env?: string) =>
