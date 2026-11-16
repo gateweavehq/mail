@@ -10,7 +10,7 @@ import { isAdminRole, type MemberRole, type PersonRole } from "./roles";
 export const previewInvitation = createServerFn({ method: "GET" })
 	.validator(z.string().min(1).max(128))
 	.handler(async ({ data: invitationId }) => {
-		const { getAuth, db, emailEnabled } = await import("#/server/auth");
+		const { getAuth, db, emailEnabled, signUpClosed } = await import("#/server/auth");
 		const auth = getAuth();
 		const { findPendingInvitation } = await import("#/server/workspaces");
 		const [invitation, session] = await Promise.all([
@@ -24,6 +24,8 @@ export const previewInvitation = createServerFn({ method: "GET" })
 				: null,
 			// Where the server can email, accepting requires a verified address (see auth config).
 			verificationRequired: emailEnabled,
+			// On a closed server the sign-up form makes no account, for an invited address either.
+			signUpClosed,
 		};
 	});
 

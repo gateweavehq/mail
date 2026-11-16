@@ -236,6 +236,8 @@ because `wrangler.jsonc` sets `keep_vars`.
 | `OIDC_CLIENT_ID`           | This deployment's client ID at the provider.                                                                                       |
 | `OIDC_CLIENT_SECRET`       | Its client secret there.                                                                                                           |
 | `OIDC_PROVIDER_NAME`       | What the sign-in button calls it. Unset: "single sign-on".                                                                         |
+| `SIGN_UP_ALLOW`            | Closes sign-up to all but these addresses and `@domain`s. Unset: anyone may sign up. See [below](#closing-sign-up).                |
+| `SIGN_UP_REQUEST_URL`      | An `https` address where people can ask for an account, linked from the sign-in page while sign-up is closed.                      |
 | `EMAIL_FROM`               | Turns on email (invitations, password reset), such as `Gateweave Mail <mail@example.com>`.                                         |
 | `MAILBOX_BYTES`            | How many bytes one mailbox may hold, as a whole number. Unset: 1 GiB.                                                              |
 | `SEND_PER_DAY`             | How many messages one workspace may send from its mailboxes a day, as a whole number. Unset: 200.                                  |
@@ -412,6 +414,49 @@ A Worker cannot reach another on its own zone through a route, and two on `worke
 each other at all: Cloudflare answers with error 1042, and the button says it could not reach the
 provider. If they have to stay on `workers.dev`, add `global_fetch_strictly_public` to
 `compatibility_flags` in each one's `wrangler.jsonc`.
+
+### Closing sign-up
+
+Anyone who reaches a new server can make an account on it. To close it, set `SIGN_UP_ALLOW` to the
+people who may: whole addresses (`ada@example.com`) and domains with an `@` in front
+(`@example.com`), separated by commas or spaces, in any case. A domain covers addresses at exactly
+that domain, not at its subdomains.
+
+```sh
+pnpm wrangler secret put SIGN_UP_ALLOW
+```
+
+With it set, new people come in through GitHub or your
+[OpenID Connect provider](#sign-in-through-an-openid-connect-provider) only, so set one of them up
+first. The sign-up form makes no account for anyone: a typed address proves nothing, so whoever
+knew or guessed a listed or invited address, or made one up at a listed domain, would get in ahead
+of its owner. A new account is made only for an address that comes verified from GitHub or the
+provider, and is:
+
+- **on the list**, or
+- **invited to a workspace**, by an invitation that is pending and has not expired. The invited
+  person continues with the provider under the invited address, and then accepts.
+
+**Everyone with an account can let others in.** Anyone who has an account can create a workspace
+and invite any address to it, and that invitation admits its address. This is a knowing choice,
+the same as Gateweave Track's: closing sign-up keeps strangers out, not the guests of the people
+you let in. There is no setting for less yet, so if you want less, keep the list short.
+
+People who already have an account are not affected, whatever the list says, and taking an entry
+off the list removes nobody. Everyone who is refused is told the same thing, that the server takes
+new accounts by invitation. The sign-in page says so too, never offers to create an account, and
+tells someone who was invited to continue with the provider. Set `SIGN_UP_REQUEST_URL` to an
+`https` address, such as a form or a waitlist, and the page links to it as "Ask for access".
+
+Only a setting that is not there leaves sign-up open. One that is there with nothing usable in it,
+the empty text included, closes sign-up to everyone but invited addresses, and the Worker's log
+says so once for each isolate: to open sign-up again, delete the setting rather than emptying it.
+An entry that is neither an address nor an `@domain` lets nobody in, and the log says how many
+such entries there are, not which.
+
+Make your own account before you set the list, or put your address on it and sign in through
+GitHub or the provider. The list holds addresses of people who may have no account, so it is
+personal data in your Worker's settings: take an entry out when someone asks to be forgotten.
 
 ## When someone deletes their account
 

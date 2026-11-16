@@ -16,6 +16,14 @@ declare namespace Cloudflare {
 		/** What the sign-in button calls it, as in "Continue with Gateweave". */
 		OIDC_PROVIDER_NAME?: string;
 		/**
+		 * Who may make an account: addresses and `@domain`s, separated by commas or spaces. Anyone
+		 * may only when it is not set at all: set and empty, nobody but invited addresses may. See
+		 * "Closing sign-up" in docs/self-hosting.md.
+		 */
+		SIGN_UP_ALLOW?: string;
+		/** Where to ask for an account, linked from the sign-in page while sign-up is closed. */
+		SIGN_UP_REQUEST_URL?: string;
+		/**
 		 * Who email comes from, such as `Gateweave Mail <mail@example.com>`. The domain must be
 		 * onboarded to Cloudflare Email Sending. Email is off when unset.
 		 */

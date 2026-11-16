@@ -26,7 +26,7 @@ export const Route = createFileRoute("/invite/$invitationId")({
 });
 
 function InvitePage() {
-	const { invitation, viewer, verificationRequired } = Route.useLoaderData();
+	const { invitation, viewer, verificationRequired, signUpClosed } = Route.useLoaderData();
 	const { invitationId } = Route.useParams();
 	useDocumentTitle(invitation ? `Join ${invitation.workspaceName}` : "Invitation");
 
@@ -49,6 +49,7 @@ function InvitePage() {
 			invitation={invitation}
 			viewer={viewer}
 			verificationRequired={verificationRequired}
+			signUpClosed={signUpClosed}
 		/>
 	);
 }
@@ -58,11 +59,13 @@ function ValidInvitation({
 	invitation,
 	viewer,
 	verificationRequired,
+	signUpClosed,
 }: {
 	invitationId: string;
 	invitation: InvitationPreview;
 	viewer: { email: string; emailVerified: boolean } | null;
 	verificationRequired: boolean;
+	signUpClosed: boolean;
 }) {
 	const { error: linkError } = Route.useSearch();
 	const router = useRouter();
@@ -105,6 +108,25 @@ function ValidInvitation({
 		}
 		toast.success("Invitation declined");
 		await router.navigate({ to: "/" });
+	}
+
+	if (!viewer && signUpClosed) {
+		// The sign-up form makes no account here, so there is one way in for someone new: the
+		// sign-in page's provider, which proves the address. It is the way in for the rest too.
+		return (
+			<Card title={title}>
+				{intro}
+				<p className="text-sm text-muted-foreground">
+					To accept, sign in. If you are new here, continue with the sign-in provider on the next
+					page, under {invitation.email}.
+				</p>
+				<Button asChild className="w-full">
+					<Link to="/login" search={{ redirect: here, email: invitation.email }}>
+						Sign in
+					</Link>
+				</Button>
+			</Card>
+		);
 	}
 
 	if (!viewer) {
