@@ -21,7 +21,7 @@ import { type Suppression, suppressedRefusal } from "../../lib/suppressions";
 import { bearsKey } from "../access";
 import { type AgentLogNote, noteAgent } from "../agent-log";
 import { db } from "../auth";
-import { AGENT_PAUSED, agentPolicyOf, pausedAmong } from "../auth/agents";
+import { AGENT_PAUSED, agentPolicyOf, agentStanding, pausedAmong } from "../auth/agents";
 import { DEFAULT_DNS_RESOLVER, dnsLookup } from "../directory/dns";
 import { appOrigin } from "../origin";
 import { sendingWith } from "../providers/keys";
@@ -354,10 +354,13 @@ export async function outboxAnswer(
 			}
 			// That look asks D1 and DNS, which takes a while, so the pause is asked once more of mail
 			// it lets go: what would have waited for a person must not leave after the agent was
-			// stopped. A pause that lands after this still finds the message on its way, as one that
-			// lands after any send does.
-			if (!hold && (await pausedAmong(db, [memberId])).size > 0) {
-				return refuse(AGENT_PAUSED, 403);
+			// stopped, or deleted, which takes its pause with it. A pause that lands after this still
+			// finds the message on its way, as one that lands after any send does.
+			if (!hold) {
+				const standing = await agentStanding(db, memberId);
+				if (standing === "paused") return refuse(AGENT_PAUSED, 403);
+				// As a revoked key is refused: its agent is no more.
+				if (standing === "gone") return refuse("Not found", 404);
 			}
 		}
 	}

@@ -167,6 +167,25 @@ export async function pausedAmong(db: Database, memberIds: string[]): Promise<Se
 }
 
 /**
+ * Whether an agent's membership is still there and running, in one read: `gone` once the agent was
+ * deleted, which takes its pause with it, so that asking only for a pause would let it through.
+ */
+export async function agentStanding(
+	db: Database,
+	memberId: string,
+): Promise<"running" | "paused" | "gone"> {
+	const { agentPause, member } = schema;
+	const row = await db
+		.select({ paused: agentPause.memberId })
+		.from(member)
+		.leftJoin(agentPause, eq(agentPause.memberId, member.id))
+		.where(eq(member.id, memberId))
+		.get();
+	if (!row) return "gone";
+	return row.paused === null ? "running" : "paused";
+}
+
+/**
  * Of these memberships, those whose mail mustn't be tried again by itself: agents paused now, and
  * anyone no longer a member, as an agent deleted while paused takes its pause with it. At most 100
  * at once, as D1 binds.

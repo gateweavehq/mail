@@ -670,6 +670,9 @@ describe("a paused agent", () => {
 			},
 			body,
 		);
+		// It may fail while the test is still waiting, before anything awaits it; a failure is still
+		// thrown where it is awaited below.
+		answer.catch(() => {});
 		let finished = false;
 		try {
 			// The key's use is noted once the key, and whether its agent is paused, has been read.
@@ -714,6 +717,28 @@ describe("a paused agent", () => {
 		expect(response.status).toBe(403);
 		expect(((await response.json()) as { error: string }).error).toMatch(/^This agent is paused\./);
 		expect(await messages(billing)).toHaveLength(0);
+		expect(await logOf(agent)).toEqual([]);
+	});
+
+	it("sends nothing inside its workspace when it is deleted while the directory is asked", async () => {
+		const space = await workspace();
+		const billing = await space.mailbox("billing");
+		const agent = await agentOf(space);
+		await saved(agent, { approval: "always" });
+		// Deleting an agent takes its membership, and any pause, with it: nothing is left to say it
+		// was stopped but that it is gone.
+		let deleted = 0;
+		beforeAnswering.set(space.domain, async () => {
+			deleted = (await auth("/agents/delete", { agentId: agent.id })).status;
+		});
+		const response = await agentSends(space, agent, [billing.address]);
+		expect(deleted).toBe(200);
+		// As a revoked key is refused.
+		expect(response.status).toBe(404);
+		expect(await messages(billing)).toHaveLength(0);
+		// Not even a copy in the mailbox it wrote from, and nothing in a log of its own.
+		expect(await messages(space.desk)).toHaveLength(0);
+		expect(await sentTo(billing.address)).toHaveLength(0);
 		expect(await logOf(agent)).toEqual([]);
 	});
 
