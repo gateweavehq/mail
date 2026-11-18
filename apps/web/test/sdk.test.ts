@@ -69,7 +69,11 @@ describe("the SDK", () => {
 		expect(listed.mailboxes).toEqual([
 			expect.objectContaining({ id: space.signUps.id, name: space.signUps.name, maySend: true }),
 		]);
-		expect(listed.sending).toEqual({ perDay: 20, withoutApproval: ["@example.org"] });
+		expect(listed.sending).toEqual({
+			perDay: 20,
+			approval: "unlisted",
+			withoutApproval: ["@example.org"],
+		});
 
 		// An address of its own, and a code mail to it, from a proved sender, while it waits.
 		const made = await mail.createAddress({

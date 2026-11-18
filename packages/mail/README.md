@@ -27,8 +27,9 @@ SHA-256 and the `integrity` that npm keeps in your lockfile, and each release's 
 
 You need your Mail's address, such as `https://mail.example.com`, and an agent's key. An owner or
 admin makes the agent in the workspace's settings, under Agents, and copies its key, which is shown
-once. The agent sees only the mailboxes it was given, and sends only as its policy lets it: mail to
-anyone the policy doesn't name waits for a person to approve it.
+once. The agent sees only the mailboxes it was given, and sends only as its policy lets it: on its
+own, or waiting for a person to approve it, all of it or what goes to anyone the policy doesn't
+name. `listMailboxes` says which, as `sending.approval`.
 
 ## The SDK
 

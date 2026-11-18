@@ -541,7 +541,18 @@ describe("an agent's mail to an address here", () => {
 			body: JSON.stringify({ organizationId: from.workspaceId, name: "Courier" }),
 		});
 		expect(made.status).toBe(200);
-		const { agent, key } = (await made.json()) as { agent: { memberId: string }; key: string };
+		const { agent, key } = (await made.json()) as {
+			agent: { id: string; memberId: string };
+			key: string;
+		};
+		// An agent is made to send on its own, so its owner has its mail wait first. The address is
+		// another workspace's, which follows the policy as mail to anyone outside does.
+		const waits = await mail.fetch(`${origin}/api/auth/agents/set-policy`, {
+			method: "POST",
+			headers: { ...owner.headers, origin, "content-type": "application/json" },
+			body: JSON.stringify({ agentId: agent.id, sendPerDay: 20, allowed: [], approval: "always" }),
+		});
+		expect(waits.status).toBe(200);
 		const access = await mail.fetch(`${origin}/api/directory/${from.slug}`, {
 			method: "POST",
 			headers: { ...owner.headers, origin, "content-type": "application/json" },

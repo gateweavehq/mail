@@ -315,6 +315,14 @@ address that bounced or complained before. An agent also has a day's count of it
 owner or admin sets on the Agents page, and mail it writes that waits for approval counts against
 the workspace's day only once it is approved.
 
+An agent is made to send on its own, up to 20 messages a day. On its page an owner or admin can
+have its mail wait for a person instead: all of it, or what goes to anyone a list doesn't name.
+Mail whose every recipient is an address of the agent's own workspace never waits. An agent that
+sends on its own can be made, by a message it reads, to write to anyone, up to its day's count, so
+have the mail of one that reads strangers' mail wait. Agents made before a server had this choice
+keep what they had, mail inside the workspace waiting included, until someone saves their sending
+settings: one whose list was empty still has everything wait.
+
 A message whose every recipient is an address on this deployment, in any workspace, doesn't leave
 it: it goes straight to their mailboxes, with no send and no spam score, and its copy shows each as
 delivered at once. Its sender's domain counts as proved there. That needs DNS to agree today:

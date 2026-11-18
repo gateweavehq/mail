@@ -198,6 +198,20 @@ async function makeAgent(box: Box, name = "Sorter") {
 
 type Agent = Awaited<ReturnType<typeof makeAgent>>;
 
+/**
+ * Has all of an agent's mail wait for a person, as an owner chooses on its page: an agent is made
+ * to send on its own, so a test of what waits says so first.
+ */
+async function everythingWaits(agent: { id: string }) {
+	const set = await auth("/agents/set-policy", {
+		agentId: agent.id,
+		sendPerDay: 20,
+		allowed: [],
+		approval: "always",
+	});
+	expect(set.status).toBe(200);
+}
+
 /** Asks Better Auth's agents plugin, as the owner unless someone else asks. */
 function auth(path: string, body: unknown, person: Asker = owner) {
 	return mail.fetch(`${origin}/api/auth${path}`, {
@@ -834,6 +848,7 @@ describe("HTML and files", () => {
 	it("wait with an agent's message for a person, who sees them before they go", async () => {
 		const box = await mailboxWithAddress();
 		const agent = await makeAgent(box);
+		await everythingWaits(agent);
 		await letSend(box, [agent.memberId], [agent.memberId]);
 		const to = `held.${box.slug}@example.org`;
 		const written = await mail.fetch(`${origin}/api/mail/${box.slug}/${box.mailboxId}/outbox`, {
@@ -926,6 +941,7 @@ describe("HTML and files", () => {
 	it("don't go when the copy no longer holds them, and say why", async () => {
 		const box = await mailboxWithAddress();
 		const agent = await makeAgent(box);
+		await everythingWaits(agent);
 		await letSend(box, [agent.memberId], [agent.memberId]);
 		const to = `changed.${box.slug}@example.org`;
 		const written = await mail.fetch(`${origin}/api/mail/${box.slug}/${box.mailboxId}/outbox`, {
@@ -1007,6 +1023,7 @@ describe("an agent", () => {
 	it("waits for a person to approve what it writes, unless its policy lets it go", async () => {
 		const box = await mailboxWithAddress();
 		const agent = await makeAgent(box);
+		await everythingWaits(agent);
 		const reader = await join(box.workspaceId);
 		await letSend(box, [agent.memberId, reader.memberId], [agent.memberId]);
 		const recipient = `ada.${box.slug}@example.org`;
@@ -1072,6 +1089,7 @@ describe("an agent", () => {
 	it("has what waits rejected by anyone who reads the mailbox, and nothing else of theirs", async () => {
 		const box = await mailboxWithAddress();
 		const agent = await makeAgent(box);
+		await everythingWaits(agent);
 		const reader = await join(box.workspaceId);
 		await letSend(box, [agent.memberId, reader.memberId], [agent.memberId]);
 		// The stand-in refuses it, by its local part, and so never sends it.
@@ -1170,19 +1188,20 @@ describe("an agent", () => {
 			...policy,
 			allowed: ["@Acme.test", "b@acme.test", "@acme.test"],
 		});
-		expect(await saved.json()).toEqual({
-			id: agent.id,
-			policy: { sendPerDay: 5, allowed: ["@acme.test", "b@acme.test"] },
-		});
+		// A list sent without a choice, as a page from before sends it, is the choice of that list.
+		const stored = {
+			sendPerDay: 5,
+			approval: "unlisted",
+			allowed: ["@acme.test", "b@acme.test"],
+			insideWaits: false,
+		};
+		expect(await saved.json()).toEqual({ id: agent.id, policy: stored });
 		const listed = await mail.fetch(
 			`${origin}/api/auth/agents/list?organizationId=${box.workspaceId}`,
 			{ headers: owner.headers },
 		);
 		expect(await listed.json()).toEqual([
-			expect.objectContaining({
-				id: agent.id,
-				policy: { sendPerDay: 5, allowed: ["@acme.test", "b@acme.test"] },
-			}),
+			expect.objectContaining({ id: agent.id, policy: stored }),
 		]);
 	});
 });

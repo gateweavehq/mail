@@ -20,9 +20,11 @@ import {
 import {
 	type AgentPolicy,
 	AgentPolicyInput,
+	approvalOfList,
 	DEFAULT_AGENT_POLICY,
+	NEW_AGENT_POLICY,
 	policySummary,
-	readAllowed,
+	readPolicy,
 } from "../../lib/agent-policy";
 import { isAdminRole } from "../../lib/roles";
 import { type AgentLogNote, dropAgentLog, noteAgent } from "../agent-log";
@@ -165,6 +167,25 @@ export async function pausedAmong(db: Database, memberIds: string[]): Promise<Se
 }
 
 /**
+ * Whether an agent's membership is still there and running, in one read: `gone` once the agent was
+ * deleted, which takes its pause with it, so that asking only for a pause would let it through.
+ */
+export async function agentStanding(
+	db: Database,
+	memberId: string,
+): Promise<"running" | "paused" | "gone"> {
+	const { agentPause, member } = schema;
+	const row = await db
+		.select({ paused: agentPause.memberId })
+		.from(member)
+		.leftJoin(agentPause, eq(agentPause.memberId, member.id))
+		.where(eq(member.id, memberId))
+		.get();
+	if (!row) return "gone";
+	return row.paused === null ? "running" : "paused";
+}
+
+/**
  * Of these memberships, those whose mail mustn't be tried again by itself: agents paused now, and
  * anyone no longer a member, as an agent deleted while paused takes its pause with it. At most 100
  * at once, as D1 binds.
@@ -231,19 +252,22 @@ export interface AgentPauseInfo {
 }
 
 /**
- * What this agent's membership may send: its policy, or the defaults when none was set. Read as the
- * agent sends, so a change counts from its next message.
+ * What this agent's membership may send: its policy, or, for an agent made before each was made
+ * with one, the defaults of that time. Read as the agent sends, so a change counts from its next
+ * message.
  */
 export async function agentPolicyOf(db: Database, memberId: string): Promise<AgentPolicy> {
 	const { agentPolicy } = schema;
 	const row = await db
-		.select({ sendPerDay: agentPolicy.sendPerDay, allowed: agentPolicy.allowed })
+		.select({
+			sendPerDay: agentPolicy.sendPerDay,
+			allowed: agentPolicy.allowed,
+			approval: agentPolicy.approval,
+		})
 		.from(agentPolicy)
 		.where(eq(agentPolicy.memberId, memberId))
 		.get();
-	return row
-		? { sendPerDay: row.sendPerDay, allowed: readAllowed(row.allowed) }
-		: DEFAULT_AGENT_POLICY;
+	return row ? readPolicy(row) : DEFAULT_AGENT_POLICY;
 }
 
 const agentName = z.string().trim().min(1).max(80);
@@ -378,6 +402,7 @@ export function agentMembers({ db }: { db: Database }) {
 							createdAt: member.createdAt,
 							sendPerDay: agentPolicy.sendPerDay,
 							allowed: agentPolicy.allowed,
+							approval: agentPolicy.approval,
 							address: {
 								maxLive: agentAddressPolicy.maxLive,
 								maxDays: agentAddressPolicy.maxDays,
@@ -424,7 +449,11 @@ export function agentMembers({ db }: { db: Database }) {
 							policy:
 								row.sendPerDay === null || row.allowed === null
 									? DEFAULT_AGENT_POLICY
-									: { sendPerDay: row.sendPerDay, allowed: readAllowed(row.allowed) },
+									: readPolicy({
+											sendPerDay: row.sendPerDay,
+											allowed: row.allowed,
+											approval: row.approval,
+										}),
 							addressPolicy: row.address
 								? {
 										maxLive: row.address.maxLive,
@@ -493,6 +522,16 @@ export function agentMembers({ db }: { db: Database }) {
 							role: AGENT_ROLE,
 							createdAt: now,
 						}),
+						// Its policy from the start, said outright: an agent without a row is one from
+						// before agents sent on their own, whose mail all waits.
+						db.insert(agentPolicy).values({
+							memberId,
+							sendPerDay: NEW_AGENT_POLICY.sendPerDay,
+							allowed: JSON.stringify(NEW_AGENT_POLICY.allowed),
+							approval: NEW_AGENT_POLICY.approval,
+							updatedBy: ctx.context.session.user.id,
+							updatedAt: now,
+						}),
 					]);
 					const key = await insertKey(agentId, organizationId);
 					// Together, so the log keeps them in this order.
@@ -509,7 +548,7 @@ export function agentMembers({ db }: { db: Database }) {
 						name,
 						createdAt: now.getTime(),
 						keys: [key.info],
-						policy: DEFAULT_AGENT_POLICY,
+						policy: NEW_AGENT_POLICY,
 						addressPolicy: DEFAULT_AGENT_ADDRESS_POLICY,
 						liveAddresses: 0,
 						paused: null,
@@ -552,10 +591,21 @@ export function agentMembers({ db }: { db: Database }) {
 				},
 				async (ctx) => {
 					const agent = await agentForAdmin(ctx.body.agentId, ctx.context.session.user.id);
-					const allowed = JSON.stringify([...new Set(ctx.body.allowed)].sort());
+					const entries = [...new Set(ctx.body.allowed)].sort();
+					// Always one of the three from here on, so the row no longer reads as one from
+					// before the choice: a person has now said what this agent may do.
+					const approval = ctx.body.approval ?? approvalOfList(entries);
+					if (approval === "unlisted" && entries.length === 0) {
+						throw new APIError("BAD_REQUEST", {
+							message:
+								"List at least one address or domain its mail goes to on its own, or choose that all of it waits.",
+						});
+					}
+					const allowed = JSON.stringify(entries);
 					const values = {
 						sendPerDay: ctx.body.sendPerDay,
 						allowed,
+						approval,
 						updatedBy: ctx.context.session.user.id,
 						updatedAt: new Date(),
 					};
@@ -564,10 +614,7 @@ export function agentMembers({ db }: { db: Database }) {
 						.values({ memberId: agent.memberId, ...values })
 						.onConflictDoUpdate({ target: agentPolicy.memberId, set: values })
 						.run();
-					const policy: AgentPolicy = {
-						sendPerDay: ctx.body.sendPerDay,
-						allowed: readAllowed(allowed),
-					};
+					const policy: AgentPolicy = readPolicy(values);
 					await noteChange(agent, ctx.context.session.user.id, "policy.changed", {
 						detail: policySummary(policy),
 					});

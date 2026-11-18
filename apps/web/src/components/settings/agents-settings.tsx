@@ -30,6 +30,7 @@ import {
 	MAX_AGENT_LIVE_ADDRESSES,
 } from "#/lib/agent-addresses";
 import {
+	type Approval,
 	MAX_AGENT_SEND_PER_DAY,
 	MAX_ALLOWED_ENTRIES,
 	policySummary,
@@ -84,9 +85,9 @@ export function AgentsSettings({
 				<p className="text-sm text-muted-foreground">
 					An agent is a member for an AI agent, such as one that sorts what arrives at support. It
 					reads mail over MCP or the API with a key, and only the mailboxes it is given: opening a
-					mailbox to everyone doesn't open it to agents. A mailbox can let it send too: what it
-					writes to the addresses its settings here allow goes on its own, and anything else waits
-					for a person to approve it. It never signs in, and it cannot change the workspace.
+					mailbox to everyone doesn't open it to agents. A mailbox can let it send too: it sends on
+					its own, up to its messages a day, unless its settings here have its mail wait for a
+					person to approve it. It never signs in, and it cannot change the workspace.
 					{admin ? (
 						<>
 							{" "}
@@ -527,10 +528,30 @@ function AgentRow({
 	);
 }
 
-/** How much an agent may send, and to whom without approval. */
-function PolicyDialog({ agent, onClose }: { agent: AgentInfo; onClose: () => void }) {
+/** The three things a policy can say about approval, as the dialog offers them. */
+const APPROVAL_CHOICES: { value: Approval; label: string; help: string }[] = [
+	{
+		value: "never",
+		label: "It sends on its own",
+		help: "Nobody reads its mail first. Its messages a day are what bounds it.",
+	},
+	{
+		value: "unlisted",
+		label: "It sends on its own to those listed, and the rest waits",
+		help: "A message goes on its own only when everyone it is to is listed below.",
+	},
+	{
+		value: "always",
+		label: "Everything waits for approval",
+		help: "For an agent that reads mail from strangers and shouldn't write freely.",
+	},
+];
+
+/** How much an agent may send, and which of it waits for a person. */
+export function PolicyDialog({ agent, onClose }: { agent: AgentInfo; onClose: () => void }) {
 	const router = useRouter();
 	const [perDay, setPerDay] = useState(String(agent.policy.sendPerDay));
+	const [approval, setApproval] = useState<Approval>(agent.policy.approval);
 	const [allowed, setAllowed] = useState(agent.policy.allowed.join("\n"));
 	const [pending, setPending] = useState(false);
 	const [error, setError] = useState<string | null>(null);
@@ -547,11 +568,16 @@ function PolicyDialog({ agent, onClose }: { agent: AgentInfo; onClose: () => voi
 			setError(`List up to ${MAX_ALLOWED_ENTRIES} addresses and domains.`);
 			return;
 		}
+		if (approval === "unlisted" && entries.length === 0) {
+			setError("List at least one address or domain, or choose that everything waits.");
+			return;
+		}
 		setPending(true);
 		setError(null);
 		const result = await authClient.agents.setPolicy({
 			agentId: agent.id,
 			sendPerDay,
+			approval,
 			allowed: entries,
 		});
 		setPending(false);
@@ -574,8 +600,8 @@ function PolicyDialog({ agent, onClose }: { agent: AgentInfo; onClose: () => voi
 				<DialogHeader>
 					<DialogTitle className="wrap-anywhere">What {agent.name} can send</DialogTitle>
 					<DialogDescription>
-						It sends only from mailboxes that let it. Mail to anyone not listed here waits for
-						someone who reads the mailbox to approve it.
+						It sends only from mailboxes that let it. Mail that waits is approved or rejected by
+						someone who reads the mailbox.
 					</DialogDescription>
 				</DialogHeader>
 				<form onSubmit={onSubmit} className="space-y-4">
@@ -598,21 +624,60 @@ function PolicyDialog({ agent, onClose }: { agent: AgentInfo; onClose: () => voi
 							and 0 stops it sending.
 						</p>
 					</div>
+					<fieldset className="space-y-2">
+						<legend className="text-sm font-medium">Approval</legend>
+						{APPROVAL_CHOICES.map((choice) => {
+							const id = `agent-approval-${choice.value}`;
+							return (
+								<div key={choice.value} className="flex items-start gap-2">
+									<input
+										type="radio"
+										id={id}
+										name="agent-approval"
+										value={choice.value}
+										checked={approval === choice.value}
+										onChange={() => setApproval(choice.value)}
+										aria-describedby={`${id}-help`}
+										className="mt-1 size-4 shrink-0 accent-primary"
+									/>
+									<div className="space-y-0.5">
+										<Label htmlFor={id} className="font-normal">
+											{choice.label}
+										</Label>
+										<p id={`${id}-help`} className="text-xs text-muted-foreground">
+											{choice.help}
+										</p>
+									</div>
+								</div>
+							);
+						})}
+					</fieldset>
 					<div className="space-y-2">
 						<Label htmlFor="agent-allowed">Goes without approval to</Label>
 						<Textarea
 							id="agent-allowed"
 							value={allowed}
+							// Typing here never moves the choice above: correcting an address in a list kept
+							// under "Everything waits" must not let anything through.
 							onChange={(event) => setAllowed(event.target.value)}
 							rows={4}
 							placeholder={"ops@example.com\n@example.com"}
-							aria-describedby="agent-allowed-help"
+							aria-describedby="agent-allowed-help agent-allowed-unused"
 						/>
 						<p id="agent-allowed-help" className="text-xs text-muted-foreground">
-							One a line: an address, or a domain after an @ for anyone there. A message goes on its
-							own only when everyone it is to is listed.
+							One a line: an address, or a domain after an @ for anyone there.
+						</p>
+						<p id="agent-allowed-unused" role="status" className="text-xs font-medium">
+							{approval !== "unlisted" && allowed.trim()
+								? "This list is kept but not used: it counts only when you choose “It sends on its own to those listed, and the rest waits” above."
+								: ""}
 						</p>
 					</div>
+					<p className="text-xs text-muted-foreground">
+						{agent.policy.insideWaits
+							? "These settings are from before agents could send on their own, so today its mail to this workspace's own addresses waits like the rest. Once you save them, mail whose every recipient is an address of this workspace goes on its own, whatever you choose above."
+							: "Mail whose every recipient is an address of this workspace goes on its own, whatever you choose above."}
+					</p>
 					{error && (
 						<p role="alert" className="text-sm text-destructive">
 							{error}

@@ -41,7 +41,9 @@ export interface ListMailboxesOutput {
 	sending: {
 		/** Messages you may write a day; 0 means none. */
 		perDay: number;
-		/** Addresses, and domains written @example.com, your mail goes to as it is. Mail to anyone else waits for a person to approve it. */
+		/** Which of your mail waits for a person to approve it: "never", it all goes on its own; "unlisted", what goes to anyone withoutApproval doesn't name; "always", all of it. Mail whose every recipient is an address of your own workspace on this server may go on its own whichever it is. */
+		approval: "never" | "unlisted" | "always";
+		/** Under "unlisted", the addresses, and domains written @example.com, your mail goes to as it is, while mail to anyone else waits for a person to approve it. Empty under "never" and "always", which need no list. */
 		withoutApproval: string[];
 		[key: string]: unknown;
 	};
@@ -393,7 +395,7 @@ export interface SendEmailInput {
 export interface SendEmailOutput {
 	id: string;
 	threadId: string;
-	/** "held" when it waits for a person to approve it, as your policy has mail to anyone else wait; otherwise how sending it went. */
+	/** "held" when it waits for a person to approve it, as your policy says (list_mailboxes gives it, as sending.approval); otherwise how sending it went. */
 	state: string;
 	[key: string]: unknown;
 }
@@ -447,7 +449,7 @@ export interface SendTemplateInput {
 export interface SendTemplateOutput {
 	id: string;
 	threadId: string;
-	/** "held" when it waits for a person to approve it, as your policy has mail to anyone else wait; otherwise how sending it went. */
+	/** "held" when it waits for a person to approve it, as your policy says (list_mailboxes gives it, as sending.approval); otherwise how sending it went. */
 	state: string;
 	/** The template's name, as the workspace has it. */
 	template: string;
@@ -491,7 +493,7 @@ export interface ReplyInput {
 export interface ReplyOutput {
 	id: string;
 	threadId: string;
-	/** "held" when it waits for a person to approve it, as your policy has mail to anyone else wait; otherwise how sending it went. */
+	/** "held" when it waits for a person to approve it, as your policy says (list_mailboxes gives it, as sending.approval); otherwise how sending it went. */
 	state: string;
 	[key: string]: unknown;
 }
@@ -849,7 +851,7 @@ export interface MailMethods {
 	/**
 	 * List mailboxes.
 	 *
-	 * Lists the mailboxes you may read, with their addresses and whether you may send from each, and your limits: where your mail goes without a person approving it, and which addresses you may make. Start here.
+	 * Lists the mailboxes you may read, with their addresses and whether you may send from each, and your limits: how many messages you may write a day, whether your mail goes on its own or waits for a person to approve it, and which addresses you may make. Start here.
 	 *
 	 * `GET /mailboxes`, as the MCP tool `list_mailboxes`.
 	 */
@@ -912,7 +914,7 @@ export interface MailMethods {
 	/**
 	 * Send email.
 	 *
-	 * Sends a message from a mailbox you may send from: text or HTML, with files if you like. Mail to anyone your policy doesn't name waits for a person to approve it (state: held), and counts against your messages a day either way.
+	 * Sends a message from a mailbox you may send from: text or HTML, with files if you like. Your policy, which list_mailboxes gives, says whether it goes on its own or waits for a person to approve it (state: held): all of your mail, none of it, or what goes to anyone the policy doesn't name. Whichever it is, mail whose every recipient is an address of your own workspace on this server goes on its own, unless your policy is one from before that was so, which holds it like the rest until an owner or admin saves it; the answer's state says which happened. One that goes on its own answers with how sending went, which is sent when it went, and may be waiting or uncertain. It counts against your messages a day either way.
 	 *
 	 * `POST /mailboxes/{mailbox}/messages`, as the MCP tool `send_email`.
 	 */
@@ -930,7 +932,7 @@ export interface MailMethods {
 	/**
 	 * Send template.
 	 *
-	 * Sends a message made from one of the workspace's templates, from a mailbox you may send from, with a value for each of its variables. It goes as send_email does: mail to anyone your policy doesn't name waits for a person to approve it (state: held), and counts against your messages a day either way. The template's subject and body, which people in the workspace wrote, can't be changed here, only filled in.
+	 * Sends a message made from one of the workspace's templates, from a mailbox you may send from, with a value for each of its variables. It goes as send_email does: on its own, answering with how sending went, or waiting for a person to approve it (state: held), as your policy says, and it counts against your messages a day either way. The template's subject and body, which people in the workspace wrote, can't be changed here, only filled in.
 	 *
 	 * `POST /mailboxes/{mailbox}/template-messages`, as the MCP tool `send_template`.
 	 */
@@ -939,7 +941,7 @@ export interface MailMethods {
 	/**
 	 * Reply.
 	 *
-	 * Answers a message in its thread, to whoever it asks answers to go to, from the address it came to: text or HTML, with files if you like. Waits for approval as send_email does.
+	 * Answers a message in its thread, to whoever it asks answers to go to, from the address it came to: text or HTML, with files if you like. Goes on its own or waits for approval as send_email does.
 	 *
 	 * `POST /mailboxes/{mailbox}/messages/{messageId}/reply`, as the MCP tool `reply`.
 	 */

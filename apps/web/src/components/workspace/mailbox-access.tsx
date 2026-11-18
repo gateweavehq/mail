@@ -237,9 +237,8 @@ export function MailboxAccessDialog({
 							{readers.agents.length > 0 && (
 								<fieldset className="space-y-2" disabled={pending}>
 									<legend className="text-sm text-muted-foreground">
-										Agents, which read it only when ticked here. One that can send mails the
-										addresses its settings allow on its own, and anything else waits for someone
-										here to approve it:
+										Agents, which read it only when ticked here. One that can send does so on its
+										own, unless its settings have its mail wait for someone here to approve it:
 									</legend>
 									{list("agent", readers.agents, (reader) => chosen.has(reader.memberId), true)}
 								</fieldset>

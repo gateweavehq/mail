@@ -199,6 +199,7 @@ describe("the agent API", () => {
 	it("sends HTML and files with its key, taking a large body only where files go", async () => {
 		const space = await workspace();
 		const agent = await agentOf(space);
+		await world.everythingWaits(agent.id);
 		const bearer = { authorization: `Bearer ${agent.key}` };
 		const messages = `${box(space.signUps.id)}/messages`;
 		// Past the 1 MB every other route takes.

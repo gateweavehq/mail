@@ -283,7 +283,7 @@ const listMailboxes = operation({
 	name: "list_mailboxes",
 	title: "List mailboxes",
 	description:
-		"Lists the mailboxes you may read, with their addresses and whether you may send from each, and your limits: where your mail goes without a person approving it, and which addresses you may make. Start here.",
+		"Lists the mailboxes you may read, with their addresses and whether you may send from each, and your limits: how many messages you may write a day, whether your mail goes on its own or waits for a person to approve it, and which addresses you may make. Start here.",
 	input: z.object({}),
 	output: OUTPUTS.list_mailboxes,
 	hints: { readOnlyHint: true, openWorldHint: false },
@@ -301,7 +301,12 @@ const listMailboxes = operation({
 				addresses: box.addresses.map(addressOf),
 				maySend: box.maySend,
 			})),
-			sending: { perDay: sending.sendPerDay, withoutApproval: sending.allowed },
+			sending: {
+				perDay: sending.sendPerDay,
+				approval: sending.approval,
+				// Only the list in force: one kept from an earlier choice lets nothing through.
+				withoutApproval: sending.approval === "unlisted" ? sending.allowed : [],
+			},
 			addressPolicy: addresses,
 		};
 	},
@@ -494,7 +499,7 @@ const sendEmail = operation({
 	name: "send_email",
 	title: "Send email",
 	description:
-		"Sends a message from a mailbox you may send from: text or HTML, with files if you like. Mail to anyone your policy doesn't name waits for a person to approve it (state: held), and counts against your messages a day either way.",
+		"Sends a message from a mailbox you may send from: text or HTML, with files if you like. Your policy, which list_mailboxes gives, says whether it goes on its own or waits for a person to approve it (state: held): all of your mail, none of it, or what goes to anyone the policy doesn't name. Whichever it is, mail whose every recipient is an address of your own workspace on this server goes on its own, unless your policy is one from before that was so, which holds it like the rest until an owner or admin saves it; the answer's state says which happened. One that goes on its own answers with how sending went, which is sent when it went, and may be waiting or uncertain. It counts against your messages a day either way.",
 	input: z.object({
 		mailbox: mailboxInput,
 		to: addressesInput.min(1).describe(`To and cc together take ${MAX_RECIPIENTS} at most.`),
@@ -560,7 +565,7 @@ const sendTemplate = operation({
 	name: "send_template",
 	title: "Send template",
 	description:
-		"Sends a message made from one of the workspace's templates, from a mailbox you may send from, with a value for each of its variables. It goes as send_email does: mail to anyone your policy doesn't name waits for a person to approve it (state: held), and counts against your messages a day either way. The template's subject and body, which people in the workspace wrote, can't be changed here, only filled in.",
+		"Sends a message made from one of the workspace's templates, from a mailbox you may send from, with a value for each of its variables. It goes as send_email does: on its own, answering with how sending went, or waiting for a person to approve it (state: held), as your policy says, and it counts against your messages a day either way. The template's subject and body, which people in the workspace wrote, can't be changed here, only filled in.",
 	input: z.object({
 		mailbox: mailboxInput,
 		template: templateNameInput,
@@ -620,7 +625,7 @@ const reply = operation({
 	name: "reply",
 	title: "Reply",
 	description:
-		"Answers a message in its thread, to whoever it asks answers to go to, from the address it came to: text or HTML, with files if you like. Waits for approval as send_email does.",
+		"Answers a message in its thread, to whoever it asks answers to go to, from the address it came to: text or HTML, with files if you like. Goes on its own or waits for approval as send_email does.",
 	input: z.object({
 		mailbox: mailboxInput,
 		messageId: idInput,

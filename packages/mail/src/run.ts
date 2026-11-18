@@ -317,7 +317,7 @@ async function send(args: string[], io: CliIO, say: (text: string) => void): Pro
 	});
 	io.stdout(`${JSON.stringify(sent, null, 2)}\n`);
 	if (sent.state === "held") {
-		say("It waits for a person to approve it, as the agent's policy has for mail to anyone else.");
+		say("It waits for a person to approve it, as the agent's policy says.");
 	}
 	return DONE;
 }

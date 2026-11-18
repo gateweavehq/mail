@@ -764,14 +764,36 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
       from the answered message's own headers: its `References`, or failing those its `In-Reply-To`,
       then its id. A long chain keeps the first id and the newest that fit in Email Service's 2,048
       bytes for a header.
-    - **An agent's mail waits for a person** (`agent-policy.ts`). A key may only send, never
+    - **An agent's mail goes on its own, or waits for a person, as its policy says**
+      (`agent-policy.ts`). A key may only send, never
       approve, reject, send again or discard, and only from a mailbox whose grant to the agent says
       so (`mailbox_access.send`, which only an agent's grant can have, as a person who reads a
       mailbox sends anyway). Its policy (`agent_policy`, set by an owner or admin on the Agents
-      page) gives it a day's count, 20 unless changed and 0 to stop it, counted as it writes,
-      whether the message waits or not (`agent-send:<member>` in the rate-limit object), and a
-      list of addresses and domains (`@example.com`, not its subdomains) it may mail on its own.
-      A message to anyone else, To or Cc, is kept as `held`: its copy is in its thread like any
+      page, with a recent sign-in) gives it a day's count, 20 unless changed and 0 to stop it,
+      counted as it writes, whether the message waits or not (`agent-send:<member>` in the
+      rate-limit object), and says which of its mail waits for a person (`agent_policy.approval`):
+      `never`, it all goes on its own, which a new agent is made with; `unlisted`, it goes on its
+      own to a list of addresses and domains (`@example.com`, not its subdomains) and the rest
+      waits; `always`, all of it waits. `outboxAnswer` (`mailbox/send.ts`) is the one place that
+      decides, for `send_email`, `reply` and `send_template` alike (`waitsForApproval`), and no
+      operation of the agent API writes a policy: only `/agents/set-policy`, which takes a
+      person's session, does. **An agent that sends on its own can be made, by a message it
+      reads, to write to anyone, up to its day's count.** That count is the bound, with the
+      workspace's own day, the suppression list, an admin's pause and the agent's log, which
+      records every message it sent with whom it went to; `always` remains for an agent that
+      reads untrusted mail and should not write freely. Mail that stays inside the agent's own
+      workspace never waits, whatever the policy says (`staysInWorkspace`, in `mailbox/direct.ts`):
+      every recipient, To and Cc, is a live address of that workspace, on a domain that workspace
+      holds, by the rule mail straight to a mailbox goes by, below, so DNS must say today what
+      the directory says, and the sender must still be the mailbox's own. Another workspace's
+      address on the same server, an address that ended or was removed, and a domain that only
+      looks like the workspace's all follow the policy, as does any message when D1 or DNS can't
+      say. A paused agent's key sends nothing, so not that either, and what it wrote that waited
+      to be tried again is held like the rest. **A policy from before this** keeps exactly what it
+      had: a row without `approval`, or an agent without a row, reads by its list alone as it
+      did (empty, everything waits; `readPolicy`), and its mail inside the workspace waits like
+      the rest (`insideWaits`), until a person saves its policy, which writes one of the three.
+      A message that waits, To or Cc, is kept as `held`: its copy is in its thread like any
       other, Email Service isn't called, and the mailbox's page lists what waits. Anyone who may
       read the mailbox can approve it, which sends it then and records who did
       (`outgoing.approved_by`), or reject it, which discards it; rejecting doesn't need the right
@@ -844,7 +866,8 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
       others as `failed`. A try writes its decision and its outcome only while the row is still
       its own (`attempted_at`), so one the alarm gave up on changes nothing when it ends. The
       gateway's checks stay as they are: the suppression list, the workspace's day and an agent's
-      policy and approval. A mailbox may send to its own address, and keeps the copy and the mail
+      policy and approval, which mail to another workspace's address here follows like mail to
+      anyone outside. A mailbox may send to its own address, and keeps the copy and the mail
       it got side by side in the thread. `DIRECT_DELIVERY=off` sends everything through the
       provider, to test the real path (`test/direct-delivery.test.ts`).
     - **States** (`outgoing.state`). `held` for an agent's message that waits for approval, as
