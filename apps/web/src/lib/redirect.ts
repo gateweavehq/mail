@@ -9,8 +9,8 @@ export function safeRedirect(value: string | null | undefined): string | null {
 	try {
 		const url = new URL(value, BASE);
 		if (url.origin !== BASE) return null;
-		// Dot segments are resolved after the origin check: "/.//example.com" is on this origin, but
-		// its path is "//example.com", which a browser reads as another site.
+		// `new URL()` resolves dot segments while parsing, so "/.//example.com" passes the origin
+		// check with the pathname "//example.com", which a browser reads as another site.
 		const path = url.pathname + url.search + url.hash;
 		return path.startsWith("//") || path.startsWith("/\\") ? null : path;
 	} catch {
