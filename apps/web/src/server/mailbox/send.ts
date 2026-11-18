@@ -352,6 +352,13 @@ export async function outboxAnswer(
 					name: error instanceof Error ? error.name : "unknown",
 				});
 			}
+			// That look asks D1 and DNS, which takes a while, so the pause is asked once more of mail
+			// it lets go: what would have waited for a person must not leave after the agent was
+			// stopped. A pause that lands after this still finds the message on its way, as one that
+			// lands after any send does.
+			if (!hold && (await pausedAmong(db, [memberId])).size > 0) {
+				return refuse(AGENT_PAUSED, 403);
+			}
 		}
 	}
 	// Counted once the message could go, so a mistake doesn't use up the day's allowance. One that

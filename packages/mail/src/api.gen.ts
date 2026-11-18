@@ -914,7 +914,7 @@ export interface MailMethods {
 	/**
 	 * Send email.
 	 *
-	 * Sends a message from a mailbox you may send from: text or HTML, with files if you like. Your policy, which list_mailboxes gives, says whether it goes on its own or waits for a person to approve it (state: held): all of your mail, none of it, or what goes to anyone the policy doesn't name. One that goes on its own answers with how sending went, which is sent when it went, and may be waiting or uncertain. It counts against your messages a day either way.
+	 * Sends a message from a mailbox you may send from: text or HTML, with files if you like. Your policy, which list_mailboxes gives, says whether it goes on its own or waits for a person to approve it (state: held): all of your mail, none of it, or what goes to anyone the policy doesn't name. Whichever it is, mail whose every recipient is an address of your own workspace on this server goes on its own, unless your policy is one from before that was so, which holds it like the rest until an owner or admin saves it; the answer's state says which happened. One that goes on its own answers with how sending went, which is sent when it went, and may be waiting or uncertain. It counts against your messages a day either way.
 	 *
 	 * `POST /mailboxes/{mailbox}/messages`, as the MCP tool `send_email`.
 	 */

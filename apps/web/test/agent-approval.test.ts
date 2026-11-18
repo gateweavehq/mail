@@ -23,9 +23,18 @@ const mailHosts = new Map<string, string[]>();
 /** Domains DNS can't answer for. */
 const unanswered = new Set<string>();
 
-function dns(request: Request): Response {
+/** What happens, once, when DNS is next asked about a domain: before it answers. */
+const beforeAnswering = new Map<string, () => Promise<void>>();
+
+async function dns(request: Request): Promise<Response> {
 	const url = new URL(request.url);
 	const name = url.searchParams.get("name") ?? "";
+	for (const [domain, first] of beforeAnswering) {
+		if (name === domain || name.endsWith(`.${domain}`)) {
+			beforeAnswering.delete(domain);
+			await first();
+		}
+	}
 	if ([...unanswered].some((domain) => name === domain || name.endsWith(`.${domain}`))) {
 		return new Response("busy", { status: 503 });
 	}
@@ -642,6 +651,7 @@ describe("a paused agent", () => {
 			}),
 		);
 		let finish = () => {};
+		let abandon = () => {};
 		const body = new ReadableStream<Uint8Array>({
 			start(controller) {
 				controller.enqueue(whole.slice(0, 20));
@@ -649,6 +659,7 @@ describe("a paused agent", () => {
 					controller.enqueue(whole.slice(20));
 					controller.close();
 				};
+				abandon = () => controller.error(new Error("The test gave up on this upload."));
 			},
 		});
 		const answer = mail.fetchStreamed(
@@ -659,19 +670,50 @@ describe("a paused agent", () => {
 			},
 			body,
 		);
-		// The key's use is noted once the key, and whether its agent is paused, has been read.
-		for (let waited = 0; (await keyUsed()) === null && waited < 20_000; waited += 100) {
-			await new Promise((resolve) => setTimeout(resolve, 100));
-		}
-		expect(await keyUsed()).not.toBeNull();
-		expect((await auth("/agents/pause", { agentId: agent.id })).status).toBe(200);
-		finish();
+		let finished = false;
+		try {
+			// The key's use is noted once the key, and whether its agent is paused, has been read.
+			for (let waited = 0; (await keyUsed()) === null && waited < 20_000; waited += 100) {
+				await new Promise((resolve) => setTimeout(resolve, 100));
+			}
+			expect(await keyUsed()).not.toBeNull();
+			expect((await auth("/agents/pause", { agentId: agent.id })).status).toBe(200);
+			finished = true;
+			finish();
 
-		const response = await answer;
+			const response = await answer;
+			expect(response.status).toBe(403);
+			expect(((await response.json()) as { error: string }).error).toMatch(
+				/^This agent is paused\./,
+			);
+		} finally {
+			// Should the test fail before it lets the message through, the upload is broken off, never
+			// finished: finishing it would send what the test expects refused. Either way the request
+			// has ended before the test does, so nothing of it is left for the next one.
+			if (!finished) abandon();
+			await answer.catch(() => {});
+		}
+		expect(await messages(billing)).toHaveLength(0);
+		expect(await sentTo(`ada.${space.slug}@example.org`)).toHaveLength(0);
+		expect(await logOf(agent)).toEqual([]);
+	});
+
+	it("sends nothing inside its workspace when it is paused while the directory is asked", async () => {
+		const space = await workspace();
+		const billing = await space.mailbox("billing");
+		const agent = await agentOf(space);
+		// Everything waits, so mail inside the workspace goes only once the directory and DNS said
+		// it stays there, which is when the pause lands: as DNS is asked, before it answers.
+		await saved(agent, { approval: "always" });
+		let paused = 0;
+		beforeAnswering.set(space.domain, async () => {
+			paused = (await auth("/agents/pause", { agentId: agent.id })).status;
+		});
+		const response = await agentSends(space, agent, [billing.address]);
+		expect(paused).toBe(200);
 		expect(response.status).toBe(403);
 		expect(((await response.json()) as { error: string }).error).toMatch(/^This agent is paused\./);
 		expect(await messages(billing)).toHaveLength(0);
-		expect(await sentTo(`ada.${space.slug}@example.org`)).toHaveLength(0);
 		expect(await logOf(agent)).toEqual([]);
 	});
 
