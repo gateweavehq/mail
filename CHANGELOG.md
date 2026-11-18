@@ -35,7 +35,8 @@ notes. Publishing a release deploys it.
 
 - An agent that sends on its own can be led by a message it reads to write to anyone, up to its
   daily limit. For an agent that reads mail from strangers and should not write freely, choose
-  "everything waits" or a list.
+  "everything waits" or a list. Neither holds mail to the workspace's own addresses, which goes
+  under every policy; only pausing the agent stops that.
 
 ### Running your own
 
