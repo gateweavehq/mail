@@ -18,8 +18,8 @@ doesn't exist and stores mail for one that does, in a Durable Object per mailbox
 read the mailboxes they are given, with formatted mail in a sandboxed frame, and reply to their
 mail and write new mail from them, with formatting and files, through Cloudflare Email Service. Owners and admins
 write message templates, with `{{variables}}`, that anyone in the workspace reads and agents send. Agents read theirs
-with a key, over MCP (`/mcp`) or the API (`/api/v1`, with an OpenAPI document), and send from the mailboxes that let them, in HTML and with files too: what goes to
-anyone their policy doesn't name waits for a person to approve it, and they can make addresses for
+with a key, over MCP (`/mcp`) or the API (`/api/v1`, with an OpenAPI document), and send from the mailboxes that let them, in HTML and with files too: on their own, unless their policy has
+their mail wait for a person to approve it, and they can make addresses for
 themselves within limits an owner or admin sets. Aliases and transactional sending in Resend's shape are planned, not built.
 
 Read [docs/architecture.md](docs/architecture.md) before changing auth or the `email()` handler.
@@ -136,8 +136,13 @@ These are load-bearing. Breaking one breaks users' data or security, usually sil
     in `apps/web/src/server/access.ts`), never by the cookies that come with it, even when the key
     is wrong. Another bearer token, such as one a proxy adds, carries no key. Reading takes `currentCaller`, and so does the outbox, where
     a key may only send, from a mailbox whose grant lets it (`mailbox_access.send`), within its
-    policy (`agent_policy`): mail to anyone the policy doesn't name is `held` until a person
-    approves it. Only people approve, reject, send again or discard. A key may also make
+    policy (`agent_policy`), which says whether its mail goes on its own or is `held` until a
+    person approves it: none of it waits (a new agent), all of it, or what goes to anyone the
+    policy doesn't name. `outboxAnswer` alone decides that, mail that stays inside the agent's
+    workspace never waits (`staysInWorkspace`), and a policy from before the choice, a row without
+    `approval` or no row, reads exactly as it did (`readPolicy`): never give a missing value the
+    new default. Only a person's session changes a policy, never a key. Only people approve,
+    reject, send again or discard. A key may also make
     addresses for its agent, in a mailbox it may send from, within `agent_address_policy`. The
     policy, the grant and the limits are checked in the statement that adds the row, every such
     address ends, and it may not take a name in `RESERVED_LOCAL_PARTS` or one in

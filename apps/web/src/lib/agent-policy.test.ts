@@ -2,9 +2,14 @@ import { describe, expect, it } from "vitest";
 import {
 	AgentPolicyInput,
 	AllowedEntry,
+	DEFAULT_AGENT_POLICY,
 	goesWithoutApproval,
 	isAllowedRecipient,
+	NEW_AGENT_POLICY,
+	policySummary,
 	readAllowed,
+	readPolicy,
+	waitsForApproval,
 } from "./agent-policy";
 
 describe("isAllowedRecipient", () => {
@@ -70,6 +75,90 @@ describe("AgentPolicyInput", () => {
 		expect(AgentPolicyInput.safeParse({ sendPerDay: 1.5, allowed: [] }).success).toBe(false);
 		expect(AgentPolicyInput.safeParse({ sendPerDay: 1001, allowed: [] }).success).toBe(false);
 		expect(AgentPolicyInput.safeParse({ sendPerDay: 0, allowed: [] }).success).toBe(true);
+	});
+});
+
+describe("a policy from before there was a choice", () => {
+	// MAIL-58, R2: a row as it was stored then has no `approval`, and an agent may have no row.
+	it("with an empty list has everything wait, mail inside the workspace too", () => {
+		const policy = readPolicy({ sendPerDay: 7, allowed: "[]", approval: null });
+		expect(policy).toEqual({ sendPerDay: 7, approval: "always", allowed: [], insideWaits: true });
+		expect(waitsForApproval(policy, ["a@acme.test"])).toBe(true);
+	});
+
+	it("with a list lets its list through and has the rest wait", () => {
+		const policy = readPolicy({ sendPerDay: 7, allowed: '["@acme.test"]', approval: null });
+		expect(policy).toMatchObject({ approval: "unlisted", insideWaits: true });
+		expect(waitsForApproval(policy, ["a@acme.test"])).toBe(false);
+		expect(waitsForApproval(policy, ["a@acme.test", "b@other.test"])).toBe(true);
+	});
+
+	it("without a row has everything wait, as the default was", () => {
+		expect(DEFAULT_AGENT_POLICY).toEqual({
+			sendPerDay: 20,
+			approval: "always",
+			allowed: [],
+			insideWaits: true,
+		});
+	});
+});
+
+describe("a policy that says which mail waits", () => {
+	const stored = (approval: string, allowed = "[]") =>
+		readPolicy({ sendPerDay: 20, allowed, approval });
+
+	it("lets a new agent send on its own, a few messages a day", () => {
+		expect(NEW_AGENT_POLICY).toEqual({
+			sendPerDay: 20,
+			approval: "never",
+			allowed: [],
+			insideWaits: false,
+		});
+		expect(waitsForApproval(NEW_AGENT_POLICY, ["anyone@anywhere.test"])).toBe(false);
+	});
+
+	it("reads each of the three, and no longer as one from before", () => {
+		expect(stored("never")).toMatchObject({ approval: "never", insideWaits: false });
+		expect(stored("always")).toMatchObject({ approval: "always", insideWaits: false });
+		expect(stored("unlisted", '["@acme.test"]')).toMatchObject({
+			approval: "unlisted",
+			insideWaits: false,
+		});
+	});
+
+	it("has everything wait under always, whatever list is kept", () => {
+		const policy = stored("always", '["@acme.test"]');
+		expect(waitsForApproval(policy, ["a@acme.test"])).toBe(true);
+	});
+
+	it("has nothing wait under never, whatever list is kept", () => {
+		expect(waitsForApproval(stored("never", '["@acme.test"]'), ["b@other.test"])).toBe(false);
+	});
+
+	it("takes a list of nobody, or a word it doesn't know, as everything waiting", () => {
+		expect(stored("unlisted").approval).toBe("always");
+		expect(stored("sometimes").approval).toBe("always");
+		expect(stored("sometimes", '["@acme.test"]').approval).toBe("unlisted");
+	});
+
+	it("takes the choice, and does without it as a page from before would", () => {
+		const input = { sendPerDay: 1, allowed: [] };
+		expect(AgentPolicyInput.parse(input).approval).toBeUndefined();
+		expect(AgentPolicyInput.parse({ ...input, approval: "never" }).approval).toBe("never");
+		expect(AgentPolicyInput.safeParse({ ...input, approval: "sometimes" }).success).toBe(false);
+	});
+
+	it("says each in a sentence", () => {
+		expect(policySummary(stored("never"))).toBe(
+			"Writes up to 20 messages a day, each going on its own.",
+		);
+		expect(policySummary(stored("always", '["@acme.test"]'))).toBe(
+			"Writes up to 20 messages a day, each waiting for approval.",
+		);
+		expect(policySummary(stored("unlisted", '["@acme.test"]'))).toBe(
+			"Writes up to 20 messages a day. To @acme.test it goes on its own; anything else waits for approval.",
+		);
+		expect(policySummary({ ...stored("never"), sendPerDay: 0 })).toBe("Can't send mail.");
 	});
 });
 

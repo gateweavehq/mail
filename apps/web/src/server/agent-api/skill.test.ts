@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { z } from "zod";
+import { APPROVALS } from "../../lib/agent-policy";
 import { MAX_VALUE } from "../../lib/templates";
 import { MAX_AGENT_WEBHOOKS, WEBHOOK_EVENTS } from "../../lib/webhooks";
 import { ENDED_ADDRESS_KEPT_DAYS } from "../directory";
@@ -112,6 +113,29 @@ describe("the skill for agents", () => {
 		expect(flat).toContain(`You can have ${MAX_AGENT_WEBHOOKS} webhooks of your own`);
 		expect(flat).toContain(`can't be made again for ${ENDED_ADDRESS_KEPT_DAYS} days.`);
 		expect(flat).toContain(`one line of ${MAX_VALUE} characters at most`);
+	});
+
+	it("says what becomes of what an agent sends under each of the three policies", () => {
+		const flat = skill.replace(/\s+/g, " ");
+		// The read of its own policy names the three, as the policy has them.
+		expect(OUTPUTS.list_mailboxes.shape.sending.shape.approval.options).toEqual([...APPROVALS]);
+		expect(flat).toContain("`sending.approval`, which of your mail waits for a person");
+		expect(flat).toContain("- `never`: your mail goes at once, to anyone.");
+		expect(flat).toContain(
+			"- `unlisted`: it goes at once only when every recipient, in `to` and `cc`, is in `sending.withoutApproval`.",
+		);
+		expect(flat).toContain("- `always`: all of it is `held`.");
+		expect(flat).toContain("every recipient is an address of your own workspace");
+		expect(flat).toContain("You can't change `sending.approval` yourself");
+		// No tool's words still say that mail to anyone unnamed waits, which is one of three now.
+		for (const tool of ["send_email", "send_template", "reply"]) {
+			const description = byName.get(tool)?.description ?? "";
+			expect(description, tool).toMatch(/on its own/);
+			expect(description, tool).toMatch(/wait(s|ing) for (a person to approve it|approval)/);
+		}
+		for (const words of [skill, ...OPERATIONS.map((operation) => operation.description)]) {
+			expect(words).not.toMatch(/anyone your (policy|settings) (doesn't|don't) name waits/);
+		}
 	});
 
 	it("tells agents to pass only inputs the tools take", () => {

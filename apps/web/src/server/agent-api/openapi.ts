@@ -111,7 +111,7 @@ export function openApiDocument(origin: string) {
 			version: "1.0.0",
 			description: [
 				"What an AI agent can do with Gateweave Mail, with its key: read and search the mailboxes it was given, wait for mail and sign-in codes, send and reply, make addresses of its own, and hear of mail through webhooks of its own. Each operation is also a tool of Mail's MCP server, at /mcp, named in x-mcp-tool.",
-				"An owner or admin makes the agent and its key in the workspace's settings, under Agents. The key names the workspace; send it as a bearer token. Mail an agent writes to anyone its policy doesn't name waits for a person to approve it.",
+				"An owner or admin makes the agent and its key in the workspace's settings, under Agents. The key names the workspace; send it as a bearer token. Mail an agent writes goes on its own or waits for a person to approve it, as the policy an owner or admin gave it says: none of it waits, all of it, or what goes to anyone the policy doesn't name.",
 				`Mail is how a stranger reaches an agent. ${UNTRUSTED}`,
 			].join("\n\n"),
 			license: { name: "AGPL-3.0-only", identifier: "AGPL-3.0-only" },

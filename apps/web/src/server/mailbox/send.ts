@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { z } from "zod";
-import { goesWithoutApproval } from "../../lib/agent-policy";
+import { waitsForApproval } from "../../lib/agent-policy";
 import {
 	canSendAgain,
 	isAddress,
@@ -22,6 +22,7 @@ import { bearsKey } from "../access";
 import { type AgentLogNote, noteAgent } from "../agent-log";
 import { db } from "../auth";
 import { AGENT_PAUSED, agentPolicyOf, pausedAmong } from "../auth/agents";
+import { DEFAULT_DNS_RESOLVER, dnsLookup } from "../directory/dns";
 import { appOrigin } from "../origin";
 import { sendingWith } from "../providers/keys";
 import { allowAgentSend, allowSend } from "../rate-limit";
@@ -37,6 +38,7 @@ import {
 	rawCopy,
 	sendRequest,
 } from "./compose";
+import { staysInWorkspace } from "./direct";
 import type { Sent } from "./durable-object";
 import { checkFiles } from "./files";
 import { firstHeader, type Header, parseHeaders, readHeaderBlock } from "./headers";
@@ -154,7 +156,8 @@ const recipientsOf = (row: { envelopeTo: string }) =>
  * Sends from a mailbox, tries again, approves or discards, for
  * `POST /api/mail/<workspace>/<mailbox>/outbox`. A person who may read the mailbox may, signed in.
  * An agent may only send, with its key, from a mailbox it was let send from, as its policy allows:
- * what it writes to anyone else waits for a person to approve it.
+ * on its own, or waiting for a person to approve it, all of it or what goes to anyone its policy
+ * doesn't name. Mail to its own workspace's addresses alone never waits.
  *
  * `given` is the body already read, as the agents' API hands it over: a message's files would
  * otherwise be written out and read again.
@@ -316,8 +319,8 @@ export async function outboxAnswer(
 			409,
 		);
 	}
-	// An agent's mail waits for a person unless all of it goes where its policy lets it, and counts
-	// against its own day either way.
+	// An agent's mail goes on its own or waits for a person as its policy says, and counts against
+	// its own day either way.
 	let hold = false;
 	if (agent) {
 		// Asked again here, as reading and cleaning a large message takes a while: a pause meanwhile
@@ -330,11 +333,26 @@ export async function outboxAnswer(
 		if (policy.sendPerDay === 0) {
 			return refuse("This agent isn't let send mail. An owner or admin can change that.", 403);
 		}
-		hold = !goesWithoutApproval(recipients, policy.allowed);
 		const counted = await allowAgentSend(memberId, policy.sendPerDay);
 		if (!counted.allowed) return tooMany(counted.retryAfter, "This agent has written");
 		const refused = await checkList();
 		if (refused) return refused;
+		hold = waitsForApproval(policy, recipients);
+		// Mail that stays inside its own workspace reaches nobody outside, so it waits for no one,
+		// unless its policy is from before that was so. Asked once the day has counted it, so that a
+		// key learns nothing of the directory for free, and only of mail that would wait.
+		if (hold && !policy.insideWaits) {
+			const from = { address: sender, mailboxId: box.id, workspaceId };
+			try {
+				const lookUp = dnsLookup(env.DNS_RESOLVER_URL || DEFAULT_DNS_RESOLVER);
+				hold = !(await staysInWorkspace(db, lookUp, from, lower, new Date()));
+			} catch (error) {
+				// It waits, as its policy says of mail it can't tell to be the workspace's own.
+				console.error("mailbox: D1 didn't say whether an agent's mail stays in its workspace", {
+					name: error instanceof Error ? error.name : "unknown",
+				});
+			}
+		}
 	}
 	// Counted once the message could go, so a mistake doesn't use up the day's allowance. One that
 	// waits is counted when it is approved.

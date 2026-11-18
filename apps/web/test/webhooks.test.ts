@@ -410,6 +410,7 @@ describe("webhooks", () => {
 	it("tell of an agent's mail held for approval, then sent once approved, or rejected", async () => {
 		const space = await workspace();
 		const agent = await world.agentOf(space);
+		await world.everythingWaits(agent.id);
 		const key = { authorization: `Bearer ${agent.key}` };
 		const path = newPath();
 		await hook(space.slug, path, null, SENT_EVENTS);

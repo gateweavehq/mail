@@ -60,7 +60,7 @@ const sendOutput = z.looseObject({
 	state: z
 		.string()
 		.describe(
-			'"held" when it waits for a person to approve it, as your policy has mail to anyone else wait; otherwise how sending it went.',
+			'"held" when it waits for a person to approve it, as your policy says (list_mailboxes gives it, as sending.approval); otherwise how sending it went.',
 		),
 });
 const sendTemplateOutput = sendOutput.extend({
@@ -127,10 +127,16 @@ export const OUTPUTS = {
 		),
 		sending: z.looseObject({
 			perDay: z.number().describe("Messages you may write a day; 0 means none."),
+			approval: z
+				// `APPROVALS` in `lib/agent-policy.ts`, which `operations.ts` holds this to.
+				.enum(["never", "unlisted", "always"])
+				.describe(
+					'Which of your mail waits for a person to approve it: "never", it all goes on its own; "unlisted", what goes to anyone withoutApproval doesn\'t name; "always", all of it. Mail whose every recipient is an address of your own workspace on this server may go on its own whichever it is.',
+				),
 			withoutApproval: z
 				.array(z.string())
 				.describe(
-					"Addresses, and domains written @example.com, your mail goes to as it is. Mail to anyone else waits for a person to approve it.",
+					'Under "unlisted", the addresses, and domains written @example.com, your mail goes to as it is, while mail to anyone else waits for a person to approve it. Empty under "never" and "always", which need no list.',
 				),
 		}),
 		addressPolicy: z.looseObject({

@@ -1,0 +1,1 @@
+ALTER TABLE `agent_policy` ADD `approval` text;

@@ -886,10 +886,10 @@ test("an agent's mail to someone its settings don't name waits until a person ap
 	const key = await page.getByLabel("Agent key").inputValue();
 	await page.getByRole("button", { name: "Done" }).click();
 	await expect(
-		page.getByText("Writes up to 20 messages a day, each waiting for approval."),
+		page.getByText("Writes up to 20 messages a day, each going on its own."),
 	).toBeVisible();
 
-	// An admin lets it mail a partner's domain on its own, and fewer a day.
+	// An admin has it mail only a partner's domain on its own, and fewer a day.
 	await page.getByRole("button", { name: "More for Sorter" }).click();
 	await page.getByRole("menuitem", { name: "Sending" }).click();
 	const policy = page.getByRole("dialog", { name: "What Sorter can send" });
@@ -1007,6 +1007,114 @@ test("an agent's mail to someone its settings don't name waits until a person ap
 	await expect(byPeople).toHaveAttribute("aria-pressed", "true");
 	await expect(activity.getByText(`${person.name} changed what it may send`)).toBeVisible();
 	await expect(activity.getByText(/wrote a message/)).toHaveCount(0);
+});
+
+test("an agent sends on its own until an owner chooses, on its page, that its mail waits", async ({
+	page,
+	request,
+	baseURL,
+}) => {
+	const { slug, mailboxId } = await supportMailbox(page, request, baseURL);
+
+	await page.goto(`/${slug}/settings/agents`);
+	await waitForHydration(page);
+	await page.getByLabel("Agent name").fill("Courier");
+	await page.getByRole("button", { name: "Create agent" }).click();
+	const key = await page.getByLabel("Agent key").inputValue();
+	await page.getByRole("button", { name: "Done" }).click();
+	await expect(
+		page.getByText("Writes up to 20 messages a day, each going on its own."),
+	).toBeVisible();
+
+	// The mailbox lets it send as well as read.
+	await page.goto(`/${slug}`);
+	await waitForHydration(page);
+	const card = page
+		.getByRole("listitem")
+		.filter({ has: page.getByRole("heading", { name: "Support" }) });
+	await card.getByRole("button", { name: "Choose who can read Support" }).click();
+	const access = page.getByRole("dialog", { name: "Who can read Support" });
+	await access.getByLabel("Courier", { exact: true }).check();
+	await access.getByLabel("Courier can send").check();
+	await access.getByRole("button", { name: "Save" }).click();
+	await expect(access).toBeHidden();
+
+	const write = async (subject: string) => {
+		const written = await request.post(`/api/mail/${slug}/${mailboxId}/outbox`, {
+			headers: { authorization: `Bearer ${key}` },
+			data: {
+				action: "send",
+				draft: crypto.randomUUID(),
+				to: ["customer@example.org"],
+				subject,
+				text: "It left on Monday.",
+			},
+		});
+		expect(written.status()).toBe(200);
+		return ((await written.json()) as { state: string }).state;
+	};
+	// Nobody approves what a new agent writes.
+	expect(await write("On its own")).toBe("sent");
+
+	// Its page says how its mail goes, and what bounds it with nobody reading it first.
+	await page.goto(`/${slug}/settings/agents`);
+	await waitForHydration(page);
+	await page.getByRole("link", { name: "Courier", exact: true }).click();
+	const sending = page.getByRole("region", { name: "Sending" });
+	await expect(sending).toContainText("Writes up to 20 messages a day, each going on its own.");
+	await expect(sending).toContainText(
+		"Mail whose every recipient is an address of this workspace goes on its own.",
+	);
+	await expect(sending.getByRole("listitem")).toHaveText([
+		/^Its 20 messages a day, counted as it writes them, waiting or not\. A new agent gets 20\.$/,
+		/^The workspace's own limit of messages a day/,
+		/^The workspace's suppression list/,
+		/^Pause, above: its keys stop at once/,
+		/^Activity, below, which records every message it sent on its own/,
+	]);
+	await expect(sending).toContainText("can be made, by a message it reads, to write to anyone");
+
+	// An owner has everything wait.
+	await sending.getByRole("button", { name: "Change" }).click();
+	const policy = page.getByRole("dialog", { name: "What Courier can send" });
+	await expect(policy.getByLabel("It sends on its own", { exact: true })).toBeChecked();
+	await policy.getByLabel("Everything waits for approval").check();
+	await policy.getByRole("button", { name: "Save" }).click();
+	await expect(policy).toBeHidden();
+	await expect(sending).toContainText("Writes up to 20 messages a day, each waiting for approval.");
+	expect(await write("Waits")).toBe("held");
+
+	// The list is a choice of its own, and needs someone on it.
+	await sending.getByRole("button", { name: "Change" }).click();
+	await expect(policy.getByLabel("Everything waits for approval")).toBeChecked();
+	await policy.getByLabel("It sends on its own to those listed, and the rest waits").check();
+	await policy.getByRole("button", { name: "Save" }).click();
+	await expect(policy.getByRole("alert")).toHaveText(
+		"List at least one address or domain, or choose that everything waits.",
+	);
+	await policy.getByLabel("Goes without approval to").fill("customer@example.org");
+	await policy.getByRole("button", { name: "Save" }).click();
+	await expect(policy).toBeHidden();
+	await expect(sending).toContainText(
+		"Writes up to 20 messages a day. To customer@example.org it goes on its own; anything else waits for approval.",
+	);
+	expect(await write("Listed")).toBe("sent");
+
+	// And back to sending on its own, with the list kept for another day.
+	await sending.getByRole("button", { name: "Change" }).click();
+	await policy.getByLabel("It sends on its own", { exact: true }).check();
+	await expect(policy.getByLabel("Goes without approval to")).toHaveValue("customer@example.org");
+	await policy.getByRole("button", { name: "Save" }).click();
+	await expect(policy).toBeHidden();
+	await expect(sending).toContainText("each going on its own.");
+
+	// Its log has each message it sent on its own, with whom it went to.
+	const activity = page.getByRole("region", { name: "Activity" });
+	await expect(activity.getByText("Courier wrote a message that waits for approval")).toBeVisible();
+	const own = activity
+		.getByRole("listitem")
+		.filter({ hasText: /Courier sent a message.*On its own/ });
+	await expect(own).toContainText("customer@example.org");
 });
 
 /** Long enough that, on a phone, it has to give way to the rest of an address's row. */

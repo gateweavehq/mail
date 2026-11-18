@@ -183,6 +183,13 @@
       "when": 1794670998771,
       "tag": "0025_webhooks_sealed",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "6",
+      "when": 1794986252006,
+      "tag": "0026_agent_policy_approval",
+      "breakpoints": true
     }
   ]
 }

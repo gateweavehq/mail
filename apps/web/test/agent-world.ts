@@ -145,6 +145,20 @@ export function agentWorld(origin: string, prefix: string) {
 		return { ...agent, key };
 	}
 
+	/**
+	 * Has all of an agent's mail wait for a person, as an owner chooses on its page: an agent is
+	 * made to send on its own, so a test of what waits says so first.
+	 */
+	async function everythingWaits(agentId: string) {
+		const set = await auth("/agents/set-policy", {
+			agentId,
+			sendPerDay: 20,
+			allowed: [],
+			approval: "always",
+		});
+		expect(set.status).toBe(200);
+	}
+
 	/** Revokes an agent's key, as the owner. */
 	async function revokeKey(space: Workspace, agentId: string) {
 		const { mail, owner } = started();
@@ -204,6 +218,7 @@ export function agentWorld(origin: string, prefix: string) {
 		workspace,
 		auth,
 		agentOf,
+		everythingWaits,
 		revokeKey,
 		arrive,
 	};

@@ -188,8 +188,9 @@ export const removedAddress = sqliteTable(
 );
 
 /**
- * What an agent may send, set by owners and admins. An agent without a row has the defaults in
- * `lib/agent-policy.ts`. It belongs to the membership, so it goes with the agent.
+ * What an agent may send, set by owners and admins. An agent is made with a row; one without, as
+ * an agent made before that is, has the defaults in `lib/agent-policy.ts`. It belongs to the
+ * membership, so it goes with the agent.
  */
 export const agentPolicy = sqliteTable("agent_policy", {
 	memberId: text("member_id")
@@ -199,6 +200,12 @@ export const agentPolicy = sqliteTable("agent_policy", {
 	sendPerDay: integer("send_per_day").notNull(),
 	/** Addresses and whole domains (`@example.com`) its mail goes to without a person, as JSON. */
 	allowed: text("allowed").notNull(),
+	/**
+	 * Which of its mail waits for a person: `never`, `unlisted` or `always`. Null in a row from
+	 * before there was a choice, which reads as it did then (`readPolicy`): by its list alone, and
+	 * with mail inside the workspace waiting too. Every row written since says one of the three.
+	 */
+	approval: text("approval"),
 	updatedBy: text("updated_by").references(() => user.id, { onDelete: "set null" }),
 	updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
 });

@@ -242,7 +242,7 @@ const RESEND_BUSY = new Set(["resend:rate_limit_exceeded", "resend:resource_lock
 function said(status: SendStatus): string {
 	switch (status.state) {
 		case "held":
-			return "An agent wrote this to someone it may not mail on its own, so it waits for someone who reads this mailbox to approve it. Check who it goes to and what it says first.";
+			return "An agent wrote this, and its settings don't let it go on its own, so it waits for someone who reads this mailbox to approve it. Check who it goes to and what it says first.";
 		case "sending":
 			return "Sending…";
 		case "waiting": {

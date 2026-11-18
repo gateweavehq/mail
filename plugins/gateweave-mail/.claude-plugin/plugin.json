@@ -1,7 +1,7 @@
 {
 	"name": "gateweave-mail",
 	"displayName": "Gateweave Mail",
-	"description": "Gateweave Mail for an agent: verification codes, reading, sending with approval, addresses of its own and webhooks, over Mail's MCP server with an agent's key.",
+	"description": "Gateweave Mail for an agent: verification codes, reading, sending as its policy allows, addresses of its own and webhooks, over Mail's MCP server with an agent's key.",
 	"author": { "name": "Gateweave", "url": "https://gateweave.com" },
 	"homepage": "https://github.com/gateweavehq/mail#readme",
 	"repository": "https://github.com/gateweavehq/mail",

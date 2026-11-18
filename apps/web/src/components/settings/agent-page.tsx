@@ -1,15 +1,16 @@
 import { Link } from "@tanstack/react-router";
 import { ArrowLeft, Bot, Clock, ShieldCheck } from "lucide-react";
-import type { ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 import { senderName } from "#/components/mail/message-view";
 import { SentFor } from "#/components/mail/sent-context";
 import { sentLabel } from "#/components/mail/sent-status";
 import { AgentLog } from "#/components/settings/agent-log";
-import { PauseButton, PausedNote } from "#/components/settings/agents-settings";
+import { PauseButton, PausedNote, PolicyDialog } from "#/components/settings/agents-settings";
+import { Button } from "#/components/ui/button";
 import { useWorkspace } from "#/components/workspace/context";
 import { addressPolicySummary } from "#/lib/agent-addresses";
 import type { AgentLogPage } from "#/lib/agent-log";
-import { policySummary } from "#/lib/agent-policy";
+import { DEFAULT_SEND_PER_DAY, policySummary } from "#/lib/agent-policy";
 import { AGENT_PAGE_LISTED, type AgentActivity, type AgentMessage } from "#/lib/agents";
 import { formatDateTime, formatRelative, formatShortDate } from "#/lib/dates";
 
@@ -24,6 +25,7 @@ export function AgentPage({ activity, log }: { activity: AgentActivity; log: Age
 	const { slug } = useWorkspace();
 	const { agent, mailboxes, addresses, held, wrote, received, unread } = activity;
 	const lastUsed = Math.max(0, ...agent.keys.map((key) => key.lastUsedAt ?? 0));
+	const [changing, setChanging] = useState(false);
 	return (
 		<div className="space-y-8">
 			<div className="space-y-3">
@@ -54,9 +56,7 @@ export function AgentPage({ activity, log }: { activity: AgentActivity; log: Age
 					<PauseButton agent={agent} />
 				</div>
 				{agent.paused && <PausedNote paused={agent.paused} />}
-				<p className="text-sm text-muted-foreground">
-					{policySummary(agent.policy)} {addressPolicySummary(agent.addressPolicy)}
-				</p>
+				<p className="text-sm text-muted-foreground">{addressPolicySummary(agent.addressPolicy)}</p>
 				{unread.length > 0 && (
 					<p role="status" className="text-sm text-destructive">
 						{unread.map((box) => box.name).join(", ")} didn't answer just now, so what it did there
@@ -64,6 +64,50 @@ export function AgentPage({ activity, log }: { activity: AgentActivity; log: Age
 					</p>
 				)}
 			</div>
+
+			<Section title="Sending" id="agent-sending">
+				<div className="flex flex-wrap items-start gap-x-3 gap-y-2">
+					<p className="min-w-0 flex-1 basis-64 text-sm">
+						{policySummary(agent.policy)}{" "}
+						<span className="text-muted-foreground">
+							{agent.policy.insideWaits
+								? "Its settings are from before agents could send on their own, so its mail to this workspace's own addresses waits like the rest until someone saves them."
+								: "Mail whose every recipient is an address of this workspace goes on its own."}
+						</span>
+					</p>
+					<Button variant="outline" size="sm" onClick={() => setChanging(true)}>
+						Change
+					</Button>
+				</div>
+				<div className="space-y-1 text-sm text-muted-foreground">
+					<p>What bounds it, with nobody reading its mail first:</p>
+					<ul className="list-disc space-y-1 pl-5">
+						<li>
+							Its {agent.policy.sendPerDay} {agent.policy.sendPerDay === 1 ? "message" : "messages"}{" "}
+							a day, counted as it writes them, waiting or not. A new agent gets{" "}
+							{DEFAULT_SEND_PER_DAY}.
+						</li>
+						<li>The workspace's own limit of messages a day, which its mail counts against.</li>
+						<li>
+							The workspace's suppression list: mail to an address that bounced or complained is
+							refused.
+						</li>
+						<li>
+							Pause, above: its keys stop at once, and what it wrote that waits to be tried again is
+							held for a person, mail inside this workspace too.
+						</li>
+						<li>
+							Activity, below, which records every message it sent on its own, with the addresses it
+							went to.
+						</li>
+					</ul>
+					<p>
+						An agent that sends on its own can be made, by a message it reads, to write to anyone,
+						up to its messages a day. Have everything wait for one that reads mail from strangers.
+					</p>
+				</div>
+				{changing && <PolicyDialog agent={agent} onClose={() => setChanging(false)} />}
+			</Section>
 
 			<Section title="Mailboxes" id="agent-mailboxes">
 				{mailboxes.length === 0 ? (

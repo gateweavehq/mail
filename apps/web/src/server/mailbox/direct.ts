@@ -51,30 +51,60 @@ export async function isOwnSender(db: Database, sender: Sender, now: Date): Prom
  * it goes to is a live one here, and DNS says today that their domains are held as the directory
  * says (`heldToday`). Throws when D1 doesn't say.
  */
-export async function goesDirectly(
+export const goesDirectly = (
 	db: Database,
 	lookUp: LookUpDomain,
 	sender: Sender,
 	recipients: string[],
 	now: Date,
+): Promise<boolean> => allHere(db, lookUp, sender, recipients, now, false);
+
+/**
+ * Whether a message stays inside its sender's workspace: what `goesDirectly` asks, and every address
+ * it goes to is that workspace's own, on a domain that workspace holds. An agent's mail that does
+ * waits for nobody, whatever its policy says, as it reaches no one outside. Another workspace's
+ * address on this server is outside, as is one that has ended or been removed, and a domain that
+ * only looks like the workspace's is found in no directory. Throws when D1 doesn't say.
+ */
+export const staysInWorkspace = (
+	db: Database,
+	lookUp: LookUpDomain,
+	sender: Sender,
+	recipients: string[],
+	now: Date,
+): Promise<boolean> => allHere(db, lookUp, sender, recipients, now, true);
+
+async function allHere(
+	db: Database,
+	lookUp: LookUpDomain,
+	sender: Sender,
+	recipients: string[],
+	now: Date,
+	inside: boolean,
 ): Promise<boolean> {
 	if (recipients.length === 0 || !(await isOwnSender(db, sender, now))) return false;
 	const found = await Promise.all(recipients.map((recipient) => findAddress(db, recipient, now)));
-	if (!found.every(Boolean)) return false;
+	if (!found.every((one) => one && (!inside || one.workspaceId === sender.workspaceId))) {
+		return false;
+	}
 	const senderDomain = domainOf(sender.address);
 	const receiving = new Set(recipients.map(domainOf));
 	const holders = await domainHolders(db, [senderDomain, ...receiving]);
 	const checks = [...new Set([senderDomain, ...receiving])].map(async (domain) => {
 		const holder = holders.get(domain);
 		if (!holder) return false;
-		// The sender's domain must still be the sending workspace's.
-		if (domain === senderDomain && holder.workspaceId !== sender.workspaceId) return false;
+		// The sender's domain must still be the sending workspace's, and, for mail that is to stay
+		// inside it, so must every domain it goes to.
+		if ((inside || domain === senderDomain) && holder.workspaceId !== sender.workspaceId) {
+			return false;
+		}
 		return heldToday(holder, await recordsOf(lookUp, domain, now), receiving.has(domain));
 	});
 	try {
 		return (await Promise.all(checks)).every(Boolean);
 	} catch (error) {
-		// DNS couldn't say, which is no answer either way: the provider takes it.
+		// DNS couldn't say, which is no answer either way: the provider takes it, and an agent's
+		// policy decides whether it waits.
 		console.error("mailbox: DNS couldn't say whether mail can go straight to a mailbox here", {
 			name: error instanceof Error ? error.name : "unknown",
 		});

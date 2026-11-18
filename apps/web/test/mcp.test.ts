@@ -122,7 +122,7 @@ describe("an agent's MCP server", () => {
 				maySend: true,
 			},
 		]);
-		expect(listed.sending).toEqual({ perDay: 20, withoutApproval: [] });
+		expect(listed.sending).toEqual({ perDay: 20, approval: "never", withoutApproval: [] });
 		expect(listed.addressPolicy).toEqual({ maxLive: 3, maxDays: 7, domains: [space.domain] });
 
 		// The mailbox it wasn't given is as missing as one that doesn't exist, by id, name or address.
@@ -389,6 +389,7 @@ describe("an agent's MCP server", () => {
 	it("sends files larger than the SDK's own limit on a call", async () => {
 		const space = await workspace();
 		const agent = await agentOf(space);
+		await world.everythingWaits(agent.id);
 		const mcp = await connect(agent.key);
 		// 5 MB of file, past the 4 MiB the MCP handler takes unless told otherwise.
 		const bytes = "0123456789".repeat(500_000);
