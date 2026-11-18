@@ -657,18 +657,20 @@ export function PolicyDialog({ agent, onClose }: { agent: AgentInfo; onClose: ()
 						<Textarea
 							id="agent-allowed"
 							value={allowed}
-							onChange={(event) => {
-								setAllowed(event.target.value);
-								// Writing a list is choosing it, unless it was only emptied.
-								if (event.target.value.trim()) setApproval("unlisted");
-							}}
+							// Typing here never moves the choice above: correcting an address in a list kept
+							// under "Everything waits" must not let anything through.
+							onChange={(event) => setAllowed(event.target.value)}
 							rows={4}
 							placeholder={"ops@example.com\n@example.com"}
-							aria-describedby="agent-allowed-help"
+							aria-describedby="agent-allowed-help agent-allowed-unused"
 						/>
 						<p id="agent-allowed-help" className="text-xs text-muted-foreground">
-							One a line: an address, or a domain after an @ for anyone there. It counts only while
-							the choice above is the list; under the other two it is kept and not used.
+							One a line: an address, or a domain after an @ for anyone there.
+						</p>
+						<p id="agent-allowed-unused" role="status" className="text-xs font-medium">
+							{approval !== "unlisted" && allowed.trim()
+								? "This list is kept but not used: it counts only when you choose “It sends on its own to those listed, and the rest waits” above."
+								: ""}
 						</p>
 					</div>
 					<p className="text-xs text-muted-foreground">

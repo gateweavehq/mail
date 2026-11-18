@@ -135,17 +135,26 @@ export function readAllowed(stored: string): string[] {
 	}
 }
 
-/** What an agent may send, in a sentence. */
+/**
+ * What an agent may send, in a sentence, for the Agents page and the agent's log. Mail to the
+ * workspace's own addresses goes on its own under every policy but one from before that was so
+ * (`insideWaits`), so a sentence about what waits says so.
+ */
 export function policySummary(policy: AgentPolicy): string {
 	if (policy.sendPerDay === 0) return "Can't send mail.";
 	const day = `Writes up to ${policy.sendPerDay} ${policy.sendPerDay === 1 ? "message" : "messages"} a day`;
 	if (policy.approval === "never") return `${day}, each going on its own.`;
 	if (policy.approval === "always" || policy.allowed.length === 0) {
-		return `${day}, each waiting for approval.`;
+		return policy.insideWaits
+			? `${day}, each waiting for approval.`
+			: `${day}, each waiting for approval unless it goes only to this workspace's own addresses.`;
 	}
 	const named = policy.allowed.slice(0, 2).join(", ");
 	const others = policy.allowed.length - 2;
-	return `${day}. To ${others > 0 ? `${named} and ${others} more` : named} it goes on its own; anything else waits for approval.`;
+	const listed = others > 0 ? `${named} and ${others} more` : named;
+	return policy.insideWaits
+		? `${day}. To ${listed} it goes on its own; anything else waits for approval.`
+		: `${day}. To ${listed}, and to this workspace's own addresses alone, it goes on its own; anything else waits for approval.`;
 }
 
 /** The addresses and domains typed into the dialog, one a line or apart by commas. */

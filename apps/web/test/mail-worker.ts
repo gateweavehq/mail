@@ -337,6 +337,21 @@ export async function startMail(
 		/** A `fetch` that reaches the Worker directly. Redirects are returned, not followed. */
 		fetch: (input: string | URL | Request, init?: RequestInit) => fetchIn(0, input, init),
 		fetchIn,
+		/**
+		 * Sends a request whose body arrives as `body` hands it over, so that the Worker has begun
+		 * on it before the last of it is there, as with a large upload over a slow line.
+		 */
+		async fetchStreamed(url: string, init: RequestInit, body: ReadableStream<Uint8Array>) {
+			const response = await mf.dispatchFetch(url, {
+				method: init.method,
+				headers: [...new Headers(init.headers)],
+				// The stream is the web's, which Miniflare's own request type doesn't name.
+				body: body as unknown as string,
+				duplex: "half",
+				redirect: "manual",
+			});
+			return new Response(await response.arrayBuffer(), { status: response.status });
+		},
 		/** Sends a request to the last isolate from a caller that stops waiting after a moment. */
 		fetchAndStopWaiting: (url: string, init: RequestInit) =>
 			mf.dispatchFetch(`http://impatient.test/?to=${encodeURIComponent(url)}`, {

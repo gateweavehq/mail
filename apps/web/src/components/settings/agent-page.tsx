@@ -68,12 +68,14 @@ export function AgentPage({ activity, log }: { activity: AgentActivity; log: Age
 			<Section title="Sending" id="agent-sending">
 				<div className="flex flex-wrap items-start gap-x-3 gap-y-2">
 					<p className="min-w-0 flex-1 basis-64 text-sm">
-						{policySummary(agent.policy)}{" "}
-						<span className="text-muted-foreground">
-							{agent.policy.insideWaits
-								? "Its settings are from before agents could send on their own, so its mail to this workspace's own addresses waits like the rest until someone saves them."
-								: "Mail whose every recipient is an address of this workspace goes on its own."}
-						</span>
+						{policySummary(agent.policy)}
+						{agent.policy.insideWaits && (
+							<span className="text-muted-foreground">
+								{" "}
+								Its settings are from before agents could send on their own, so its mail to this
+								workspace's own addresses waits like the rest until someone saves them.
+							</span>
+						)}
 					</p>
 					<Button variant="outline" size="sm" onClick={() => setChanging(true)}>
 						Change

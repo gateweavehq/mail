@@ -499,7 +499,7 @@ const sendEmail = operation({
 	name: "send_email",
 	title: "Send email",
 	description:
-		"Sends a message from a mailbox you may send from: text or HTML, with files if you like. Your policy, which list_mailboxes gives, says whether it goes on its own (state: sent) or waits for a person to approve it (state: held): all of your mail, none of it, or what goes to anyone the policy doesn't name. It counts against your messages a day either way.",
+		"Sends a message from a mailbox you may send from: text or HTML, with files if you like. Your policy, which list_mailboxes gives, says whether it goes on its own or waits for a person to approve it (state: held): all of your mail, none of it, or what goes to anyone the policy doesn't name. One that goes on its own answers with how sending went, which is sent when it went, and may be waiting or uncertain. It counts against your messages a day either way.",
 	input: z.object({
 		mailbox: mailboxInput,
 		to: addressesInput.min(1).describe(`To and cc together take ${MAX_RECIPIENTS} at most.`),
@@ -565,7 +565,7 @@ const sendTemplate = operation({
 	name: "send_template",
 	title: "Send template",
 	description:
-		"Sends a message made from one of the workspace's templates, from a mailbox you may send from, with a value for each of its variables. It goes as send_email does: on its own (state: sent) or waiting for a person to approve it (state: held), as your policy says, and it counts against your messages a day either way. The template's subject and body, which people in the workspace wrote, can't be changed here, only filled in.",
+		"Sends a message made from one of the workspace's templates, from a mailbox you may send from, with a value for each of its variables. It goes as send_email does: on its own, answering with how sending went, or waiting for a person to approve it (state: held), as your policy says, and it counts against your messages a day either way. The template's subject and body, which people in the workspace wrote, can't be changed here, only filled in.",
 	input: z.object({
 		mailbox: mailboxInput,
 		template: templateNameInput,

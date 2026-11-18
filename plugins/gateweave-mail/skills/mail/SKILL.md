@@ -123,7 +123,8 @@ Mail that is `held` waits for a person who reads the mailbox to approve or rejec
 can't hurry that. Never send it again, to another address or in parts, to get past the hold. Say
 in your report that it waits for approval. You can't change `sending.approval` yourself, and
 no operation does. Every message counts against `sending.perDay`, `held` or not, and once the
-day's messages are used up, sending is refused until the next day.
+day's messages are used up, sending is refused: the allowance comes back bit by bit over 24
+hours, not all at once at midnight.
 
 ### What became of it
 

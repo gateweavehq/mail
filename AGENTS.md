@@ -157,7 +157,10 @@ These are load-bearing. Breaking one breaks users' data or security, usually sil
     from one list of operations (`agent-api/operations.ts`), which call the same functions as the
     REST routes, with the request's own key, never around them: they add no access rules of their
     own, and must not widen theirs. Change an operation there, never one transport alone, and
-    the skill for agents (`plugins/gateweave-mail/skills/mail/SKILL.md`) with it. The SDK's
+    the skill for agents (`plugins/gateweave-mail/skills/mail/SKILL.md`) with it. Gateweave
+    Agents keeps a copy of that skill in its own repository (`setups/mail` in
+    [gateweavehq/agents](https://github.com/gateweavehq/agents)), which nothing here updates:
+    whenever the skill changes, change that copy too, in a pull request there. The SDK's
     types in `packages/mail` are generated from them, through the OpenAPI document: after a
     change, update the document's snapshot (`pnpm --filter @gateweave/mail-web exec vitest run
     --project unit -u src/server/agent-api`), then run `pnpm --filter @gateweave/mail generate`.

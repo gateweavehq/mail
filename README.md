@@ -73,7 +73,8 @@ tools that run on Cloudflare, next to [Gateweave Track](https://github.com/gatew
   A mailbox can let an agent send too, in text or HTML and with files. An agent sends on its
   own unless an owner or admin has its mail wait for someone who reads the mailbox to approve or
   reject it: all of it, or what goes to anyone its settings don't name. Mail to its own
-  workspace's addresses never waits. Each agent has a daily limit of its own, 20 messages
+  workspace's addresses alone never waits, except for an agent made before agents sent on their
+  own, which keeps what it had until someone saves its sending settings. Each agent has a daily limit of its own, 20 messages
   unless changed, which bounds what an agent that sends on its own can be made to write. An agent can also make addresses for itself, such as one
   for each sign-up, on the domains an admin gives it, as many and for as long as the admin
   allows. Each one ends. One button pauses an agent: its keys do nothing until it is resumed,

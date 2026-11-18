@@ -152,13 +152,24 @@ describe("a policy that says which mail waits", () => {
 		expect(policySummary(stored("never"))).toBe(
 			"Writes up to 20 messages a day, each going on its own.",
 		);
+		// Saved, a policy lets mail inside the workspace go, so what it says of waiting says so.
 		expect(policySummary(stored("always", '["@acme.test"]'))).toBe(
-			"Writes up to 20 messages a day, each waiting for approval.",
+			"Writes up to 20 messages a day, each waiting for approval unless it goes only to this workspace's own addresses.",
 		);
 		expect(policySummary(stored("unlisted", '["@acme.test"]'))).toBe(
-			"Writes up to 20 messages a day. To @acme.test it goes on its own; anything else waits for approval.",
+			"Writes up to 20 messages a day. To @acme.test, and to this workspace's own addresses alone, it goes on its own; anything else waits for approval.",
 		);
 		expect(policySummary({ ...stored("never"), sendPerDay: 0 })).toBe("Can't send mail.");
+	});
+
+	it("says of one from before that everything waits, as is true of it", () => {
+		const before = (allowed: string) => readPolicy({ sendPerDay: 20, allowed, approval: null });
+		expect(policySummary(before("[]"))).toBe(
+			"Writes up to 20 messages a day, each waiting for approval.",
+		);
+		expect(policySummary(before('["@acme.test", "a@b.test", "c@d.test"]'))).toBe(
+			"Writes up to 20 messages a day. To @acme.test, a@b.test and 1 more it goes on its own; anything else waits for approval.",
+		);
 	});
 });
 

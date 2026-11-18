@@ -11,6 +11,9 @@ const origin = "https://mail.test";
 const RECEIVER = "hooks.example";
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/** How many messages a workspace may send a day in these tests: more than any test but one sends. */
+const SEND_PER_DAY = 5;
+
 /** Small, so that a mailbox fills up with one message. */
 const MAILBOX_BYTES = 400_000;
 
@@ -288,7 +291,7 @@ async function logOf(agent: Agent) {
 beforeAll(async () => {
 	mail = await startMail(origin, {
 		hosts: { "cloudflare-dns.com": dns, [RECEIVER]: receiver },
-		settings: { MAILBOX_BYTES: String(MAILBOX_BYTES) },
+		settings: { MAILBOX_BYTES: String(MAILBOX_BYTES), SEND_PER_DAY: String(SEND_PER_DAY) },
 	});
 	owner = await signUp(mail, origin, "Owner");
 });
@@ -613,6 +616,65 @@ describe("a paused agent", () => {
 		expect(await messages(billing)).toHaveLength(0);
 	});
 
+	it("sends nothing when it is paused after its key was read, before its message is", async () => {
+		const space = await workspace();
+		const billing = await space.mailbox("billing");
+		const agent = await agentOf(space);
+		const keyUsed = async () =>
+			(
+				await mail.db
+					.prepare("SELECT last_used_at FROM agent_key WHERE user_id = ?")
+					.bind(agent.id)
+					.first<{ last_used_at: number | null }>()
+			)?.last_used_at ?? null;
+		expect(await keyUsed()).toBeNull();
+
+		// The message arrives slowly: its key is read when the request begins, and the rest of it
+		// only once the test lets it through, as a large one's files would over a slow line.
+		const whole = new TextEncoder().encode(
+			JSON.stringify({
+				action: "send",
+				draft: crypto.randomUUID(),
+				to: [billing.address],
+				cc: [`ada.${space.slug}@example.org`],
+				subject: "Written while it ran",
+				text: "Sent after the pause?",
+			}),
+		);
+		let finish = () => {};
+		const body = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(whole.slice(0, 20));
+				finish = () => {
+					controller.enqueue(whole.slice(20));
+					controller.close();
+				};
+			},
+		});
+		const answer = mail.fetchStreamed(
+			`${origin}/api/mail/${space.slug}/${space.desk.id}/outbox`,
+			{
+				method: "POST",
+				headers: { authorization: `Bearer ${agent.key}`, "content-type": "application/json" },
+			},
+			body,
+		);
+		// The key's use is noted once the key, and whether its agent is paused, has been read.
+		for (let waited = 0; (await keyUsed()) === null && waited < 20_000; waited += 100) {
+			await new Promise((resolve) => setTimeout(resolve, 100));
+		}
+		expect(await keyUsed()).not.toBeNull();
+		expect((await auth("/agents/pause", { agentId: agent.id })).status).toBe(200);
+		finish();
+
+		const response = await answer;
+		expect(response.status).toBe(403);
+		expect(((await response.json()) as { error: string }).error).toMatch(/^This agent is paused\./);
+		expect(await messages(billing)).toHaveLength(0);
+		expect(await sentTo(`ada.${space.slug}@example.org`)).toHaveLength(0);
+		expect(await logOf(agent)).toEqual([]);
+	});
+
 	it("has mail inside its workspace that waited to be tried again held for a person", {
 		timeout: 90_000,
 	}, async () => {
@@ -681,6 +743,39 @@ describe("an agent's day", () => {
 			}
 			expect(await sentTo(listed), approval).toHaveLength(approval === "always" ? 0 : 1);
 		}
+	});
+});
+
+describe("the workspace's day", () => {
+	/** Writes until the workspace's day is used up, and gives the answer to the message after. */
+	async function afterTheLast(space: Space, agent: Agent, to: () => string) {
+		for (let sent = 0; sent < SEND_PER_DAY; sent++) {
+			expect(await stateOf(space, agent, [to()]), `message ${sent + 1}`).toBe("sent");
+		}
+		return agentSends(space, agent, [to()]);
+	}
+
+	it("refuses what an agent that sends on its own writes after the workspace's last", async () => {
+		const space = await workspace();
+		const agent = await agentOf(space);
+		expect(agent.policy.sendPerDay).toBeGreaterThan(SEND_PER_DAY);
+		let n = 0;
+		const over = await afterTheLast(space, agent, () => `day${++n}.${space.slug}@example.org`);
+		expect(over.status).toBe(429);
+		expect(((await over.json()) as { error: string }).error).toMatch(/^This workspace has sent/);
+		expect(await sentTo(`day${n}.${space.slug}@example.org`)).toHaveLength(0);
+	});
+
+	it("refuses mail inside the workspace after its last too, though it waits for nobody", async () => {
+		const space = await workspace();
+		const billing = await space.mailbox("billing");
+		const agent = await agentOf(space);
+		// Everything else waits, so only mail that stays inside goes, and counts as it goes.
+		await saved(agent, { approval: "always" });
+		const over = await afterTheLast(space, agent, () => billing.address);
+		expect(over.status).toBe(429);
+		expect(((await over.json()) as { error: string }).error).toMatch(/^This workspace has sent/);
+		expect(await messages(billing)).toHaveLength(SEND_PER_DAY);
 	});
 });
 
@@ -813,12 +908,18 @@ describe("what is told of an agent's mail", () => {
 		while (mine().length < 3 && Date.now() < deadline) {
 			await new Promise((resolve) => setTimeout(resolve, 100));
 		}
-		const byMessage = Object.fromEntries(mine().map((one) => [one.message, one.type]));
-		expect(byMessage).toEqual({
-			[alone.id]: "message.sent",
-			[inside.id]: "message.sent",
-			[waits.id]: "message.held",
-		});
+		// Long enough for one too many to come: a `message.held` before a `message.sent` for mail
+		// that never waited would be an event nobody should hear.
+		await new Promise((resolve) => setTimeout(resolve, 3_000));
+		// Everything told of each message, in the order it came, and of no other message.
+		const sequence = (id: string) =>
+			mine()
+				.filter((one) => one.message === id)
+				.map((one) => one.type);
+		expect(mine()).toHaveLength(3);
+		expect(sequence(alone.id)).toEqual(["message.sent"]);
+		expect(sequence(inside.id)).toEqual(["message.sent"]);
+		expect(sequence(waits.id)).toEqual(["message.held"]);
 
 		// Its log names each message it sent on its own, with whom it went to.
 		expect(await logOf(agent)).toEqual([
