@@ -8,6 +8,43 @@ read its entry before updating a self-hosted copy.
 Each version's [GitHub release](https://github.com/gateweavehq/mail/releases) carries the same
 notes. Publishing a release deploys it.
 
+## [0.2.0] - 2026-11-18
+
+### Changed
+
+- **An agent sends on its own by default.** An agent's policy now says one of three things: it
+  sends on its own, it sends on its own to the addresses and domains listed and the rest waits for
+  a person, or everything waits. A new agent sends on its own. An owner or admin chooses on the
+  agent's page. **Agents made before this release keep what they had**: one with a list keeps its
+  list, one without still has everything wait, until a person changes its policy.
+  ([#62](https://github.com/gateweavehq/mail/pull/62))
+- **Mail inside a workspace does not wait.** A message whose every recipient is a live address of
+  the agent's own workspace is delivered whatever the policy says, unless the agent is paused. For
+  an agent made before this release this begins when its policy is next saved.
+- The agent's page states the brakes that need no person beside the choice: the agent's daily
+  limit (20 for a new agent), the workspace's daily limit, the suppression list, an admin's pause
+  and the agent's log, which records every message it sent on its own.
+
+### Fixed
+
+- An agent paused or deleted while one of its messages was being sent could still have that
+  message go out. The pause and the membership are now read again just before the message is
+  handed over.
+
+### Worth knowing
+
+- An agent that sends on its own can be led by a message it reads to write to anyone, up to its
+  daily limit. For an agent that reads mail from strangers and should not write freely, choose
+  "everything waits" or a list. Neither holds mail to the workspace's own addresses, which goes
+  under every policy; only pausing the agent stops that.
+
+### Running your own
+
+- One D1 migration (`0026_agent_policy_approval.sql`, a nullable column), which `pnpm run deploy`
+  applies before the new code goes live. No new setting.
+- The `send_email`, `reply` and `send_template` operations answer "sent" or "held" as before; the
+  skill in the Claude Code plugin says what becomes of a message under each policy.
+
 ## [0.1.0] - 2026-11-16
 
 The first release. Mail gives a workspace mailboxes for people and agents on one Cloudflare Worker:
