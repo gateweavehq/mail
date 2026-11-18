@@ -20,6 +20,18 @@ describe("safeRedirect", () => {
 		}
 	});
 
+	it("refuses a path whose dot segments resolve to another site", () => {
+		for (const value of [
+			"/.//example.com/x",
+			"/x/..//example.com/x",
+			"/%2e//example.com/x",
+			"/./\\example.com",
+		]) {
+			expect(safeRedirect(value), value).toBeNull();
+		}
+		expect(safeRedirect("/acme/../other")).toBe("/other");
+	});
+
 	it("refuses a missing value", () => {
 		expect(safeRedirect(undefined)).toBeNull();
 		expect(safeRedirect("")).toBeNull();
