@@ -39,9 +39,9 @@ notes. Publishing a release deploys it.
 
 ### Running your own
 
-- One D1 migration (, a nullable column), which
-   applies before the new code goes live. No new setting.
-- The ,  and  operations answer "sent" or "held" as before; the
+- One D1 migration (`0026_agent_policy_approval.sql`, a nullable column), which `pnpm run deploy`
+  applies before the new code goes live. No new setting.
+- The `send_email`, `reply` and `send_template` operations answer "sent" or "held" as before; the
   skill in the Claude Code plugin says what becomes of a message under each policy.
 
 ## [0.1.0] - 2026-11-16
