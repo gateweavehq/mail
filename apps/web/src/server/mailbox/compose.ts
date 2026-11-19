@@ -1,3 +1,5 @@
+import { AI_DISCLOSURE_HEADER } from "./disclosure";
+
 /**
  * A message a person writes, as Email Service is asked to send it and as the mailbox keeps a copy
  * of it. Email Service sets `Message-ID` itself and refuses one of ours, so Mail names the message
@@ -48,6 +50,7 @@ export interface Outgoing {
 	text: string;
 	/** Its HTML, beside the text, or null for text alone. */
 	html: string | null;
+	aiDisclosure?: "mode=machine-generated" | "mode=ai-originated";
 	/** Its files, which go from the copy, not from `sendRequest`'s answer. */
 	files: OutgoingFile[];
 	/** The id of the message it answers, or null for a new one. */
@@ -93,6 +96,7 @@ export function sendRequest(message: Outgoing): EmailMessageBuilder {
 		References: referencesValue(message.references, message.ownId),
 	};
 	if (message.inReplyTo) headers["In-Reply-To"] = `<${message.inReplyTo}>`;
+	if (message.aiDisclosure) headers[AI_DISCLOSURE_HEADER] = message.aiDisclosure;
 	return {
 		from: { name: plainName(message.from.name), email: message.from.email },
 		to: message.to,
@@ -264,6 +268,7 @@ export function rawCopy(message: Outgoing, date: Date): string {
 		`Subject: ${headerText(message.subject)}`,
 		`Date: ${dateHeader(date)}`,
 		`Message-ID: <${message.ownId}>`,
+		...(message.aiDisclosure ? [`${AI_DISCLOSURE_HEADER}: ${message.aiDisclosure}`] : []),
 		...(message.inReplyTo ? [`In-Reply-To: <${message.inReplyTo}>`] : []),
 		// Folded between ids, so no line runs past what mail allows.
 		`References: ${referencesValue(message.references, message.ownId).split(" ").join("\r\n ")}`,

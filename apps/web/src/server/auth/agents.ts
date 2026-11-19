@@ -22,6 +22,7 @@ import {
 	AgentPolicyInput,
 	approvalOfList,
 	DEFAULT_AGENT_POLICY,
+	MAX_AGENT_NAME,
 	NEW_AGENT_POLICY,
 	policySummary,
 	readPolicy,
@@ -270,7 +271,7 @@ export async function agentPolicyOf(db: Database, memberId: string): Promise<Age
 	return row ? readPolicy(row) : DEFAULT_AGENT_POLICY;
 }
 
-const agentName = z.string().trim().min(1).max(80);
+const agentName = z.string().trim().min(1).max(MAX_AGENT_NAME);
 const id = z.string().min(1).max(64);
 
 export function agentMembers({ db }: { db: Database }) {

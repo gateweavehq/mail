@@ -187,7 +187,16 @@ async function sentTo(address: string): Promise<SentEmail[]> {
 
 /** An agent of the workspace, with its key, as its owner makes it in settings. */
 async function makeAgent(box: Box, name = "Sorter") {
-	const response = await auth("/agents/create", { organizationId: box.workspaceId, name });
+	const response = await auth(
+		"/agents/create",
+		{ organizationId: box.workspaceId, name },
+		{
+			headers: {
+				...owner.headers,
+				"cf-connecting-ip": `192.0.2.${box.slug.slice("send-".length)}`,
+			},
+		},
+	);
 	expect(response.status).toBe(200);
 	const { agent, key } = (await response.json()) as {
 		agent: { id: string; memberId: string };
@@ -845,7 +854,7 @@ describe("HTML and files", () => {
 		}
 	});
 
-	it("wait with an agent's message for a person, who sees them before they go", async () => {
+	it("R5: waits with an agent's attachments, then sends them with the disclosure", async () => {
 		const box = await mailboxWithAddress();
 		const agent = await makeAgent(box);
 		await everythingWaits(agent);
@@ -874,7 +883,15 @@ describe("HTML and files", () => {
 		const approved = await outbox(box, owner, { action: "approve", message: held.id });
 		expect(await approved.json()).toMatchObject({ ok: true, state: "sent" });
 		const [email] = await sentTo(to);
-		expect(email).toMatchObject({ html: filesHtml, attachments: handedFiles });
+		expect(email).toMatchObject({
+			attachments: handedFiles,
+			headers: expect.objectContaining({ "X-AI-Disclosure": "mode=ai-originated" }),
+		});
+		const line = `This message was written by an AI agent (${agent.name}).`;
+		const firstParagraph = /^<p [^>]+>([^<]+)<\/p>/.exec(email?.html ?? "");
+		expect(firstParagraph?.[1]).toBe(line);
+		expect(email?.html?.slice(firstParagraph?.[0].length)).toBe(filesHtml);
+		expect(email?.text.startsWith(`${line}\n\n`)).toBe(true);
 		expect(email?.text).toMatch(/report[\s\S]*attached/);
 	});
 

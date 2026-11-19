@@ -7,6 +7,7 @@
  * HTMLRewriter exists only in workerd, so the tests for the cleaning are the Worker's.
  */
 import type { Attachment } from "postal-mime";
+import { agentStyle } from "./agent-style";
 
 /** The most of a message's HTML shown, in characters. */
 export const MAX_SHOWN_HTML = 1_000_000;
@@ -316,10 +317,13 @@ export async function cleanHtml(
  * or approves an agent's message, sees what goes. Images keep their addresses, `cid:` and remote ones
  * too, for the mail client to show.
  */
-export async function sendableHtml(html: string): Promise<string> {
+export async function sendableHtml(
+	html: string,
+	{ agent = false }: { agent?: boolean } = {},
+): Promise<string> {
 	const kept = (src: string) =>
 		startsWith(src, CID) || startsWith(src, INLINE_DATA) || startsWith(src, REMOTE) ? src : null;
-	return cleaner(kept, { frame: false })
+	return cleaner(kept, { frame: false, agent })
 		.transform(new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } }))
 		.text();
 }
@@ -330,29 +334,48 @@ export async function sendableHtml(html: string): Promise<string> {
  */
 function cleaner(
 	image: (src: string) => string | null,
-	{ frame }: { frame: boolean },
+	{ frame, agent = false }: { frame: boolean; agent?: boolean },
 ): HTMLRewriter {
 	return new HTMLRewriter()
 		.on("*", {
 			element(element) {
 				const tag = element.tagName.toLowerCase();
-				if (DROPPED_TAGS.has(tag) || element.namespaceURI !== "http://www.w3.org/1999/xhtml") {
+				if (
+					DROPPED_TAGS.has(tag) ||
+					(agent && tag === "style") ||
+					element.namespaceURI !== "http://www.w3.org/1999/xhtml"
+				) {
 					element.remove();
 					return;
 				}
-				if (!KEPT_TAGS.has(tag)) {
+				if (!KEPT_TAGS.has(tag) || (agent && tag === "head")) {
 					element.removeAndKeepContent();
 					return;
 				}
 				// The DOM's types, which the app's pages need, give `Element` the DOM's attributes.
 				const attributes = element.attributes as unknown as Iterable<[string, string]>;
 				const names = [...attributes].map(([name]) => name);
+				const documentRoot = agent && (tag === "html" || tag === "body");
 				for (const name of names) {
 					const lower = name.toLowerCase();
-					if (KEPT_ATTRIBUTES.has(lower)) continue;
+					if (documentRoot ? lower === "lang" || lower === "dir" : KEPT_ATTRIBUTES.has(lower))
+						continue;
 					if (tag === "a" && lower === "href") continue;
 					if (tag === "img" && lower === "src") continue;
 					element.removeAttribute(name);
+				}
+				// An agent's document shell becomes plain blocks and its head goes, content kept, so the
+				// disclosure put first cannot land inside anything the agent opened (a <body> nested in
+				// <details>, say) or after text the agent left in <head>.
+				// HTMLRewriter renames an element whose `tagName` is set; the DOM's types call it read-only.
+				if (documentRoot) (element as unknown as { tagName: string }).tagName = "div";
+				if (agent) {
+					const style = element.getAttribute("style");
+					if (style !== null) {
+						const kept = disclosureStyle(style, tag);
+						if (kept) element.setAttribute("style", kept);
+						else element.removeAttribute("style");
+					}
 				}
 				if (tag === "a") {
 					const href = element.getAttribute("href");
@@ -379,6 +402,15 @@ function cleaner(
 				comment.remove();
 			},
 		});
+}
+
+function disclosureStyle(style: string, tag: string): string {
+	// HTMLRewriter gives the attribute as written. An unrecognised character reference can
+	// change the declaration boundaries when a mail client decodes it.
+	if (/&(?=[#a-z])(?!#\d{1,7};|#x[\da-f]{1,6};|(?:amp|lt|gt|quot|apos);)/i.test(style)) {
+		return "";
+	}
+	return agentStyle(decodeEntities(style), tag).replace(/&/g, "&amp;");
 }
 
 /**

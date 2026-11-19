@@ -308,7 +308,7 @@ describe("an agent's MCP server", () => {
 		).toMatch(/No such message/);
 	});
 
-	it("sends and replies as the agent's policy has it", async () => {
+	it("R1/R3: sends and replies as the agent's policy has it, with disclosure", async () => {
 		const space = await workspace();
 		const agent = await agentOf(space);
 		const mcp = await connect(agent.key);
@@ -360,7 +360,10 @@ describe("an agent's MCP server", () => {
 		expect(toShop[0]).toMatchObject({
 			from: { email: space.signUps.address },
 			subject: "Re: Order 12",
-			text: "Yes, it is.",
+			text: expect.stringMatching(
+				/^This message was written by an AI agent \(Signer \d+\)\.\n\nYes, it is\.$/,
+			),
+			headers: expect.objectContaining({ "X-AI-Disclosure": "mode=machine-generated" }),
 		});
 		// Waiting is for mail that comes in, never for what the mailbox sent itself.
 		const newest = await ok<{ message: Opened }>(mcp, "wait_for_email", {
