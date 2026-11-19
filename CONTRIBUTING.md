@@ -9,6 +9,7 @@ Issues labelled [good first issue](https://github.com/gateweavehq/mail/labels/go
 are small, and each says where to look and when it's done. Say in the issue that you're taking
 one, so nobody does it twice, and ask there if you get stuck. If you have something else in
 mind, open an issue first for anything large.
+[See the open ones](https://github.com/gateweavehq/mail/issues?q=is%3Aopen+label%3A%22good+first+issue%22).
 
 ## Setup
 
@@ -18,6 +19,11 @@ pnpm doctor      # checks Node, pnpm and the local setup, with fixes for anythin
 pnpm dev:setup
 pnpm dev
 ```
+
+The app runs on http://localhost:4750.
+
+The browser tests (`pnpm test:e2e`) are not part of `pnpm verify`; the first time, run
+`pnpm --filter @gateweave/mail-web exec playwright install chromium`.
 
 See the [README](README.md) for details and [docs/architecture.md](docs/architecture.md) for how
 the system fits together.
