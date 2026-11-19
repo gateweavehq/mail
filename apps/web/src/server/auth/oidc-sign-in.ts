@@ -61,7 +61,7 @@ export function oidcSignIn(db: Database, { issuer, clientId, clientSecret }: Oid
 			// This reads a field of the plugin's that is not public: the sign-in tests fail if it moves.
 			init: async () => {
 				const context = {
-					genericOAuthPendingDiscovery: new Map([[OIDC_PROVIDER, { config }]]),
+					genericOAuthPendingDiscovery: new Map([[OIDC_PROVIDER, config]]),
 				};
 				return { context };
 			},

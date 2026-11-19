@@ -23,15 +23,15 @@
 		"db:migrate:remote": "wrangler d1 migrations apply DB --remote",
 		"db:migrate:staging": "wrangler d1 migrations apply DB --remote --env staging",
 		"db:migrate:cloud": "wrangler d1 migrations apply DB --remote --env cloud",
-		"auth:schema": "pnpm dlx auth@1.7.16 generate --config src/server/auth/cli.ts --output src/server/db/auth-schema.ts --yes"
+		"auth:schema": "pnpm dlx auth@1.7.25 generate --config src/server/auth/cli.ts --output src/server/db/auth-schema.ts --yes"
 	},
 	"dependencies": {
-		"@better-auth/core": "1.7.20",
+		"@better-auth/core": "1.7.25",
 		"@fontsource-variable/inter": "5.3.0",
 		"@modelcontextprotocol/server": "2.4.0",
 		"@tanstack/react-router": "1.170.46",
 		"@tanstack/react-start": "1.169.5",
-		"better-auth": "1.7.20",
+		"better-auth": "1.7.25",
 		"class-variance-authority": "0.7.1",
 		"clsx": "2.1.1",
 		"drizzle-orm": "catalog:",
