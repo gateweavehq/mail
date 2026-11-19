@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { isAddress } from "./outbox";
 
+export const MAX_AGENT_NAME = 80;
+
 /**
  * Which of an agent's mail waits for a person to approve it: none of it (`never`), what goes to
  * anyone its list doesn't name (`unlisted`), or all of it (`always`).

@@ -1,4 +1,5 @@
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import PostalMime from "postal-mime";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { OUTPUTS } from "../src/server/agent-api/outputs";
 import { agentWorld } from "./agent-world";
@@ -12,7 +13,19 @@ const origin = "https://mail.test";
 const world = agentWorld(origin, "api");
 const { workspace, agentOf, auth, directory, arrive } = world;
 
-beforeAll(() => world.start());
+const resendRequests: { to: string[]; headers: Record<string, string>; text: string }[] = [];
+beforeAll(() =>
+	world.start({
+		"api.resend.com": async (request) => {
+			const path = new URL(request.url).pathname;
+			if (path === "/domains") return Response.json({ data: [] });
+			if (path !== "/emails" || request.method !== "POST")
+				return new Response(null, { status: 404 });
+			resendRequests.push((await request.json()) as (typeof resendRequests)[number]);
+			return Response.json({ id: crypto.randomUUID() });
+		},
+	}),
+);
 afterAll(() => world.dispose());
 
 interface Asked {
@@ -60,6 +73,25 @@ async function done<T = Record<string, unknown>>(
 
 const box = (id: string) => `/mailboxes/${encodeURIComponent(id)}`;
 
+type Space = Awaited<ReturnType<typeof workspace>>;
+
+function ownerOutbox(space: Space, action: Record<string, unknown>) {
+	return world.mail.fetch(`${origin}/api/mail/${space.slug}/${space.signUps.id}/outbox`, {
+		method: "POST",
+		headers: { ...world.owner.headers, origin, "content-type": "application/json" },
+		body: JSON.stringify(action),
+	});
+}
+
+async function storedCopy(space: Space, id: string) {
+	const response = await world.mail.fetch(
+		`${origin}/api/mail/${space.slug}/${space.signUps.id}/${id}/original`,
+		{ headers: world.owner.headers },
+	);
+	expect(response.status).toBe(200);
+	return PostalMime.parse(await response.arrayBuffer());
+}
+
 interface Opened {
 	id: string;
 	threadId: string;
@@ -69,7 +101,7 @@ interface Opened {
 }
 
 describe("the agent API", () => {
-	it("does over REST what the MCP tools do, in the shape its document gives", async () => {
+	it("R1/R3: does over REST what the MCP tools do, including disclosing agent replies", async () => {
 		const space = await workspace();
 		const agent = await agentOf(space);
 		expect(
@@ -170,6 +202,10 @@ describe("the agent API", () => {
 			[email.to].flat().includes("noreply@github.com"),
 		);
 		expect(toGithub).toHaveLength(1);
+		expect(toGithub[0]?.text).toMatch(
+			/^This message was written by an AI agent \(Signer \d+\)\.\n\nThanks\.$/,
+		);
+		expect(toGithub[0]?.headers?.["X-AI-Disclosure"]).toBe("mode=machine-generated");
 		const held = await done<{ state: string }>(
 			agent.key,
 			"send_email",
@@ -194,6 +230,179 @@ describe("the agent API", () => {
 				`${box(space.signUps.id)}/addresses/${made.id}`,
 			),
 		).toEqual({ ended: true });
+	});
+
+	it("R1/R2/R3/R15: sends the D1 name and fixed marks ahead of hostile agent HTML", async () => {
+		const space = await workspace();
+		const agent = await agentOf(space);
+		expect(
+			(await auth("/agents/update", { agentId: agent.id, name: "Dispatch <East> & West" })).status,
+		).toBe(200);
+		const to = "disclosed@example.org";
+		const sent = await done<{ id: string; state: string }>(
+			agent.key,
+			"send_email",
+			"POST",
+			`${box(space.signUps.id)}/messages`,
+			{
+				to: [to],
+				subject: "Disclosure off",
+				html:
+					"<!doctype html><html><head><style>p:last-of-type{display:none}</style></head>" +
+					'<body><div style="d&#105;splay:none; color: navy"><p style="position:absolute; margin-top:-99px">Notice from the agent.</p></div>' +
+					"<style>p{display:none}",
+				disclosure: false,
+				agentName: "a spoofed name",
+				headers: { "X-AI-Disclosure": "off" },
+			},
+		);
+		expect(sent.state).toBe("sent");
+		const email = (await world.mail.emails()).find((one) => one.to.includes(to));
+		expect(email?.text).toBe(
+			"This message was written by an AI agent (Dispatch <East> & West).\n\nNotice from the agent.",
+		);
+		expect(email?.html).toMatch(
+			/^<!doctype html><html><head><\/head><body><p [^>]+>This message was written by an AI agent \(Dispatch &lt;East&gt; &amp; West\)\.<\/p><div style="color: navy"><p>Notice from the agent\.<\/p><\/div>$/,
+		);
+		expect(email?.headers?.["X-AI-Disclosure"]).toBe("mode=machine-generated");
+		const copy = await storedCopy(space, sent.id);
+		expect(copy.headers).toContainEqual({
+			key: "x-ai-disclosure",
+			originalKey: "X-AI-Disclosure",
+			value: "mode=machine-generated",
+		});
+		expect(copy.html?.trimEnd()).toBe(email?.html);
+	});
+
+	it("R2/R4: keeps human HTML as before and sends no disclosure for a session", async () => {
+		const space = await workspace();
+		const to = "human@example.org";
+		const html =
+			'<style>p:last-of-type{display:none}</style><div style="display:none;position:absolute;margin-top:-12px"><p>From a person</p></div>';
+		const response = await ownerOutbox(space, {
+			action: "send",
+			draft: crypto.randomUUID(),
+			to: [to],
+			subject: "Human note",
+			text: "From a person",
+			html,
+		});
+		expect(response.status).toBe(200);
+		const sent = (await response.json()) as { id: string; state: string };
+		expect(sent.state).toBe("sent");
+		const email = (await world.mail.emails()).find((one) => one.to.includes(to));
+		expect(email?.text).toBe("From a person");
+		expect(email?.html).toBe(html);
+		expect(email?.headers?.["X-AI-Disclosure"]).toBeUndefined();
+		const copy = await storedCopy(space, sent.id);
+		expect(copy.text?.trimEnd()).toBe("From a person");
+		expect(copy.headers.some(({ key }) => key === "x-ai-disclosure")).toBe(false);
+	});
+
+	it("R3/R5: holds the marked copy for approval and keeps its marks through Send again", async () => {
+		const space = await workspace();
+		const agent = await agentOf(space);
+		await world.everythingWaits(agent.id);
+		expect(
+			(await auth("/agents/update", { agentId: agent.id, name: "Original writer" })).status,
+		).toBe(200);
+		const to = "lost-1@disclosure.example.org";
+		const draft = await done<{ id: string; state: string }>(
+			agent.key,
+			"send_email",
+			"POST",
+			`${box(space.signUps.id)}/messages`,
+			{ to: [to], subject: "Review this", html: "<p>Needs review.</p>" },
+		);
+		expect(draft.state).toBe("held");
+		const line = "This message was written by an AI agent (Original writer).";
+		const opened = await world.mail.fetch(
+			`${origin}/api/mail/${space.slug}/${space.signUps.id}/${draft.id}`,
+			{ headers: world.owner.headers },
+		);
+		expect(await opened.json()).toMatchObject({
+			text: expect.stringContaining(`${line}\n\nNeeds review.`),
+			sent: { status: { state: "held" } },
+		});
+		const frame = await world.mail.fetch(
+			`${origin}/api/mail/${space.slug}/${space.signUps.id}/${draft.id}/html`,
+			{ headers: world.owner.headers },
+		);
+		expect(await frame.text()).toMatch(
+			/<p [^>]+>This message was written by an AI agent \(Original writer\)\.<\/p><p>Needs review\.<\/p>/,
+		);
+		const copy = await storedCopy(space, draft.id);
+		expect(copy.headers).toContainEqual({
+			key: "x-ai-disclosure",
+			originalKey: "X-AI-Disclosure",
+			value: "mode=ai-originated",
+		});
+		// The first provider attempt is uncertain. Rename the agent and change its policy before
+		// a person approves, so a rebuilt request would have the wrong marks.
+		expect(
+			(await auth("/agents/update", { agentId: agent.id, name: "Renamed writer" })).status,
+		).toBe(200);
+		expect(
+			(
+				await auth("/agents/set-policy", {
+					agentId: agent.id,
+					sendPerDay: 20,
+					approval: "never",
+					allowed: [],
+				})
+			).status,
+		).toBe(200);
+		const approved = await ownerOutbox(space, { action: "approve", message: draft.id });
+		expect(await approved.json()).toMatchObject({ state: "uncertain" });
+		const again = await ownerOutbox(space, { action: "send-again", message: draft.id });
+		expect(await again.json()).toMatchObject({ state: "sent" });
+		const email = (await world.mail.emails()).find((one) => one.to.includes(to));
+		expect(email?.text).toBe(`${line}\n\nNeeds review.`);
+		expect(email?.html).toBe(copy.html?.trimEnd());
+		expect(email?.headers?.["X-AI-Disclosure"]).toBe("mode=ai-originated");
+	});
+
+	it("R3: sends Resend the same disclosure header that was stored", async () => {
+		const space = await workspace();
+		const agent = await agentOf(space);
+		const [domain] = (await directory(space.slug)).domains;
+		if (!domain) throw new Error("expected a proved domain");
+		expect(
+			(
+				await auth("/providers/set-key", {
+					organizationId: space.workspaceId,
+					provider: "resend",
+					key: "re_disclosure_key_0123456789",
+				})
+			).status,
+		).toBe(200);
+		expect(
+			(
+				await directory(space.slug, {
+					action: "set-domain-sending",
+					id: domain.id,
+					sendsWith: "resend",
+				})
+			).ok,
+		).toBe(true);
+		const to = "disclosed-via-resend@example.org";
+		const sent = await done<{ id: string; state: string }>(
+			agent.key,
+			"send_email",
+			"POST",
+			`${box(space.signUps.id)}/messages`,
+			{ to: [to], subject: "Via Resend", text: "Hello." },
+		);
+		expect(sent.state).toBe("sent");
+		const copy = await storedCopy(space, sent.id);
+		const email = resendRequests.find((one) => one.to.includes(to));
+		expect(email?.text).toMatch(
+			/^This message was written by an AI agent \(Signer \d+\)\.\n\nHello\.$/,
+		);
+		expect(copy.headers.find(({ key }) => key === "x-ai-disclosure")?.value).toBe(
+			"mode=machine-generated",
+		);
+		expect(email?.headers["X-AI-Disclosure"]).toBe("mode=machine-generated");
 	});
 
 	it("sends HTML and files with its key, taking a large body only where files go", async () => {

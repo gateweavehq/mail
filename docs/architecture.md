@@ -793,6 +793,12 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
       had: a row without `approval`, or an agent without a row, reads by its list alone as it
       did (empty, everything waits; `readPolicy`), and its mail inside the workspace waits like
       the rest (`insideWaits`), until a person saves its policy, which writes one of the three.
+      Mail sent with an agent's key, including replies and mail made from templates, starts with
+      an AI disclosure naming the agent in text and HTML when present. Its stored copy and provider
+      request both carry `X-AI-Disclosure` with mode `machine-generated` for mail sent on its own
+      or `ai-originated` for mail held for approval. Approval and sending again use those stored
+      marks. This disclosure is always on for agent mail and applies to the message body, with
+      attachments outside its scope.
       A message that waits, To or Cc, is kept as `held`: its copy is in its thread like any
       other, Email Service isn't called, and the mailbox's page lists what waits. Anyone who may
       read the mailbox can approve it, which sends it then and records who did

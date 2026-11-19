@@ -365,7 +365,7 @@ async function rest(key: string, method: string, path: string, data: object = {}
 const SAMPLE = { product: "Gateweave", first_name: "Ann", code: "4821" };
 
 describe("sending a template as an agent", () => {
-	it("lists them without their bodies, and sends one with the rendered subject, text and HTML", {
+	it("R6: lists templates and sends the rendered message with the agent disclosure", {
 		timeout: 60_000,
 	}, async () => {
 		const space = await workspace();
@@ -423,6 +423,11 @@ describe("sending a template as an agent", () => {
 
 		const emails = await world.mail.emails();
 		const toAda = emails.find((email) => email.to.includes(`ada@${domain}`));
+		expect(toAda?.headers?.["X-AI-Disclosure"]).toBe("mode=machine-generated");
+		expect(toAda?.text).toMatch(/^This message was written by an AI agent \(Signer \d+\)\.\n\n/);
+		expect(toAda?.html).toMatch(
+			/^<p [^>]+>This message was written by an AI agent \(Signer \d+\)\.<\/p>/,
+		);
 		expect(toAda?.subject).toBe(`Welcome to Gateweave, ${hostile}`);
 		expect(toAda?.html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
 		expect(toAda?.html).toContain("**x**");
@@ -462,7 +467,13 @@ describe("sending a template as an agent", () => {
 		});
 		expect(plain.body).toMatchObject({ state: "sent", version: 1 });
 		const toCy = (await world.mail.emails()).find((email) => email.to.includes(`cy@${domain}`));
-		expect(toCy).toMatchObject({ subject: "Note", text: "Just words." });
+		expect(toCy).toMatchObject({
+			subject: "Note",
+			text: expect.stringMatching(
+				/^This message was written by an AI agent \(Signer \d+\)\.\n\nJust words\.$/,
+			),
+			headers: expect.objectContaining({ "X-AI-Disclosure": "mode=machine-generated" }),
+		});
 		expect(toCy?.html).toBeUndefined();
 	});
 
@@ -504,7 +515,7 @@ describe("sending a template as an agent", () => {
 		expect((await ask({ values: SAMPLE })).status).toBe(429);
 	});
 
-	it("is held for an agent whose policy doesn't name the recipient, and counts against its day", async () => {
+	it("R5/R6: holds an unlisted template send, counts it, and preserves disclosure on approval", async () => {
 		const space = await workspace();
 		const agent = await agentOf(space);
 		await auth("/agents/set-policy", {
@@ -547,6 +558,11 @@ describe("sending a template as an agent", () => {
 		expect(approved.status).toBe(200);
 		const out = (await world.mail.emails()).find((email) => email.to.includes(stranger));
 		expect(out?.subject).toBe("Welcome to Gateweave, Ann");
+		expect(out?.headers?.["X-AI-Disclosure"]).toBe("mode=ai-originated");
+		expect(out?.text).toMatch(/^This message was written by an AI agent \(Signer \d+\)\.\n\n/);
+		expect(out?.html).toMatch(
+			/^<p [^>]+>This message was written by an AI agent \(Signer \d+\)\.<\/p>/,
+		);
 	});
 
 	it("is refused for a recipient on the suppression list, as send_email is", async () => {

@@ -92,6 +92,15 @@ const OUTBOX = `
 import { WorkerEntrypoint } from "cloudflare:workers";
 const sent = [];
 const tries = new Map();
+// https://developers.cloudflare.com/email-service/reference/headers/
+const allowedHeaders = new Set([
+	"in-reply-to", "references", "thread-index", "thread-topic",
+	"list-unsubscribe", "list-unsubscribe-post", "list-id", "list-archive", "list-help",
+	"list-owner", "list-post", "list-subscribe", "precedence", "auto-submitted",
+	"content-language", "keywords", "comments", "importance", "priority", "sensitivity",
+	"organization", "require-recipient-valid-since", "expires", "reply-by", "archived-at",
+	"otp-token",
+]);
 function failure(address) {
 	const local = address.slice(0, address.indexOf("@"));
 	const refused = /^refuse-(E_[A-Z_]+)$/.exec(local);
@@ -120,6 +129,15 @@ function asSent(file) {
 }
 export default class Outbox extends WorkerEntrypoint {
 	async send(message) {
+		for (const [name, value] of Object.entries(message.headers ?? {})) {
+			const custom = name.length <= 100 && /^X-[A-Za-z0-9_-]+$/i.test(name);
+			if (!allowedHeaders.has(name.toLowerCase()) && !custom) {
+				throw new Error("E_HEADER_NOT_ALLOWED: header is not allowlisted");
+			}
+			if (new TextEncoder().encode(value).byteLength > 2048) {
+				throw new Error("E_HEADER_NOT_ALLOWED: header value is too long");
+			}
+		}
 		const recipients = [message.to, message.cc ?? []].flat();
 		for (const address of recipients) {
 			const error = failure(address);

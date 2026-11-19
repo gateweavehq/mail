@@ -323,6 +323,28 @@ have the mail of one that reads strangers' mail wait. Agents made before a serve
 keep what they had, mail inside the workspace waiting included, until someone saves their sending
 settings: one whose list was empty still has everything wait.
 
+#### AI disclosure in outgoing mail
+
+Mail sent with an agent's key, including replies and messages made from templates, starts with
+“This message was written by an AI agent (agent name).” in the text and at the start of the HTML
+when present. Mail also adds the machine-readable header
+`X-AI-Disclosure: mode=machine-generated` for mail sent on its own, or
+`X-AI-Disclosure: mode=ai-originated` for mail held for a person's approval. Approval and
+sending again keep the original marks.
+
+So that nothing an agent writes can hide or cover that line, agent HTML loses its `<style>`
+elements and the styling of `<html>` and `<body>`, and its inline styles keep only ordinary
+formatting: colours, a short list of common fonts, borders, spacing and table widths.
+
+These marks support the transparency requirements of the EU AI Act, Article 50. With no email
+standard for this disclosure, Mail takes the mode values from the AI Content Disclosure Header
+Internet-Draft. [EU AI Act](https://eur-lex.europa.eu/eli/reg/2024/1689/oj) ·
+[draft-abaris-aicdh](https://datatracker.ietf.org/doc/draft-abaris-aicdh/)
+
+The marks are always on for agent-sent mail. Attachments are not marked.
+
+#### Direct delivery
+
 A message whose every recipient is an address on this deployment, in any workspace, doesn't leave
 it: it goes straight to their mailboxes, with no send and no spam score, and its copy shows each as
 delivered at once. Its sender's domain counts as proved there. That needs DNS to agree today:

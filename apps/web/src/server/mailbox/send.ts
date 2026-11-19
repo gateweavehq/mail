@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { waitsForApproval } from "../../lib/agent-policy";
 import {
@@ -21,7 +22,14 @@ import { type Suppression, suppressedRefusal } from "../../lib/suppressions";
 import { bearsKey } from "../access";
 import { type AgentLogNote, noteAgent } from "../agent-log";
 import { db } from "../auth";
-import { AGENT_PAUSED, agentPolicyOf, agentStanding, pausedAmong } from "../auth/agents";
+import {
+	AGENT_PAUSED,
+	AGENT_ROLE,
+	agentPolicyOf,
+	agentStanding,
+	pausedAmong,
+} from "../auth/agents";
+import { schema } from "../db";
 import { DEFAULT_DNS_RESOLVER, dnsLookup } from "../directory/dns";
 import { appOrigin } from "../origin";
 import { sendingWith } from "../providers/keys";
@@ -39,6 +47,7 @@ import {
 	sendRequest,
 } from "./compose";
 import { staysInWorkspace } from "./direct";
+import { discloseAgent } from "./disclosure";
 import type { Sent } from "./durable-object";
 import { checkFiles } from "./files";
 import { firstHeader, type Header, parseHeaders, readHeaderBlock } from "./headers";
@@ -265,7 +274,7 @@ export async function outboxAnswer(
 		);
 	}
 	// Kept to what the page shows of it, so the copy shows what goes.
-	const cleaned = action.html?.trim() ? await sendableHtml(action.html) : null;
+	const cleaned = action.html?.trim() ? await sendableHtml(action.html, { agent }) : null;
 	const html = cleaned?.trim() ? cleaned : null;
 	const files = checkFiles(action.attachments, { html: html !== null });
 	if (!files.ok) return refuse(files.error, 400);
@@ -322,14 +331,24 @@ export async function outboxAnswer(
 	// An agent's mail goes on its own or waits for a person as its policy says, and counts against
 	// its own day either way.
 	let hold = false;
+	let agentName: string | null = null;
 	if (agent) {
 		// Asked again here, as reading and cleaning a large message takes a while: a pause meanwhile
 		// stops it before it goes.
-		const [policy, paused] = await Promise.all([
+		const { member, user } = schema;
+		const [policy, paused, writer] = await Promise.all([
 			agentPolicyOf(db, memberId),
 			pausedAmong(db, [memberId]),
+			db
+				.select({ name: user.name })
+				.from(member)
+				.innerJoin(user, eq(member.userId, user.id))
+				.where(and(eq(member.id, memberId), eq(member.role, AGENT_ROLE)))
+				.get(),
 		]);
 		if (paused.size > 0) return refuse(AGENT_PAUSED, 403);
+		if (!writer) return refuse("Not found", 404);
+		agentName = writer.name;
 		if (policy.sendPerDay === 0) {
 			return refuse("This agent isn't let send mail. An owner or admin can change that.", 403);
 		}
@@ -378,8 +397,7 @@ export async function outboxAnswer(
 		cc: action.cc,
 		// A tab or other control character pasted in becomes a space.
 		subject: plainName(action.subject),
-		text,
-		html,
+		...(agentName === null ? { text, html } : discloseAgent(agentName, text, html, hold)),
 		files: files.files,
 		inReplyTo: headerSafe(answering.inReplyTo),
 		references: answering.references.filter(isHeaderSafe),
