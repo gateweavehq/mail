@@ -8,6 +8,21 @@ read its entry before updating a self-hosted copy.
 Each version's [GitHub release](https://github.com/gateweavehq/mail/releases) carries the same
 notes. Publishing a release deploys it.
 
+## [0.2.2] - 2026-11-19
+
+Better Auth, which runs sign-in, is updated to 1.7.25.
+
+### Changed
+
+- **Better Auth 1.7.25** (from 1.7.20), the version Gateweave ID runs. Among its fixes: a
+  sign-in code is no longer left hanging on Workers when an earlier request for it ended
+  mid-query, and a session's cookies are cleared when the session is revoked.
+  ([#69](https://github.com/gateweavehq/mail/pull/69))
+
+### If you run your own
+
+No migration, variable or secret. Deploy as usual.
+
 ## [0.2.1] - 2026-11-19
 
 A security fix: after signing in, Mail could send a person on to another site.
