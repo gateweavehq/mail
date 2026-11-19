@@ -8,6 +8,26 @@ read its entry before updating a self-hosted copy.
 Each version's [GitHub release](https://github.com/gateweavehq/mail/releases) carries the same
 notes. Publishing a release deploys it.
 
+## [0.2.1] - 2026-11-19
+
+A security fix: after signing in, Mail could send a person on to another site.
+
+### Fixed
+
+- **The page to return to after signing in could be on another site.** A return path whose dot
+  segments resolved to `//example.com` or `/\example.com`, such as `/.//example.com/x`, passed
+  the check before resolution and was read by the browser as another site afterwards. Mail now
+  refuses such a path; an ordinary `..` that stays on the site still works.
+  ([#64](https://github.com/gateweavehq/mail/pull/64))
+
+### Changed
+
+- The icon is redrawn so the envelope's flap sits inside its frame.
+
+### If you run your own
+
+No migration, variable or secret. Deploy as usual.
+
 ## [0.2.0] - 2026-11-18
 
 ### Changed
