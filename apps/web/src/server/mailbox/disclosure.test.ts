@@ -24,23 +24,17 @@ describe("agent disclosure", () => {
 		);
 	});
 
-	it("R1: puts the closed disclosure first inside the body of a complete document", () => {
-		const opening = '<!doctype html><HTML><head> </head><BODY  lang="en" >';
-		const marked = discloseAgent("Bot", "Words", `${opening}<div>Words</body></html>`, false);
-		expect(marked.html?.slice(opening.length)).toMatch(
-			/^<p [^>]+>This message was written by an AI agent \(Bot\)\.<\/p><div>Words<\/body><\/html>$/,
+	it("R1: puts the closed disclosure first, after a doctype only", () => {
+		const marked = discloseAgent("Bot", "Words", "<!doctype html><div>Words</div>", false);
+		expect(marked.html).toMatch(
+			/^<!doctype html><p [^>]+>This message was written by an AI agent \(Bot\)\.<\/p><div>Words<\/div>$/,
 		);
-		expect(marked.html?.startsWith(opening)).toBe(true);
 	});
 
-	it("R1: places the notice inside the body when the head contains markup", () => {
-		const opening =
-			'<!doctype html><html><head><meta name="sample" content="a > <body>"></head><body>';
-		const body = "<div>Words</div></body></html>";
-		expect(discloseAgent("Bot", "Words", opening + body, false).html).toBe(
-			opening +
-				'<p dir="ltr" style="font-size:13px;color:#555;background-color:#fff;letter-spacing:normal;word-spacing:normal;text-indent:0;text-shadow:none;text-transform:none;line-height:1.4;margin:0 0 16px;padding:8px 12px;font-family:Arial,Helvetica,sans-serif;-webkit-text-size-adjust:100%">This message was written by an AI agent (Bot).</p>' +
-				body,
+	it("R1: puts the notice before the agent's first element in a fragment", () => {
+		expect(discloseAgent("Bot", "Words", "<details><div>Words</div></details>", false).html).toBe(
+			'<p dir="ltr" style="font-size:13px;color:#555;background-color:#fff;letter-spacing:normal;word-spacing:normal;text-indent:0;text-shadow:none;text-transform:none;line-height:1.4;margin:0 0 16px;padding:8px 12px;font-family:Arial,Helvetica,sans-serif;-webkit-text-size-adjust:100%">This message was written by an AI agent (Bot).</p>' +
+				"<details><div>Words</div></details>",
 		);
 	});
 });

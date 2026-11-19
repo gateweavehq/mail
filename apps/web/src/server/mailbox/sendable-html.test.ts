@@ -77,18 +77,37 @@ describe("sendable HTML", () => {
 			`<html lang="en" bgcolor="black" style="${style}; color:red"><head></head>` +
 			`<body dir="ltr" width="1" align="right" text="white" background="pic.png" link="red" style="${style}; color:red">` +
 			`<div style="${style}">${table}</div></body></html>`;
-		expect(await clean(html)).toBe(
-			`<html lang="en"><head></head><body dir="ltr"><div>${table}</div></body></html>`,
-		);
+		expect(await clean(html)).toBe(`<div lang="en"><div dir="ltr"><div>${table}</div></div></div>`);
 	});
 
-	it("R1: inserts the notice after the mixed-case body tag in cleaned HTML", async () => {
+	it("R1: turns the agent's document shell into plain blocks, the notice first", async () => {
 		const cleaned = await clean(
 			'<!doctype html><html><head><title>Mail</title></head><BODY  lang="en" ><div>Words</div></body></html>',
 		);
+		expect(cleaned).toBe('<!doctype html><div><div lang="en"><div>Words</div></div></div>');
 		expect(discloseAgent("Bot", "Words", cleaned, false).html).toMatch(
-			/^<!doctype html><html><head><\/head><BODY {2}lang="en" ><p [^>]+>This message was written by an AI agent \(Bot\)\.<\/p><div>Words<\/div><\/body><\/html>$/,
+			/^<!doctype html><p [^>]+>This message was written by an AI agent \(Bot\)\.<\/p><div><div lang="en">/,
 		);
+	});
+
+	it("R1: keeps the notice out of a <details> that holds a <body>", async () => {
+		const cleaned = await clean(
+			"<!doctype html><html><details><summary>More</summary><body><p>Hidden</p></body></details><p>Words</p></html>",
+		);
+		const html = discloseAgent("Bot", "Words", cleaned, false).html ?? "";
+		const notice = html.indexOf("This message was written by an AI agent (Bot).");
+		expect(notice).toBeGreaterThan(-1);
+		expect(notice).toBeLessThan(html.indexOf("<details>"));
+		expect(html).not.toMatch(/<body|<html|<head/i);
+	});
+
+	it("R1: puts the notice before text an agent left in <head>", async () => {
+		const cleaned = await clean("<html><head>Unmarked</head><body>Body</body></html>");
+		const html = discloseAgent("Bot", "Words", cleaned, false).html ?? "";
+		expect(html.indexOf("This message was written by an AI agent (Bot).")).toBeLessThan(
+			html.indexOf("Unmarked"),
+		);
+		expect(html).not.toMatch(/<body|<html|<head/i);
 	});
 
 	it("R2/R4: preserves people's stylesheet and inline declarations", async () => {

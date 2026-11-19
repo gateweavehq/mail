@@ -348,7 +348,7 @@ function cleaner(
 					element.remove();
 					return;
 				}
-				if (!KEPT_TAGS.has(tag)) {
+				if (!KEPT_TAGS.has(tag) || (agent && tag === "head")) {
 					element.removeAndKeepContent();
 					return;
 				}
@@ -364,6 +364,11 @@ function cleaner(
 					if (tag === "img" && lower === "src") continue;
 					element.removeAttribute(name);
 				}
+				// An agent's document shell becomes plain blocks and its head goes, content kept, so the
+				// disclosure put first cannot land inside anything the agent opened (a <body> nested in
+				// <details>, say) or after text the agent left in <head>.
+				// HTMLRewriter renames an element whose `tagName` is set; the DOM's types call it read-only.
+				if (documentRoot) (element as unknown as { tagName: string }).tagName = "div";
 				if (agent) {
 					const style = element.getAttribute("style");
 					if (style !== null) {

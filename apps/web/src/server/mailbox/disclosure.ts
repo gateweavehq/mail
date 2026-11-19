@@ -3,7 +3,9 @@ import { textHtml } from "../../lib/formatting";
 
 export const AI_DISCLOSURE_HEADER = "X-AI-Disclosure";
 
-const DOCUMENT_START = /^\s*<(?:!doctype\s+html|html|head|body)(?=[\s/>])/i;
+// The cleaner turns an agent's <html> and <body> into plain blocks and drops its <head>, keeping
+// content, so a doctype is all that may come before the notice.
+const DOCTYPE = /^\s*<!doctype[^>]*>/i;
 const NOTICE_STYLE = [
 	"font-size:13px",
 	"color:#555",
@@ -20,16 +22,6 @@ const NOTICE_STYLE = [
 	"-webkit-text-size-adjust:100%",
 ].join(";");
 
-function bodyStart(html: string): number {
-	if (!DOCUMENT_START.test(html)) return 0;
-	// The cleaner has removed comments and raw-text elements. Read quoted attributes as a
-	// whole so a value that mentions <body> cannot be mistaken for the opening tag.
-	for (const tag of html.matchAll(/<(!doctype|\/?[a-z][^\s/>]*)(?:[^>"']|"[^"]*"|'[^']*')*>/gi)) {
-		if (tag[1]?.toLowerCase() === "body") return tag.index + tag[0].length;
-	}
-	return 0;
-}
-
 /** Adds the disclosure before any of the agent's content, once the HTML has been cleaned. */
 export function discloseAgent(name: string, text: string, html: string | null, held: boolean) {
 	const shown = name
@@ -39,7 +31,7 @@ export function discloseAgent(name: string, text: string, html: string | null, h
 		.replace(/[\uD800-\uDBFF]$/u, "");
 	const line = `This message was written by an AI agent (${shown}).`;
 	const notice = `<p dir="ltr" style="${NOTICE_STYLE}">${textHtml(line)}</p>`;
-	const start = html === null ? 0 : bodyStart(html);
+	const start = html === null ? 0 : (DOCTYPE.exec(html)?.[0].length ?? 0);
 	return {
 		text: `${line}\n\n${text}`,
 		html: html === null ? null : html.slice(0, start) + notice + html.slice(start),

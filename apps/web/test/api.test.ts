@@ -262,7 +262,7 @@ describe("the agent API", () => {
 			"This message was written by an AI agent (Dispatch <East> & West).\n\nNotice from the agent.",
 		);
 		expect(email?.html).toMatch(
-			/^<!doctype html><html><head><\/head><body><p [^>]+>This message was written by an AI agent \(Dispatch &lt;East&gt; &amp; West\)\.<\/p><div style="color: navy"><p>Notice from the agent\.<\/p><\/div>$/,
+			/^<!doctype html><p [^>]+>This message was written by an AI agent \(Dispatch &lt;East&gt; &amp; West\)\.<\/p><div><div><div style="color: navy"><p>Notice from the agent\.<\/p><\/div>$/,
 		);
 		expect(email?.headers?.["X-AI-Disclosure"]).toBe("mode=machine-generated");
 		const copy = await storedCopy(space, sent.id);
