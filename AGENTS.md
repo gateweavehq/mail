@@ -284,8 +284,10 @@ These are load-bearing. Breaking one breaks users' data or security, usually sil
   under `apps/web/migrations/` except custom migrations
   (`drizzle-kit generate --custom`, such as `0001_owner_triggers.sql`).
 - Dependencies are pinned to exact versions. Shared ones go in the `catalog:` of
-  `pnpm-workspace.yaml`. `drizzle-orm` stays on 0.45: the 1.0 migration format does not work
-  with Wrangler's D1 migrations.
+  `pnpm-workspace.yaml`. `drizzle-orm` stays on 0.45 while 1.0 is a release candidate.
+  Moving later is its own change: Wrangler reads 1.0's folder per migration through
+  `migrations_pattern`, but the names each D1 has recorded and the tests' migration loader would
+  have to follow.
 - UI code copied into the repository (components, blocks, hooks) must come from an MIT or
   Apache-2.0 source, such as shadcn/ui, Magic UI or SmoothUI. Note the source and keep its
   copyright notice in a comment at the top of the file. Paid or restricted kits (Aceternity UI,

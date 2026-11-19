@@ -42,8 +42,9 @@ tables, in `apps/web/src/server/db/`, and exported from `schema.ts`.
    Gateweave's staging and self-hosters alike. Old code still runs against the new schema until
    the deploy finishes, so say in the pull request whether it can.
 
-`drizzle-orm` stays on 0.45: the 1.0 migration format does not work with Wrangler's D1
-migrations.
+`drizzle-orm` stays on 0.45 while 1.0 is a release candidate. Moving later is its own change:
+Wrangler reads 1.0's folder per migration through `migrations_pattern`, but the names each D1
+has recorded and the tests' migration loader would have to follow.
 
 ## Verify
 
