@@ -8,6 +8,33 @@ read its entry before updating a self-hosted copy.
 Each version's [GitHub release](https://github.com/gateweavehq/mail/releases) carries the same
 notes. Publishing a release deploys it.
 
+## [0.3.0] - 2026-11-19
+
+Mail an agent sends now says that an AI agent wrote it, for people and for machines.
+
+### Added
+
+- **Agent mail says an AI agent wrote it.** Mail sent with an agent's key, by REST or MCP,
+  replies and messages made from templates included, starts with "This message was written by
+  an AI agent (agent name)." in the text, and in the HTML as its own paragraph before anything
+  the agent wrote. It also carries the header `X-AI-Disclosure: mode=machine-generated`, or
+  `mode=ai-originated` when it waited for a person's approval. Approval and sending again keep
+  the marks the message was made with. This supports the transparency rules of the EU AI Act,
+  Article 50, and cannot be turned off. A person's own mail is unchanged.
+  ([#72](https://github.com/gateweavehq/mail/pull/72))
+
+### Changed
+
+- **An agent's HTML is cleaned so it cannot hide that line.** It loses its `<style>` elements
+  and `<head>` (keeping the head's text), its `<html>` and `<body>` become plain blocks that
+  keep only `lang` and `dir`, and its inline styles keep ordinary formatting: colours, common
+  fonts, borders, spacing and table widths. Mail an agent wrote to rely on other styles may look
+  plainer. ([#72](https://github.com/gateweavehq/mail/pull/72))
+
+### If you run your own
+
+No migration, variable or secret. Deploy as usual.
+
 ## [0.2.2] - 2026-11-19
 
 Better Auth, which runs sign-in, is updated to 1.7.25.
