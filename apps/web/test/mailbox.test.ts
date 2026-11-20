@@ -574,14 +574,20 @@ describe("reading a message", () => {
 			box.address,
 			message(box.address, {
 				extra: ["MIME-Version: 1.0", "Content-Type: text/html; charset=utf-8"],
-				body: '<p>Visible words</p><script>alert("mail")</script><img src="x" onerror="alert(1)">',
+				body:
+					"<p>Visible words and <a title='Link title' href='https://example.org/?a=1&amp;b=2'><em>a link</em></a> here.</p>" +
+					'<p><a id="place" title="href=decoy">An anchor</a> and <a href=https://example.org/next>the next link</a>.</p>' +
+					'<script>const example = \'<a href="https://hidden.example/">Hidden link</a>\'; alert("mail");</script>' +
+					'<img src="x" onerror="alert(1)">',
 			}),
 		);
 		const [listed] = (await messages(box.slug, box.mailboxId)).messages;
 		const opened = await open(box.slug, box.mailboxId, listed?.id ?? "");
 		expect(opened.hasHtml).toBe(true);
-		expect(opened.text).toContain("Visible words");
-		expect(opened.text).not.toContain("alert");
+		expect(opened.text).toBe(
+			"Visible words and a link (https://example.org/?a=1&b=2) here.\n\n" +
+				"An anchor and the next link (https://example.org/next).",
+		);
 
 		const page = await mail.fetch(
 			`${origin}/${box.slug}/mailboxes/${box.mailboxId}/${listed?.id}`,
@@ -592,6 +598,20 @@ describe("reading a message", () => {
 		expect(html).toContain("Visible words");
 		expect(html).not.toContain('alert("mail")');
 		expect(html).not.toContain("onerror");
+	});
+
+	it("keeps the destination and text of a link with no closing tag", async () => {
+		const box = await mailboxWithAddress();
+		await kept(
+			box.address,
+			message(box.address, {
+				extra: ["MIME-Version: 1.0", "Content-Type: text/html; charset=utf-8"],
+				body: 'See <a href="https://example.org/open"><b>the open link</b>',
+			}),
+		);
+		const [listed] = (await messages(box.slug, box.mailboxId)).messages;
+		const opened = await open(box.slug, box.mailboxId, listed?.id ?? "");
+		expect(opened.text).toBe("See (https://example.org/open) the open link");
 	});
 
 	it("shows a mailbox's page with its messages", async () => {
