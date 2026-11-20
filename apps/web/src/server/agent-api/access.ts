@@ -4,7 +4,7 @@ import { currentCaller } from "../access";
 import { noteAgent } from "../agent-log";
 import { audienceStub } from "../audience";
 import { db } from "../auth";
-import { AGENT_PAUSED, agentPolicyOf, findAgentByKey, isAgentKey } from "../auth/agents";
+import { AGENT_PAUSED, findAgentByKey, isAgentKey, settingsPolicy } from "../auth/agents";
 import { schema } from "../db";
 import { listDirectory } from "../directory";
 import { addressPolicyOf } from "../directory/agent-address-store";
@@ -25,9 +25,6 @@ import { type AgentWebhookPatch, type Answer, ApiError, type MailAccess } from "
 
 /** What an agent is told when its key no longer works. */
 const REVOKED = "That agent key doesn't work: it was revoked, or its agent deleted.";
-
-/** The webhooks object's refusal, in its words, with its status. */
-const refusal = (refused: Refused) => new ApiError(refused.error, refused.status);
 
 /** Why a request has no agent to act for: no key at all, one that doesn't work, or a paused one. */
 export type NoAgent = { hadKey: false } | { hadKey: true; paused: boolean };
@@ -125,7 +122,7 @@ export function accessFor(slug: string, key: string): MailAccess {
 		if ("paused" in agent) throw new ApiError(AGENT_PAUSED, 403);
 		const asker: Asker = { agent: memberId, key: agent.keyId };
 		/** Notes in the agent's log what it did to one of its webhooks. */
-		const note = (action: AgentLogAction, id: string, detail: string | null = null) =>
+		const note = (action: AgentLogAction, id: string | null, detail: string | null = null) =>
 			noteAgent(db, {
 				workspaceId,
 				agentMemberId: memberId,
@@ -139,6 +136,10 @@ export function accessFor(slug: string, key: string): MailAccess {
 			asker,
 			link: { workspaceId, slug, origin: appOrigin() },
 			note,
+			async refusal(result: Refused, id: string | null = null) {
+				if (result.refusedHost !== undefined) await note("webhook.refused", id, result.refusedHost);
+				return new ApiError(result.error, result.status);
+			},
 		};
 	};
 
@@ -169,9 +170,9 @@ export function accessFor(slug: string, key: string): MailAccess {
 			}));
 		},
 		async policies() {
-			const { memberId } = await caller();
+			const { memberId, workspaceId } = await caller();
 			const [sending, addresses] = await Promise.all([
-				agentPolicyOf(db, memberId),
+				settingsPolicy(db, workspaceId, memberId),
 				addressPolicyOf(db, memberId),
 			]);
 			return { sending, addresses };
@@ -196,11 +197,11 @@ export function accessFor(slug: string, key: string): MailAccess {
 				(request) => agentAddressesAnswer(request, slug, mailboxId),
 				action,
 			),
-		outbox: (mailboxId, action: OutboxAction) =>
+		outbox: (mailboxId, action: OutboxAction, reply) =>
 			ask(
 				mailboxPath(mailboxId, "outbox"),
 				// Handed over as it is, as a message's files would be written out and read again.
-				(request) => outboxAnswer(request, slug, mailboxId, action),
+				(request) => outboxAnswer(request, slug, mailboxId, action, reply),
 				{},
 			),
 		async webhooks() {
@@ -208,30 +209,30 @@ export function accessFor(slug: string, key: string): MailAccess {
 			return stub.list(asker);
 		},
 		async createWebhook(fields) {
-			const { stub, asker, link, note } = await hooks();
+			const { stub, asker, link, note, refusal } = await hooks();
 			const made = await stub.create(link, fields, asker);
-			if (!made.ok) throw refusal(made);
+			if (!made.ok) throw await refusal(made);
 			// Its host, as a URL's path or query can hold a token of the receiver's.
 			await note("webhook.made", made.webhook.id, new URL(made.webhook.url).host);
 			return { webhook: made.webhook, secret: made.secret };
 		},
 		async updateWebhook(id, patch, renew) {
-			const { stub, asker, link, note } = await hooks();
+			const { stub, asker, link, note, refusal } = await hooks();
 			const changed = await stub.update(link, id, patch, asker, renew);
-			if (!changed.ok) throw refusal(changed);
+			if (!changed.ok) throw await refusal(changed, id);
 			await note("webhook.changed", id, webhookChange(patch, renew));
 			return { webhook: changed.webhook, secret: changed.secret };
 		},
 		async deleteWebhook(id) {
-			const { stub, asker, note } = await hooks();
+			const { stub, asker, note, refusal } = await hooks();
 			const removed = await stub.remove(id, asker);
-			if (!removed.ok) throw refusal(removed);
+			if (!removed.ok) throw await refusal(removed, id);
 			await note("webhook.deleted", id);
 		},
 		async testWebhook(id) {
-			const { stub, asker, link, note } = await hooks();
+			const { stub, asker, link, note, refusal } = await hooks();
 			const queued = await stub.test(link, id, asker);
-			if (!queued.ok) throw refusal(queued);
+			if (!queued.ok) throw await refusal(queued, id);
 			await note("webhook.tested", id);
 		},
 		// Read as the key's workspace, which `caller` checks, a paused agent's too.

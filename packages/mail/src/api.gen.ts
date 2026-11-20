@@ -43,7 +43,9 @@ export interface ListMailboxesOutput {
 		perDay: number;
 		/** Which of your mail waits for a person to approve it: "never", it all goes on its own; "unlisted", what goes to anyone withoutApproval doesn't name; "always", all of it. Mail whose every recipient is an address of your own workspace on this server may go on its own whichever it is. */
 		approval: "never" | "unlisted" | "always";
-		/** Under "unlisted", the addresses, and domains written @example.com, your mail goes to as it is, while mail to anyone else waits for a person to approve it. Empty under "never" and "always", which need no list. */
+		/** Exact hosts allowed for your webhooks. */
+		webhookHosts: string[];
+		/** Under "unlisted", the addresses, and domains written @example.com, your mail goes to as it is, while mail to anyone else waits for a person to approve it. Under "never" these are allowed mail targets. Empty under "always". */
 		withoutApproval: string[];
 		[key: string]: unknown;
 	};
@@ -914,7 +916,7 @@ export interface MailMethods {
 	/**
 	 * Send email.
 	 *
-	 * Sends a message from a mailbox you may send from: text or HTML, with files if you like. Your policy, which list_mailboxes gives, says whether it goes on its own or waits for a person to approve it (state: held): all of your mail, none of it, or what goes to anyone the policy doesn't name. Whichever it is, mail whose every recipient is an address of your own workspace on this server goes on its own, unless your policy is one from before that was so, which holds it like the rest until an owner or admin saves it; the answer's state says which happened. One that goes on its own answers with how sending went, which is sent when it went, and may be waiting or uncertain. It counts against your messages a day either way.
+	 * Sends a message from a mailbox you may send from: text or HTML, with files if you like. Your policy, which list_mailboxes gives, says whether it goes on its own or waits for a person to approve it (state: held): all of your mail, none of it, or what goes to anyone the policy doesn't name. Whichever it is, mail whose every recipient is an address of your own workspace on this server goes on its own, unless your policy is one from before that was so, which holds it like the rest until an owner or admin saves it; the answer's state says which happened. One that goes on its own answers with how sending went, which is sent when it went, and may be waiting or uncertain. Under never, each To and Cc must be a workspace address, an allowed address or domain, or a sender in a mailbox you can read, unless an admin enabled unrestricted targets. A target refusal uses none of your daily budget.
 	 *
 	 * `POST /mailboxes/{mailbox}/messages`, as the MCP tool `send_email`.
 	 */
@@ -941,7 +943,7 @@ export interface MailMethods {
 	/**
 	 * Reply.
 	 *
-	 * Answers a message in its thread, to whoever it asks answers to go to, from the address it came to: text or HTML, with files if you like. Goes on its own or waits for approval as send_email does.
+	 * Answers a message in its thread, from the address it came to. A reply to proved mail follows Reply-To. For unproved mail it goes to From and keeps only permitted Cc addresses. You can send text or HTML, with files if you like. Goes on its own or waits for approval as send_email does.
 	 *
 	 * `POST /mailboxes/{mailbox}/messages/{messageId}/reply`, as the MCP tool `reply`.
 	 */
@@ -986,7 +988,7 @@ export interface MailMethods {
 	/**
 	 * Create webhook.
 	 *
-	 * Makes a webhook of your own, so you hear of mail without waiting for it: Mail posts each event you choose, of mailboxes you may read, to your https URL, and tries again for about a day while it fails. Each POST is signed per Standard Webhooks (webhook-id, webhook-timestamp and webhook-signature headers) with the secret this answer gives, once: keep it. A body is { type, timestamp, data }, and data names the workspace, the mailbox and the message, never its text, which read_email gives; what senders wrote comes marked as such, and members are given by id, not by name. A mailbox you may no longer read goes quiet, and the webhook goes when the key you make it with is revoked. Test it with test_webhook.
+	 * Makes a webhook of your own, so you hear of mail without waiting for it: Mail posts each event you choose, of mailboxes you may read, to your https URL, and tries again for about a day while it fails. Each POST is signed per Standard Webhooks (webhook-id, webhook-timestamp and webhook-signature headers) with the secret this answer gives, once: keep it. A body is { type, timestamp, data }, and data names the workspace, the mailbox and the message, never its text, which read_email gives; what senders wrote comes marked as such, and members are given by id, not by name. A mailbox you may no longer read goes quiet, and the webhook goes when the key you make it with is revoked. The exact host must be listed in your webhook hosts unless an admin enabled unrestricted targets. Test it with test_webhook.
 	 *
 	 * `POST /webhooks`, as the MCP tool `create_webhook`.
 	 */
@@ -995,7 +997,7 @@ export interface MailMethods {
 	/**
 	 * Update webhook.
 	 *
-	 * Changes a webhook of yours: where it goes, what it hears of, or whether it is active. Pausing it drops what it had yet to deliver; taking a mailbox or an event off it drops what waited for those. One an admin paused (pausedByAdmin) only an admin resumes. With newSecret: true it gets a new secret, which this answer gives once, and signs what it sends from then on with it, retries too.
+	 * Changes a webhook of yours: where it goes, what it hears of, or whether it is active. Changing the URL or resuming a paused webhook requires an allowed host unless an admin enabled unrestricted targets. Pausing it drops what it had yet to deliver; taking a mailbox or an event off it drops what waited for those. One an admin paused (pausedByAdmin) only an admin resumes. With newSecret: true it gets a new secret, which this answer gives once, and signs what it sends from then on with it, retries too.
 	 *
 	 * `PATCH /webhooks/{webhookId}`, as the MCP tool `update_webhook`.
 	 */
@@ -1013,7 +1015,7 @@ export interface MailMethods {
 	/**
 	 * Test webhook.
 	 *
-	 * Has a webhook of yours post a webhook.test event, whatever it listens to, to check that your receiver gets it and checks its signature. One at a time, while it is active; see how it went with list_webhooks.
+	 * Has a webhook of yours post a webhook.test event, whatever it listens to, to check that your receiver gets it and checks its signature. The host must still be allowed unless an admin enabled unrestricted targets. One at a time, while it is active; see how it went with list_webhooks.
 	 *
 	 * `POST /webhooks/{webhookId}/test`, as the MCP tool `test_webhook`.
 	 */

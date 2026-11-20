@@ -61,7 +61,8 @@ export async function noteAgent(
 		threadId: note.threadId ?? null,
 		// Subjects often carry a sign-in code, which the log never keeps.
 		subject: cut(note.subject == null ? null : withoutCode(note.subject), MAX_LOGGED_SUBJECT),
-		detail: cut(note.detail, MAX_LOGGED_DETAIL),
+		// The outbox supplies at most five refused addresses and the remaining count.
+		detail: note.action === "message.refused" ? note.detail : cut(note.detail, MAX_LOGGED_DETAIL),
 		context: note.context ? JSON.stringify(note.context) : null,
 		at,
 	}));

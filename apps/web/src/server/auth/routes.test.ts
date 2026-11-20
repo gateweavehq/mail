@@ -68,6 +68,7 @@ const SERVED = [
 	// Agents, their keys, what they may send and what addresses they may make, for owners and admins
 	// (`agents.ts`). Making an agent or a key, each a credential, has a limit of its own.
 	"GET /agents/list",
+	"GET /agents/policy",
 	"POST /agents/create",
 	"POST /agents/create-key",
 	"POST /agents/delete",

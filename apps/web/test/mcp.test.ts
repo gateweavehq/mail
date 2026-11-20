@@ -122,7 +122,12 @@ describe("an agent's MCP server", () => {
 				maySend: true,
 			},
 		]);
-		expect(listed.sending).toEqual({ perDay: 20, approval: "never", withoutApproval: [] });
+		expect(listed.sending).toEqual({
+			perDay: 20,
+			approval: "never",
+			webhookHosts: [],
+			withoutApproval: [],
+		});
 		expect(listed.addressPolicy).toEqual({ maxLive: 3, maxDays: 7, domains: [space.domain] });
 
 		// The mailbox it wasn't given is as missing as one that doesn't exist, by id, name or address.
@@ -495,6 +500,13 @@ describe("an agent's MCP server", () => {
 				"test_webhook",
 			]),
 		);
+		const policy = await auth("/agents/set-policy", {
+			agentId: agent.id,
+			sendPerDay: 20,
+			allowed: [],
+			webhookHosts: ["hooks.example"],
+		});
+		expect(policy.status).toBe(200);
 		const fields = { url: "https://hooks.example/mcp", events: ["message.received"] };
 		const made = await ok<{ webhook: { id: string; mailboxIds: string[] | null }; secret: string }>(
 			mcp,

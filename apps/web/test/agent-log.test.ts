@@ -101,6 +101,7 @@ describe("an agent's log", () => {
 				await auth("/agents/set-policy", {
 					agentId: agent.id,
 					sendPerDay: 20,
+					webhookHosts: [RECEIVER],
 					allowed: [`@${domain}`],
 				})
 			).status,

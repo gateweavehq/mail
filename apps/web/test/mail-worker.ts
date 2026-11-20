@@ -210,6 +210,7 @@ export async function startMail(
 		settings = {},
 		isolateSettings = [],
 		keptIn,
+		inspectMailboxes = false,
 	}: {
 		isolates?: number;
 		hosts?: Record<string, (request: Request) => Response | Promise<Response>>;
@@ -222,6 +223,7 @@ export async function startMail(
 		/** Settings that only this copy has, as a deployment's old and new versions would differ. */
 		isolateSettings?: Record<string, string>[];
 		keptIn?: string;
+		inspectMailboxes?: boolean;
 	} = {},
 ) {
 	const config = JSON.parse(readFileSync(join(serverDir, "wrangler.json"), "utf8")) as BuiltConfig;
@@ -236,6 +238,7 @@ export async function startMail(
 	const mf = new Miniflare(
 		convertV4MiniflareOptions({
 			unsafeTriggerHandlers: true,
+			unsafeInspectDurableObjects: inspectMailboxes,
 			...(keptIn ? { resourcePersistencePath: keptIn } : {}),
 			// Keep what the Worker logs for `logs`, and still show it as Miniflare would.
 			handleStructuredLogs: (log) => {
@@ -402,6 +405,9 @@ export async function startMail(
 		db,
 		/** The bucket raw mail goes to, to see what is kept. */
 		bucket,
+		webhooksStorage: (name: string) =>
+			mf.unsafeGetDurableObjectStorage("mail", "Webhooks", { name }),
+		mailboxStorage: (name: string) => mf.unsafeGetDurableObjectStorage("mail", "Mailbox", { name }),
 		/** The Worker's `BETTER_AUTH_SECRET`, to check what it signs. */
 		secret,
 		/** Runs the Worker's Cron Trigger once, as Cloudflare would, in one copy of the Worker. */

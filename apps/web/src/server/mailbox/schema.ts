@@ -2,6 +2,8 @@
  * The mailbox object's SQLite schema, and the migrations that bring an object to it. Durable
  * Objects have no `PRAGMA user_version`, so the versions run are kept in a table.
  */
+import { MAX_KEPT_HEADER } from "./headers";
+import { receivedFromKeptHeader } from "./people";
 import { messageIds, subjectKey } from "./thread";
 
 // A message is pending from when it is given a place until its mail is in R2, then stored. One
@@ -332,6 +334,58 @@ export const MIGRATIONS: ((sql: SqlStorage) => void)[] = [
 	(sql) => sql.exec(VERSION_15),
 	(sql) => sql.exec(VERSION_16),
 	(sql) => sql.exec(VERSION_17),
+	(sql) => {
+		sql.exec("ALTER TABLE message ADD COLUMN sender_address TEXT");
+		// A listing may have lost a second From. An old row is only a hint until the alarm or a
+		// lookup checks its original. The default also catches mail stored by old code after rollback.
+		sql.exec("ALTER TABLE message ADD COLUMN sender_check_at INTEGER DEFAULT 0");
+		// Only stored columns supply these hints. Opening originals can wait until after migration.
+		// Read in batches: a mailbox may have far more From headers than fit in memory together.
+		let after = 0;
+		for (;;) {
+			const rows = sql
+				.exec<{ n: number; header: string }>(
+					`SELECT rowid AS n, from_header AS header FROM message
+				WHERE rowid > ? AND sent_by IS NULL AND from_header IS NOT NULL ORDER BY rowid LIMIT 128`,
+					after,
+				)
+				.toArray();
+			if (!rows.length) break;
+			for (const row of rows) {
+				const address = receivedFromKeptHeader(row.header);
+				// A full listing yields a candidate to check on first use (-1). A clipped one
+				// needs its original even to learn the address, so let the alarm check it (0).
+				sql.exec(
+					"UPDATE message SET sender_address = ?, sender_check_at = ? WHERE rowid = ?",
+					address,
+					address ? -1 : row.header.length >= MAX_KEPT_HEADER ? 0 : null,
+					row.n,
+				);
+				after = row.n;
+			}
+		}
+		sql.exec(`CREATE INDEX message_received_from ON message(sender_address)
+			WHERE state = 'stored' AND sent_by IS NULL AND sender_check_at IS NULL`);
+		sql.exec(
+			"UPDATE message SET sender_check_at = NULL WHERE from_header IS NULL OR sent_by IS NOT NULL",
+		);
+		sql.exec(`CREATE INDEX message_sender_hint ON message(sender_address, sender_check_at)
+			WHERE state = 'stored' AND sent_by IS NULL AND sender_check_at IS NOT NULL`);
+		sql.exec(`CREATE INDEX message_sender_check ON message(sender_check_at, sender_address)
+			WHERE state = 'stored' AND sent_by IS NULL AND sender_check_at IS NOT NULL`);
+	},
+	(sql) => sql.exec("ALTER TABLE message ADD COLUMN sender_attempts INTEGER NOT NULL DEFAULT 0"),
+	(sql) => sql.exec("ALTER TABLE message ADD COLUMN sender_backoff INTEGER NOT NULL DEFAULT 0"),
+	(sql) => {
+		sql.exec("ALTER TABLE message ADD COLUMN sender_check_started INTEGER");
+		// Earlier checks kept no start. Every one still waiting gets an hour from the upgrade, a
+		// candidate queued behind another (-1) as much as one being tried, or a candidate that is
+		// never reached would hold its sender's sends forever.
+		sql.exec(
+			"UPDATE message SET sender_check_started = ? WHERE sender_check_at IS NOT NULL",
+			Date.now(),
+		);
+	},
 ];
 
 /** What migrating needs of a Durable Object's storage. */

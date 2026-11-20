@@ -317,9 +317,24 @@ the workspace's day only once it is approved.
 
 An agent is made to send on its own, up to 20 messages a day. On its page an owner or admin can
 have its mail wait for a person instead: all of it, or what goes to anyone a list doesn't name.
-Mail whose every recipient is an address of the agent's own workspace never waits. An agent that
-sends on its own can be made, by a message it reads, to write to anyone, up to its day's count, so
-have the mail of one that reads strangers' mail wait. Agents made before a server had this choice
+Mail whose every recipient is an address of the agent's own workspace never waits. After upgrading,
+an agent set to send on its own (`never`) is refused if any To or Cc is outside the workspace,
+its allowed list and the senders of mail still in mailboxes it can read. A reply can follow the
+Reply-To of proved mail. A pending check of an older sender or a failed DNS lookup for a
+workspace recipient returns a temporary 503. Retry the same draft. After three failed reads of
+an original, that message can no longer establish a sender. Target refusals appear in the
+agent's activity and use none of its daily budget.
+
+In Settings > Agents, add a specific address or `@domain` to its allowed list. Enter exact
+hosts such as `hooks.example.com` in the separate webhook host list. Mail adds the hosts of
+existing agent webhooks when that agent's settings are opened or a webhook is first checked.
+Each list holds up to 100 entries.
+
+An owner or admin can select **Allow any recipient and
+webhook host** to turn off both target checks for that agent. A sender can still ask an agent to
+reply with sensitive data even while the checks are on.
+
+Agents made before a server had this choice
 keep what they had, mail inside the workspace waiting included, until someone saves their sending
 settings: one whose list was empty still has everything wait.
 

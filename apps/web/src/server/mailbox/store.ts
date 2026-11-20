@@ -7,12 +7,13 @@ import {
 	firstHeader,
 	type Header,
 	parseHeaders,
-	readHeaderBlock,
+	readHeaderSection,
 	resendVerifiedDomain,
 	signedAddressees,
 	verifiedDomain,
 } from "./headers";
 import { rawMail } from "./sealed";
+import { indexedSender } from "./sender-index";
 import { ownId, referencedIds } from "./thread";
 
 /** The mailbox's own instance. Only the Worker reaches it, after checking who is asking. */
@@ -95,7 +96,8 @@ export async function storeMail(
 	open: (mailboxId: string) => StoringMailbox = mailboxStub,
 ): Promise<void> {
 	const [forHeaders, forStoring] = message.raw.tee();
-	const headers = parseHeaders(await readHeaderBlock(forHeaders));
+	const { block, complete } = await readHeaderSection(forHeaders);
+	const headers = parseHeaders(block);
 	const judged = judge(headers, message.to);
 	const mailbox = open(found.mailboxId);
 	const raw = rawMail(env);
@@ -107,6 +109,7 @@ export async function storeMail(
 		envelopeFrom: message.from,
 		envelopeTo: message.to,
 		from: firstHeader(headers, "from"),
+		senderAddress: indexedSender(headers, complete),
 		subject: firstHeader(headers, "subject"),
 		date: firstHeader(headers, "date"),
 		messageId: firstHeader(headers, "message-id"),

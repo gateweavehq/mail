@@ -50,7 +50,9 @@ import {
 } from "./direct";
 import { listed, type SentFacts, writeSentEvent } from "./events";
 import { base64Size, bytesOfBase64 } from "./files";
+import { HEADER_BLOCK_LIMIT } from "./headers";
 import { indexBatch } from "./indexing";
+import { receivedFromKeptHeader } from "./people";
 import {
 	dropStale,
 	type KeyIds,
@@ -67,6 +69,7 @@ import {
 import { LINKED_THREADS, migrate } from "./schema";
 import { type RawRef, rawMail, SealError } from "./sealed";
 import { ftsQuery, searchable } from "./search";
+import { checkOldSenders, nextSenderCheck, pendingSenders } from "./sender-index";
 import { mailboxStub } from "./store";
 import { MAX_REFERENCES, messageIds, subjectKey } from "./thread";
 
@@ -136,6 +139,8 @@ export interface Arrival {
 	envelopeFrom: string;
 	envelopeTo: string;
 	from: string | null;
+	/** Parsed from the full From before its listing is shortened. */
+	senderAddress?: string | null;
 	subject: string | null;
 	date: string | null;
 	messageId: string | null;
@@ -418,6 +423,9 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			.exec("SELECT 1 FROM message WHERE state = 'stored' AND search_id IS NULL LIMIT 1")
 			.toArray();
 		if (waiting.length > 0) void ctx.blockConcurrencyWhile(() => this.#indexSoon());
+		const senderAt = nextSenderCheck(ctx.storage.sql);
+		if (senderAt !== null)
+			void ctx.blockConcurrencyWhile(() => this.#alarmBy(Math.max(Date.now(), senderAt)));
 		// Mail kept as it came is sealed once the deployment has a key, and the originals of what was
 		// sealed are deleted when their window has passed, as after a stop between the two. So a
 		// mailbox seals its old mail as it wakes, which any mail, read or alarm does. Mail under the
@@ -505,6 +513,49 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 		};
 	}
 
+	/** Which of these addresses wrote mail this mailbox still keeps. */
+	async receivedFrom(addresses: string[]): Promise<{ found: string[]; pending: string[] }> {
+		if (!addresses.length) return { found: [], pending: [] };
+		const placeholders = addresses.map(() => "?").join(", ");
+		const known = () =>
+			this.ctx.storage.sql
+				.exec<{ address: string }>(
+					`SELECT DISTINCT sender_address AS address FROM message
+			WHERE state = 'stored' AND sent_by IS NULL AND sender_check_at IS NULL AND sender_address IN (${placeholders})`,
+					...addresses,
+				)
+				.toArray()
+				.map(({ address }) => address);
+		const found = known();
+		const missing = addresses.filter((address) => !found.includes(address));
+		if (!missing.length) return { found, pending: [] };
+		await this.#checkOldSenders(missing);
+		const confirmed = known();
+		const pending = pendingSenders(
+			this.ctx.storage.sql,
+			missing.filter((address) => !confirmed.includes(address)),
+		);
+		const next = nextSenderCheck(this.ctx.storage.sql);
+		if (next !== null) await this.#alarmBy(Math.max(Date.now(), next));
+		return { found: confirmed, pending };
+	}
+
+	#checkOldSenders(wanted?: string[]): Promise<void> {
+		const raw = rawMail(this.env);
+		return checkOldSenders(
+			this.ctx.storage,
+			async (ref) => {
+				const object = await raw.get(ref, {
+					offset: 0,
+					length: Math.min(HEADER_BLOCK_LIMIT, ref.size),
+				});
+				return object?.body ?? null;
+			},
+			Date.now(),
+			wanted,
+		);
+	}
+
 	/** Gives a message a place in R2, or says the mailbox is full. */
 	async begin(arrival: Arrival): Promise<Begun> {
 		const sql = this.ctx.storage.sql;
@@ -523,8 +574,9 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 		sql.exec(
 			`INSERT INTO message (id, state, delivery_key, object, size, arrived_at, envelope_from,
 				envelope_to, from_header, subject, date_header, message_id, dmarc, verified_domain,
-				own_id, subject_key, came_for, seal, addressed)
-			VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				own_id, subject_key, came_for, seal, addressed, sender_address, sender_check_at,
+				sender_check_started)
+			VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			id,
 			arrival.key,
 			object,
@@ -543,6 +595,11 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 			arrival.cameFor ?? null,
 			seal,
 			arrival.addressed === true ? 1 : 0,
+			arrival.senderAddress === undefined
+				? receivedFromKeptHeader(arrival.from)
+				: arrival.senderAddress,
+			arrival.senderAddress === undefined ? 0 : null,
+			arrival.senderAddress === undefined ? arrivedAt : null,
 		);
 		for (const ref of (arrival.references ?? []).slice(-MAX_REFERENCES)) {
 			sql.exec("INSERT OR IGNORE INTO message_reference (message, ref) VALUES (?, ?)", id, ref);
@@ -1982,6 +2039,7 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 		// Each is tried only if it still waits when its turn comes.
 		for (const { id } of due) if (!taken.has(id)) await this.#tryNow(id, "due");
 		const raw = rawMail(this.env);
+		await this.#checkOldSenders();
 		const indexed = await indexBatch(this.ctx.storage, (message) => searchable(raw, message));
 		const { sealed, staleAt } = await this.#sealSome();
 		const next = sql
@@ -1998,6 +2056,7 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 		// A delivery may have set the alarm while this ran, and the soonest wins.
 		const times = [
 			next.at === null ? null : next.at + PENDING_MS,
+			nextSenderCheck(sql),
 			sends.waiting,
 			sends.sending === null ? null : sends.sending + STALE_SENDING_MS,
 			indexed === "more" ? Date.now() : indexed === "failed" ? Date.now() + INDEX_RETRY_MS : null,

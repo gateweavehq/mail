@@ -43,6 +43,11 @@ export function headerEnd(bytes: Uint8Array): number {
  * empty line in its first `HEADER_BLOCK_LIMIT` bytes gets those bytes as its headers.
  */
 export async function readHeaderBlock(stream: ReadableStream<Uint8Array>): Promise<string> {
+	return (await readHeaderSection(stream)).block;
+}
+
+/** Whether the complete set of fields was visible within the bounded header read. */
+export async function readHeaderSection(stream: ReadableStream<Uint8Array>) {
 	const reader = stream.getReader();
 	let bytes = new Uint8Array(0);
 	let end = -1;
@@ -66,7 +71,11 @@ export async function readHeaderBlock(stream: ReadableStream<Uint8Array>): Promi
 		await reader.cancel().catch(() => {});
 	}
 	const block = bytes.subarray(0, end === -1 ? Math.min(bytes.length, HEADER_BLOCK_LIMIT) : end);
-	return new TextDecoder().decode(block);
+	const complete =
+		end === -1
+			? bytes.length < HEADER_BLOCK_LIMIT
+			: end + (bytes[end] === 0x0d ? 2 : 1) <= HEADER_BLOCK_LIMIT;
+	return { block: new TextDecoder().decode(block), complete };
 }
 
 /** The header block's fields, in order, with folded lines joined. */
@@ -219,7 +228,7 @@ const lettersOf = (name: string) => name.replace(/[^a-z]/g, "");
  * it, such as `From ` with a space, counts as a second one: programs differ on such names, and a
  * checker may have read it instead.
  */
-function soleField(headers: Header[], name: string): Header | null {
+export function soleField(headers: Header[], name: string): Header | null {
 	const like = headers.filter((header) => lettersOf(header.name) === lettersOf(name));
 	const [only] = like;
 	return like.length === 1 && only?.strict && only.name === name ? only : null;

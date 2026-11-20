@@ -895,7 +895,7 @@ test("an agent's mail to someone its settings don't name waits until a person ap
 	const policy = page.getByRole("dialog", { name: "What Sorter can send" });
 	await policy.getByLabel("Messages a day").fill("5");
 	await policy.getByLabel("It sends on its own to those listed, and the rest waits").check();
-	await policy.getByLabel("Goes without approval to").fill("@Partner.example");
+	await policy.getByLabel("Allowed addresses and domains").fill("@Partner.example");
 	await policy.getByRole("button", { name: "Save" }).click();
 	await expect(policy).toBeHidden();
 	await expect(
@@ -1040,22 +1040,23 @@ test("an agent sends on its own until an owner chooses, on its page, that its ma
 	await access.getByRole("button", { name: "Save" }).click();
 	await expect(access).toBeHidden();
 
-	const write = async (subject: string) => {
+	const write = async (subject: string, recipient = "customer@example.org") => {
 		const written = await request.post(`/api/mail/${slug}/${mailboxId}/outbox`, {
 			headers: { authorization: `Bearer ${key}` },
 			data: {
 				action: "send",
 				draft: crypto.randomUUID(),
-				to: ["customer@example.org"],
+				to: [recipient],
 				subject,
 				text: "It left on Monday.",
 			},
 		});
+		if (written.status() === 403) return "refused";
 		expect(written.status()).toBe(200);
 		return ((await written.json()) as { state: string }).state;
 	};
-	// Nobody approves what a new agent writes.
-	expect(await write("On its own")).toBe("sent");
+
+	expect(await write("Unknown recipient")).toBe("refused");
 
 	// Its page says how its mail goes, and what bounds it with nobody reading it first.
 	await page.goto(`/${slug}/settings/agents`);
@@ -1070,25 +1071,30 @@ test("an agent sends on its own until an owner chooses, on its page, that its ma
 		/^Pause, above: its keys stop at once/,
 		/^Activity, below, which records every message it sent on its own/,
 	]);
-	await expect(sending).toContainText("can be made, by a message it reads, to write to anyone");
+	await expect(sending).toContainText(
+		"A sender can still ask the agent to reply with sensitive information",
+	);
 
 	const policy = page.getByRole("dialog", { name: "What Courier can send" });
 	const own = policy.getByLabel("It sends on its own", { exact: true });
 	const toListed = policy.getByLabel("It sends on its own to those listed, and the rest waits");
 	const allWaits = policy.getByLabel("Everything waits for approval");
-	const list = policy.getByLabel("Goes without approval to");
-	const unused = policy.getByText("This list is kept but not used");
+	const list = policy.getByLabel("Allowed addresses and domains");
+	const anyRecipient = policy.getByLabel("Allow any recipient and webhook host");
 	const waitsAll =
 		"Writes up to 20 messages a day, each waiting for approval unless it goes only to this workspace's own addresses.";
 
 	// The list is a choice of its own, and needs someone on it. Typing in it chooses nothing.
 	await sending.getByRole("button", { name: "Change" }).click();
 	await expect(own).toBeChecked();
+	await expect(anyRecipient).not.toBeChecked();
 	await list.fill("customer@example.org");
 	await expect(own).toBeChecked();
-	await expect(unused).toBeVisible();
+	await policy.getByRole("button", { name: "Save" }).click();
+	await expect(policy).toBeHidden();
+	expect(await write("On its own")).toBe("sent");
+	await sending.getByRole("button", { name: "Change" }).click();
 	await list.fill("");
-	await expect(unused).toBeHidden();
 	await toListed.check();
 	await policy.getByRole("button", { name: "Save" }).click();
 	await expect(policy.getByRole("alert")).toHaveText(
@@ -1108,7 +1114,6 @@ test("an agent sends on its own until an owner chooses, on its page, that its ma
 	await list.fill("customer@example.org");
 	await expect(allWaits).toBeChecked();
 	await expect(toListed).not.toBeChecked();
-	await expect(unused).toBeVisible();
 	await policy.getByRole("button", { name: "Save" }).click();
 	await expect(policy).toBeHidden();
 	await expect(sending).toContainText(waitsAll);
@@ -1121,7 +1126,6 @@ test("an agent sends on its own until an owner chooses, on its page, that its ma
 	await sending.getByRole("button", { name: "Change" }).click();
 	await expect(list).toHaveValue("customer@example.org");
 	await toListed.check();
-	await expect(unused).toBeHidden();
 	await policy.getByRole("button", { name: "Save" }).click();
 	await expect(policy).toBeHidden();
 	await expect(sending).toContainText(
@@ -1129,17 +1133,21 @@ test("an agent sends on its own until an owner chooses, on its page, that its ma
 	);
 	expect(await write("Listed")).toBe("sent");
 
-	// And back to sending on its own, with the list kept for another day.
+	// The owner can opt out of target restrictions independently of approval.
 	await sending.getByRole("button", { name: "Change" }).click();
 	await own.check();
+	await anyRecipient.check();
 	await expect(list).toHaveValue("customer@example.org");
-	await expect(unused).toBeVisible();
 	await policy.getByRole("button", { name: "Save" }).click();
 	await expect(policy).toBeHidden();
 	await expect(sending).toContainText("each going on its own.");
+	expect(await write("New recipient", "first-contact@example.net")).toBe("sent");
 
 	// Its log has each message it sent on its own, with whom it went to.
 	const activity = page.getByRole("region", { name: "Activity" });
+	await expect(
+		activity.getByText("Courier was refused a send to an unapproved recipient"),
+	).toBeVisible();
 	await expect(activity.getByText("Courier wrote a message that waits for approval")).toHaveCount(
 		2,
 	);
@@ -1408,6 +1416,39 @@ test("an admin adds a webhook, which hears of mail as it arrives, signed, and ca
 	}
 });
 
+test("the sending dialog omits webhookHosts while old hosts are pending", async ({
+	page,
+	request,
+	baseURL,
+}) => {
+	const { slug } = await supportMailbox(page, request, baseURL);
+	await page.goto(`/${slug}/settings/agents`);
+	await waitForHydration(page);
+	await page.getByLabel("Agent name").fill("Listener");
+	await page.getByRole("button", { name: "Create agent" }).click();
+	await page.getByRole("button", { name: "Done" }).click();
+	await page.route("**/api/auth/agents/policy?*", async (route) => {
+		const response = await route.fetch();
+		await route.fulfill({
+			response,
+			json: { ...(await response.json()), webhookHostsPending: true },
+		});
+	});
+	await page.getByRole("button", { name: "More for Listener" }).click();
+	await page.getByRole("menuitem", { name: "Sending" }).click();
+	const dialog = page.getByRole("dialog", { name: "What Listener can send" });
+	await expect(dialog.getByLabel("Allowed webhook hosts")).toBeDisabled();
+	await dialog.getByLabel("Messages a day").fill("5");
+	const saving = page.waitForRequest((request) =>
+		request.url().endsWith("/api/auth/agents/set-policy"),
+	);
+	await dialog.getByRole("button", { name: "Save" }).click();
+	const body = (await saving).postDataJSON();
+	expect(body.sendPerDay).toBe(5);
+	expect(body).not.toHaveProperty("webhookHosts");
+	await expect(dialog).toBeHidden();
+});
+
 test("an agent makes a webhook of its own, which an admin sees as the agent's and can pause or delete", async ({
 	page,
 	request,
@@ -1421,6 +1462,21 @@ test("an agent makes a webhook of its own, which an admin sees as the agent's an
 	const key = await page.getByLabel("Agent key").inputValue();
 	const headers = { authorization: `Bearer ${key}` };
 	const url = "https://hooks.example.net/agent";
+	await page.getByRole("button", { name: "Done" }).click();
+	await page.getByRole("button", { name: "More for Listener" }).click();
+	await page.getByRole("menuitem", { name: "Sending" }).click();
+	const policy = page.getByRole("dialog", { name: "What Listener can send" });
+	await policy.getByLabel("Allowed webhook hosts").fill("hooks.example.net");
+	await policy.getByRole("button", { name: "Save" }).click();
+	await expect(policy).toBeHidden();
+	const refused = await request.post("/api/v1/webhooks", {
+		headers,
+		data: { url: "https://unlisted.example.org/receiver", events: ["message.received"] },
+	});
+	expect(refused.status()).toBe(403);
+	await page.getByRole("link", { name: "Listener", exact: true }).click();
+	await expect(page.getByText("Listener was refused a webhook host")).toBeVisible();
+	await expect(page.getByText("unlisted.example.org", { exact: true })).toBeVisible();
 	const made = await request.post("/api/v1/webhooks", {
 		headers,
 		data: { url, events: ["message.received"] },

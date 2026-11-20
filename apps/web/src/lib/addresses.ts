@@ -3,7 +3,7 @@ const LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const LOCAL_PART = /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/;
 
 /** `bücher.example` as DNS knows it, `xn--bcher-kva.example`. A URL's rules do the conversion. */
-function toAscii(name: string): string | null {
+export function toAscii(name: string): string | null {
 	// biome-ignore lint/suspicious/noControlCharactersInRegex: this is the whole ASCII range.
 	if (/^[\x00-\x7f]*$/.test(name)) return name;
 	if (/[\s/:?#@\\[\]]/.test(name)) return null;

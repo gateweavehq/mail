@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { toAscii } from "./addresses";
 import { isAddress } from "./outbox";
 
 export const MAX_AGENT_NAME = 80;
@@ -16,11 +17,14 @@ export interface AgentPolicy {
 	sendPerDay: number;
 	/** Which of its mail waits for a person. */
 	approval: Approval;
+	/** Whether the agent may choose arbitrary mail and webhook targets, including unproved Cc on replies. */
+	anyRecipient: boolean;
 	/**
-	 * Where its mail goes without a person approving it while `approval` is `unlisted`: whole
-	 * addresses, or domains written `@example.com`, lower case. Kept, unused, under the other two.
+	 * Mail targets the owner or admin allows.
 	 */
 	allowed: string[];
+	webhookHosts: string[];
+	webhookHostsPending?: boolean;
 	/**
 	 * Whether mail to its own workspace's addresses follows `approval` like any other. Only for a
 	 * policy nobody has saved since such mail began to go on its own: an agent from before keeps
@@ -39,7 +43,9 @@ export const DEFAULT_SEND_PER_DAY = 20;
 export const DEFAULT_AGENT_POLICY: AgentPolicy = {
 	sendPerDay: DEFAULT_SEND_PER_DAY,
 	approval: "always",
+	anyRecipient: false,
 	allowed: [],
+	webhookHosts: [],
 	insideWaits: true,
 };
 
@@ -47,7 +53,9 @@ export const DEFAULT_AGENT_POLICY: AgentPolicy = {
 export const NEW_AGENT_POLICY: AgentPolicy = {
 	sendPerDay: DEFAULT_SEND_PER_DAY,
 	approval: "never",
+	anyRecipient: false,
 	allowed: [],
+	webhookHosts: [],
 	insideWaits: false,
 };
 
@@ -57,16 +65,60 @@ export const MAX_AGENT_SEND_PER_DAY = 1000;
 /** The most addresses and domains one agent may write to without approval. */
 export const MAX_ALLOWED_ENTRIES = 100;
 
-/** Whether this is a domain as an allowed entry names one, after its `@`. */
-const DOMAIN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
+/** A normalized mail target, or null when it cannot be a single address. */
+export function normalTarget(value: string): string | null {
+	const at = value.lastIndexOf("@");
+	if (at < 1) return null;
+	const domain = value
+		.slice(at + 1)
+		.toLowerCase()
+		.replace(/\.$/, "");
+	if (/[\s\\/%?#:@]/u.test(domain)) return null;
+	const host = toAscii(domain);
+	if (host === null) return null;
+	const address = `${value.slice(0, at).toLowerCase()}@${host}`;
+	return isAddress(address) ? address : null;
+}
+
+/** Whole hosts also serve webhooks on single-label names or IP literals. */
+function normalizedHost(entry: string): string | null {
+	const domain = entry.replace(/\.$/, "");
+	if (!domain || /[\s\\/%?#@*]/u.test(domain)) return null;
+	try {
+		const ascii = toAscii(domain.toLowerCase());
+		if (ascii && isAddress(`a@${ascii}`)) return ascii;
+		const host = new URL(`https://${domain}`).hostname;
+		if (domain.includes(":") && !(domain.startsWith("[") && domain.endsWith("]"))) return null;
+		return host.length <= 253 &&
+			(/^[a-z0-9_-]+(?:\.[a-z0-9_-]+)*$/i.test(host) || /^\[[a-f\d:]+\]$/i.test(host))
+			? host
+			: null;
+	} catch {
+		return null;
+	}
+}
 
 /** One allowed entry, as typed: an address, or `@` and a domain. Lower case once read. */
 export const AllowedEntry = z
 	.string()
 	.trim()
-	.toLowerCase()
-	.max(254)
-	.refine((entry) => (entry.startsWith("@") ? DOMAIN.test(entry.slice(1)) : isAddress(entry)));
+	.transform((entry, ctx) => {
+		const host = entry.startsWith("@") ? normalizedHost(entry.slice(1)) : null;
+		const target = host ? `@${host}` : normalTarget(entry);
+		if (target !== null) return target;
+		ctx.addIssue({ code: "custom", message: "Enter an address or @domain." });
+		return z.NEVER;
+	});
+
+export const WebhookHost = z
+	.string()
+	.trim()
+	.transform((entry, ctx) => {
+		const host = normalizedHost(entry);
+		if (host !== null) return host;
+		ctx.addIssue({ code: "custom", message: "Enter a webhook host, such as hooks.example.com." });
+		return z.NEVER;
+	});
 
 export const AgentPolicyInput = z.object({
 	sendPerDay: z.number().int().min(0).max(MAX_AGENT_SEND_PER_DAY),
@@ -76,6 +128,8 @@ export const AgentPolicyInput = z.object({
 	 * does. So a page loaded before the choice existed still saves what it shows.
 	 */
 	approval: z.enum(APPROVALS).optional(),
+	webhookHosts: z.array(WebhookHost).max(MAX_ALLOWED_ENTRIES).optional(),
+	anyRecipient: z.boolean().optional(),
 });
 
 /** What a list alone says, as it did before there was a choice: empty, everything waits. */
@@ -91,11 +145,20 @@ export function readPolicy(row: {
 	sendPerDay: number;
 	allowed: string;
 	approval: string | null;
+	webhookHosts?: string | null;
+	anyRecipient?: boolean | null;
 }): AgentPolicy {
 	const allowed = readAllowed(row.allowed);
 	const approval =
 		row.approval === "never" || row.approval === "always" ? row.approval : approvalOfList(allowed);
-	return { sendPerDay: row.sendPerDay, approval, allowed, insideWaits: row.approval === null };
+	return {
+		sendPerDay: row.sendPerDay,
+		approval,
+		allowed,
+		webhookHosts: readAllowed(row.webhookHosts ?? "[]"),
+		anyRecipient: row.anyRecipient === true,
+		insideWaits: row.approval === null,
+	};
 }
 
 /**
@@ -104,7 +167,8 @@ export function readPolicy(row: {
  * let mail go to `someone@mail.example.com`.
  */
 export function isAllowedRecipient(address: string, allowed: readonly string[]): boolean {
-	const lower = address.toLowerCase();
+	const lower = normalTarget(address);
+	if (!lower) return false;
 	const at = lower.lastIndexOf("@");
 	if (at < 1) return false;
 	return allowed.includes(lower) || allowed.includes(lower.slice(at));

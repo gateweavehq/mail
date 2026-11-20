@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
-import { waitsForApproval } from "../../lib/agent-policy";
+import { isAllowedRecipient, normalTarget, waitsForApproval } from "../../lib/agent-policy";
 import {
 	canSendAgain,
 	isAddress,
@@ -14,10 +14,11 @@ import {
 	MAX_SEND_BODY,
 	MAX_SUBJECT,
 	MAX_TEXT,
+	SENDER_CHECK_PENDING,
 	type SendStatus,
 	sentContext,
 } from "../../lib/outbox";
-import { isAdminRole } from "../../lib/roles";
+import { isAdminRole, isPersonRole } from "../../lib/roles";
 import { type Suppression, suppressedRefusal } from "../../lib/suppressions";
 import { bearsKey } from "../access";
 import { type AgentLogNote, noteAgent } from "../agent-log";
@@ -36,6 +37,7 @@ import { sendingWith } from "../providers/keys";
 import { allowAgentSend, allowSend } from "../rate-limit";
 import { readUpTo, textOf } from "../streams";
 import { suppressedAmong } from "../suppressions";
+import { toRole } from "../workspaces";
 import {
 	addressHeader,
 	dateHeader,
@@ -46,16 +48,16 @@ import {
 	rawCopy,
 	sendRequest,
 } from "./compose";
-import { staysInWorkspace } from "./direct";
+import { staysInWorkspace, workspaceRecipients } from "./direct";
 import { discloseAgent } from "./disclosure";
 import type { Sent } from "./durable-object";
 import { checkFiles } from "./files";
 import { firstHeader, type Header, parseHeaders, readHeaderBlock } from "./headers";
 import { sendableHtml } from "./html";
-import type { mailboxStub } from "./index";
+import { mailboxStub } from "./index";
 import { newOwnId } from "./own-id";
 import { decoded } from "./people";
-import { openMailbox } from "./read";
+import { openMailbox, otherGrantedMailboxes } from "./read";
 import { rawMail, SealError } from "./sealed";
 import { envelopeAddresses, replySender, senderAddresses } from "./senders";
 import { textOfHtml } from "./text";
@@ -66,71 +68,81 @@ const Id = z.string().min(1).max(100);
 /** An address someone types. `isAddress` takes no spaces or line breaks, so none reach a header. */
 const Address = z.string().trim().refine(isAddress);
 
-const Action = z.discriminatedUnion("action", [
-	z.object({
-		action: z.literal("send"),
-		to: z.array(Address).min(1).max(MAX_RECIPIENTS),
-		cc: z.array(Address).max(MAX_RECIPIENTS).default([]),
-		// A line break in a header would start another, so none gets in.
-		subject: z
-			.string()
-			.trim()
-			.min(1)
-			.max(MAX_SUBJECT)
-			.refine((subject) => !/[\r\n]/.test(subject)),
-		/** Without text, the HTML's makes it; one of the two says something. */
-		text: z.string().max(MAX_TEXT).default(""),
-		html: z.string().max(MAX_HTML).nullable().default(null),
-		/** Checked by `checkFiles` once the rest is known to be well formed. */
-		attachments: z
-			.array(
-				z.object({
-					filename: z.string().max(MAX_FILE_NAME * 2),
-					contentType: z.string().max(200).nullable().optional(),
-					content: z.string().max(MAX_SEND_BODY),
-					contentId: z.string().max(200).nullable().optional(),
-				}),
-			)
-			.max(MAX_ATTACHMENTS)
-			.default([]),
-		/** The message it answers, in this mailbox. */
-		replyTo: Id.nullable().default(null),
-		/**
-		 * One of the mailbox's addresses, which is all it is compared with. Without one, the one a
-		 * reply's message came to, or the first.
-		 */
-		from: z.string().trim().toLowerCase().max(254).nullable().default(null),
-		/**
-		 * The draft's own id, made when it was opened. A send with one the mailbox has seen is the
-		 * same message again, as when its answer was lost, and isn't sent twice.
-		 */
-		draft: z.uuid(),
-		/**
-		 * The template an agent's message was made from, as `send_template` says, for the agent's log
-		 * to name beside whom it went to. Only the log reads it, and the log shows it as the agent's.
-		 */
-		template: z
-			.object({ name: z.string().max(100), version: z.number().int().min(1).max(1_000_000) })
-			.nullable()
-			.default(null),
-		/** What it was written for, as its writer says. Checked by `sentContext`. */
-		context: z
-			.object({
-				url: z.string().max(MAX_CONTEXT_URL * 2),
-				label: z
-					.string()
-					.max(MAX_CONTEXT_LABEL * 4)
-					.nullable()
-					.optional(),
-			})
-			.nullable()
-			.default(null),
-	}),
-	z.object({ action: z.literal("send-again"), message: Id }),
-	z.object({ action: z.literal("discard"), message: Id }),
-	/** Sends a message an agent wrote that waits for a person. */
-	z.object({ action: z.literal("approve"), message: Id }),
-]);
+const actions = (address: z.ZodType<string, string>) =>
+	z.discriminatedUnion("action", [
+		z.object({
+			action: z.literal("send"),
+			to: z.array(address).min(1).max(MAX_RECIPIENTS),
+			cc: z.array(address).max(MAX_RECIPIENTS).default([]),
+			// A line break in a header would start another, so none gets in.
+			subject: z
+				.string()
+				.trim()
+				.min(1)
+				.max(MAX_SUBJECT)
+				.refine((subject) => !/[\r\n]/.test(subject)),
+			/** Without text, the HTML's makes it; one of the two says something. */
+			text: z.string().max(MAX_TEXT).default(""),
+			html: z.string().max(MAX_HTML).nullable().default(null),
+			/** Checked by `checkFiles` once the rest is known to be well formed. */
+			attachments: z
+				.array(
+					z.object({
+						filename: z.string().max(MAX_FILE_NAME * 2),
+						contentType: z.string().max(200).nullable().optional(),
+						content: z.string().max(MAX_SEND_BODY),
+						contentId: z.string().max(200).nullable().optional(),
+					}),
+				)
+				.max(MAX_ATTACHMENTS)
+				.default([]),
+			/** The message it answers, in this mailbox. */
+			replyTo: Id.nullable().default(null),
+			/**
+			 * One of the mailbox's addresses, which is all it is compared with. Without one, the one a
+			 * reply's message came to, or the first.
+			 */
+			from: z.string().trim().toLowerCase().max(254).nullable().default(null),
+			/**
+			 * The draft's own id, made when it was opened. A send with one the mailbox has seen is the
+			 * same message again, as when its answer was lost, and isn't sent twice.
+			 */
+			draft: z.uuid(),
+			/**
+			 * The template an agent's message was made from, as `send_template` says, for the agent's log
+			 * to name beside whom it went to. Only the log reads it, and the log shows it as the agent's.
+			 */
+			template: z
+				.object({ name: z.string().max(100), version: z.number().int().min(1).max(1_000_000) })
+				.nullable()
+				.default(null),
+			/** What it was written for, as its writer says. Checked by `sentContext`. */
+			context: z
+				.object({
+					url: z.string().max(MAX_CONTEXT_URL * 2),
+					label: z
+						.string()
+						.max(MAX_CONTEXT_LABEL * 4)
+						.nullable()
+						.optional(),
+				})
+				.nullable()
+				.default(null),
+		}),
+		z.object({ action: z.literal("send-again"), message: Id }),
+		z.object({ action: z.literal("discard"), message: Id }),
+		/** Sends a message an agent wrote that waits for a person. */
+		z.object({ action: z.literal("approve"), message: Id }),
+	]);
+
+const Action = actions(Address);
+const AgentAction = actions(
+	z
+		.string()
+		.trim()
+		.transform((address) => (isAddress(address) ? address : (normalTarget(address) ?? "")))
+		.pipe(Address),
+);
 
 export type OutboxAction = z.input<typeof Action>;
 
@@ -161,6 +173,8 @@ const recipientsOf = (row: { envelopeTo: string }) =>
 		.map((address) => address.trim())
 		.filter(Boolean);
 
+export type AgentReply = "sent" | { proved: boolean; senderDomain: string | null };
+
 /**
  * Sends from a mailbox, tries again, approves or discards, for
  * `POST /api/mail/<workspace>/<mailbox>/outbox`. A person who may read the mailbox may, signed in.
@@ -176,6 +190,8 @@ export async function outboxAnswer(
 	slug: string,
 	mailboxId: string,
 	given?: unknown,
+	// Only the reply operation supplies this, after reading the targets from the stored message.
+	reply?: AgentReply,
 ): Promise<Response> {
 	// A key decides alone, as `currentCaller` has it, and no browser sends one by itself. A
 	// session's cookie comes along wherever a request is from, so then ask where that is.
@@ -196,7 +212,7 @@ export async function outboxAnswer(
 			body = null;
 		}
 	}
-	const parsed = Action.safeParse(body);
+	const parsed = (keyed ? AgentAction : Action).safeParse(body);
 	if (!parsed.success) return refuse("That isn't something we can send.", 400);
 	const action = parsed.data;
 	const { workspaceId, memberId, role } = box.member.membership;
@@ -259,11 +275,11 @@ export async function outboxAnswer(
 		return status ? answer({ ok: true, ...status }) : refuse("It is sent, or being sent.", 409);
 	}
 
-	const recipients = [...action.to, ...action.cc];
+	let recipients = [...action.to, ...action.cc];
 	if (recipients.length > MAX_RECIPIENTS) {
 		return refuse(`One message can go to at most ${MAX_RECIPIENTS} people.`, 400);
 	}
-	const lower = recipients.map((address) => address.toLowerCase());
+	let lower = recipients.map((address) => address.toLowerCase());
 	if (new Set(lower).size !== lower.length) return refuse("An address is there twice.", 400);
 	// Whoever approves an agent's message sees its HTML, so its text is made from that, not written
 	// beside it to say something else.
@@ -288,7 +304,7 @@ export async function outboxAnswer(
 	if (!text.trim()) return refuse("There is nothing to send: write some text or HTML.", 400);
 
 	const from = await senderAddresses(workspaceId, box.id);
-	let answering: Answering = { inReplyTo: null, references: [], addresses: [] };
+	let answering: Answering = { sentBy: null, inReplyTo: null, references: [], addresses: [] };
 	if (action.replyTo) {
 		const found = await answered(box.stub, action.replyTo);
 		if (!found) return refuse("The message you are answering is gone.", 404);
@@ -351,6 +367,75 @@ export async function outboxAnswer(
 		agentName = writer.name;
 		if (policy.sendPerDay === 0) {
 			return refuse("This agent isn't let send mail. An owner or admin can change that.", 403);
+		}
+		const received = reply === "sent" ? undefined : reply;
+		if (received?.proved && policy.approval !== "never") {
+			action.cc = [];
+			recipients = [...action.to];
+			lower = recipients.map((address) => address.toLowerCase());
+		}
+		let keepSentTargets = reply === "sent";
+		if (
+			keepSentTargets &&
+			!policy.anyRecipient &&
+			policy.approval === "never" &&
+			answering.sentBy !== memberId
+		) {
+			const author =
+				answering.sentBy &&
+				(await db
+					.select({ role: member.role })
+					.from(member)
+					.where(and(eq(member.id, answering.sentBy), eq(member.organizationId, workspaceId)))
+					.get());
+			keepSentTargets = Boolean(author && isPersonRole(toRole(author.role)));
+		}
+		if (
+			!policy.anyRecipient &&
+			!keepSentTargets &&
+			(policy.approval === "never" || received?.proved === false)
+		) {
+			// On unproved mail with a single From, the reply's To is that sender.
+			let targets = lower;
+			if (
+				received &&
+				(policy.approval !== "never" || (!received.proved && received.senderDomain))
+			) {
+				targets = action.cc.map((address) => address.toLowerCase());
+			} else if (received?.proved && received.senderDomain) {
+				const domain = `@${received.senderDomain}`;
+				targets = lower.filter((address) => !normalTarget(address)?.endsWith(domain));
+			}
+			const { outside, pending } = await refusedRecipients(box, sender, targets, policy.allowed);
+			if (pending) return refuse(SENDER_CHECK_PENDING, 503);
+			// Drop copied strangers before counting the reply. A refused To still stops it.
+			if (reply && outside.size) {
+				action.cc = action.cc.filter((address) => !outside.has(address.toLowerCase()));
+				recipients = [...action.to, ...action.cc];
+				lower = recipients.map((address) => address.toLowerCase());
+			}
+			const refused = lower.filter((address) => outside.has(address));
+			if (refused.length) {
+				const names = refused.join(", ");
+				await noteAgent(db, {
+					workspaceId,
+					agentMemberId: memberId,
+					by: "agent",
+					action: "message.refused",
+					mailboxId: box.id,
+					subject: action.subject,
+					detail:
+						refused.slice(0, 5).join(", ") +
+						(refused.length > 5 ? ` and ${refused.length - 5} more` : ""),
+				});
+				return refuse(
+					`This agent cannot send to ${names}. An owner or admin can add the address or @domain to the agent's allowed list, or allow any recipient in its settings.`,
+					403,
+				);
+			}
+			const standing = await agentStanding(db, memberId);
+			if (standing === "paused") return refuse(AGENT_PAUSED, 403);
+			if (standing === "gone") return refuse("Not found", 404);
 		}
 		const counted = await allowAgentSend(memberId, policy.sendPerDay);
 		if (!counted.allowed) return tooMany(counted.retryAfter, "This agent has written");
@@ -444,6 +529,41 @@ export async function outboxAnswer(
 	return sentAnswer(sent);
 }
 
+/** Only mail retained in a mailbox the agent may still read can establish a correspondent. */
+async function refusedRecipients(
+	box: NonNullable<Awaited<ReturnType<typeof openMailbox>>>,
+	sender: string,
+	recipients: string[],
+	allowed: string[],
+) {
+	const unknown = new Set(recipients.filter((address) => !isAllowedRecipient(address, allowed)));
+	if (!unknown.size) return { outside: unknown, pending: false };
+	const { workspaceId } = box.member.membership;
+	const lookUp = dnsLookup(env.DNS_RESOLVER_URL || DEFAULT_DNS_RESOLVER);
+	const from = { address: sender, mailboxId: box.id, workspaceId };
+	const now = new Date();
+	const first = await box.stub.receivedFrom([...unknown]);
+	const pending = new Set(first.pending);
+	for (const found of first.found) unknown.delete(found);
+	if (!unknown.size) return { outside: unknown, pending: false };
+	for (const address of await workspaceRecipients(db, lookUp, from, [...unknown], now, pending)) {
+		unknown.delete(address);
+	}
+	if (!unknown.size) return { outside: unknown, pending: false };
+	const other = await otherGrantedMailboxes(box);
+	for (let i = 0; i < other.length && unknown.size; i += 5) {
+		const wanted = [...unknown];
+		const matches = await Promise.all(
+			other.slice(i, i + 5).map((id) => mailboxStub(id).receivedFrom(wanted)),
+		);
+		for (const match of matches) {
+			for (const address of match.found) unknown.delete(address);
+			for (const address of match.pending) pending.add(address);
+		}
+	}
+	return { outside: unknown, pending: [...unknown].some((address) => pending.has(address)) };
+}
+
 /** An entry, for the log of the agent that wrote it, of what a person did to a held message. */
 function heldNote(
 	writer: string,
@@ -496,6 +616,7 @@ function tooMany(retryAfter: number | null | undefined, who = "This workspace ha
 
 /** What a reply takes from the message it answers. */
 interface Answering {
+	sentBy: string | null;
 	inReplyTo: string | null;
 	/** The ids it follows, oldest first, ending with the answered message's own. */
 	references: string[];
@@ -523,7 +644,12 @@ async function answered(
 		if (!(error instanceof SealError)) throw error;
 		// Its own id is in its row, which still threads the reply, without the ids before it.
 		const own = messageIds(row.messageId)[0] ?? null;
-		return { inReplyTo: own, references: own ? [own] : [], addresses: envelopeAddresses(row) };
+		return {
+			sentBy: row.sentBy,
+			inReplyTo: own,
+			references: own ? [own] : [],
+			addresses: envelopeAddresses(row),
+		};
 	}
 	const own = ownId(headers);
 	// Whole, as a long thread's runs past what `firstHeader` keeps.
@@ -531,7 +657,7 @@ async function answered(
 	const followed =
 		before.length > 0 ? before : messageIds(firstHeader(headers, "in-reply-to")).slice(0, 1);
 	const references = [...new Set([...followed, ...(own ? [own] : [])])];
-	return { inReplyTo: own, references, addresses: envelopeAddresses(row) };
+	return { sentBy: row.sentBy, inReplyTo: own, references, addresses: envelopeAddresses(row) };
 }
 
 /**

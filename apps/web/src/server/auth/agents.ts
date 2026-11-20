@@ -259,15 +259,26 @@ export interface AgentPauseInfo {
  */
 export async function agentPolicyOf(db: Database, memberId: string): Promise<AgentPolicy> {
 	const { agentPolicy } = schema;
-	const row = await db
-		.select({
-			sendPerDay: agentPolicy.sendPerDay,
-			allowed: agentPolicy.allowed,
-			approval: agentPolicy.approval,
-		})
-		.from(agentPolicy)
-		.where(eq(agentPolicy.memberId, memberId))
-		.get();
+	const row = await db.select().from(agentPolicy).where(eq(agentPolicy.memberId, memberId)).get();
+	return row ? readPolicy(row) : DEFAULT_AGENT_POLICY;
+}
+
+/** Open one agent's settings even if the workspace object cannot supply its old URLs yet. */
+export async function settingsPolicy(db: Database, workspaceId: string, memberId: string) {
+	const { agentPolicy } = schema;
+	const row = await db.select().from(agentPolicy).where(eq(agentPolicy.memberId, memberId)).get();
+	if (!row?.webhookHostsSeeded) {
+		try {
+			const { webhooksStub } = await import("../webhooks");
+			await webhooksStub(workspaceId).seedWebhookHosts(memberId);
+			return await agentPolicyOf(db, memberId);
+		} catch (error) {
+			console.error("agents: could not read existing webhook hosts", {
+				name: error instanceof Error ? error.name : "unknown",
+			});
+			return { ...(row ? readPolicy(row) : DEFAULT_AGENT_POLICY), webhookHostsPending: true };
+		}
+	}
 	return row ? readPolicy(row) : DEFAULT_AGENT_POLICY;
 }
 
@@ -404,6 +415,10 @@ export function agentMembers({ db }: { db: Database }) {
 							sendPerDay: agentPolicy.sendPerDay,
 							allowed: agentPolicy.allowed,
 							approval: agentPolicy.approval,
+							webhookHosts: agentPolicy.webhookHosts,
+							webhookHostsSeeded: agentPolicy.webhookHostsSeeded,
+							anyRecipient: agentPolicy.anyRecipient,
+
 							address: {
 								maxLive: agentAddressPolicy.maxLive,
 								maxDays: agentAddressPolicy.maxDays,
@@ -447,14 +462,18 @@ export function agentMembers({ db }: { db: Database }) {
 							name: row.name,
 							createdAt: row.createdAt.getTime(),
 							keys: [],
-							policy:
-								row.sendPerDay === null || row.allowed === null
+							policy: {
+								...(row.sendPerDay === null || row.allowed === null
 									? DEFAULT_AGENT_POLICY
 									: readPolicy({
 											sendPerDay: row.sendPerDay,
 											allowed: row.allowed,
 											approval: row.approval,
-										}),
+											webhookHosts: row.webhookHosts,
+											anyRecipient: row.anyRecipient,
+										})),
+								...(!row.webhookHostsSeeded && { webhookHostsPending: true }),
+							},
 							addressPolicy: row.address
 								? {
 										maxLive: row.address.maxLive,
@@ -530,6 +549,7 @@ export function agentMembers({ db }: { db: Database }) {
 							sendPerDay: NEW_AGENT_POLICY.sendPerDay,
 							allowed: JSON.stringify(NEW_AGENT_POLICY.allowed),
 							approval: NEW_AGENT_POLICY.approval,
+							webhookHostsSeeded: true,
 							updatedBy: ctx.context.session.user.id,
 							updatedAt: now,
 						}),
@@ -581,6 +601,15 @@ export function agentMembers({ db }: { db: Database }) {
 				},
 			),
 
+			getAgentPolicy: createAuthEndpoint(
+				"/agents/policy",
+				{ method: "GET", query: z.object({ agentId: id }), use: [sessionMiddleware] },
+				async (ctx) => {
+					const agent = await agentForAdmin(ctx.query.agentId, ctx.context.session.user.id);
+					return ctx.json(await settingsPolicy(db, agent.organizationId, agent.memberId));
+				},
+			),
+
 			setAgentPolicy: createAuthEndpoint(
 				"/agents/set-policy",
 				{
@@ -602,22 +631,39 @@ export function agentMembers({ db }: { db: Database }) {
 								"List at least one address or domain its mail goes to on its own, or choose that all of it waits.",
 						});
 					}
-					const allowed = JSON.stringify(entries);
+					if (ctx.body.webhookHosts) {
+						const current = await db
+							.select({ seeded: agentPolicy.webhookHostsSeeded })
+							.from(agentPolicy)
+							.where(eq(agentPolicy.memberId, agent.memberId))
+							.get();
+						if (!current?.seeded)
+							throw new APIError("CONFLICT", {
+								message: "Load the existing webhook hosts before changing them.",
+							});
+					}
 					const values = {
 						sendPerDay: ctx.body.sendPerDay,
-						allowed,
+						allowed: JSON.stringify(entries),
 						approval,
+						anyRecipient: ctx.body.anyRecipient,
+						...(ctx.body.webhookHosts && {
+							webhookHosts: JSON.stringify([...new Set(ctx.body.webhookHosts)].sort()),
+							webhookHostsSeeded: true,
+						}),
 						updatedBy: ctx.context.session.user.id,
 						updatedAt: new Date(),
 					};
-					await db
+					const stored = await db
 						.insert(agentPolicy)
 						.values({ memberId: agent.memberId, ...values })
 						.onConflictDoUpdate({ target: agentPolicy.memberId, set: values })
-						.run();
-					const policy: AgentPolicy = readPolicy(values);
+						.returning()
+						.get();
+					if (!stored) throw new Error("Agent policy was not saved");
+					const policy = readPolicy(stored);
 					await noteChange(agent, ctx.context.session.user.id, "policy.changed", {
-						detail: policySummary(policy),
+						detail: `${policy.anyRecipient ? "Any recipient and webhook host allowed." : "Target restrictions on."} ${policySummary(policy)} Webhook hosts: ${policy.webhookHosts.join(", ") || "none"}.`,
 					});
 					return ctx.json({ id: agent.id, policy });
 				},

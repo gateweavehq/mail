@@ -18,6 +18,7 @@ import {
 	MAX_SEND_BODY,
 	MAX_SUBJECT,
 	MAX_TEXT,
+	SENDER_CHECK_PENDING,
 } from "../../lib/outbox";
 import { MAX_TEMPLATE_NAME, MAX_VALUE, MAX_VARIABLES, renderTemplate } from "../../lib/templates";
 import { findVerificationCode } from "../../lib/verification-code";
@@ -304,8 +305,8 @@ const listMailboxes = operation({
 			sending: {
 				perDay: sending.sendPerDay,
 				approval: sending.approval,
-				// Only the list in force: one kept from an earlier choice lets nothing through.
-				withoutApproval: sending.approval === "unlisted" ? sending.allowed : [],
+				webhookHosts: sending.webhookHosts,
+				withoutApproval: sending.approval === "always" ? [] : sending.allowed,
 			},
 			addressPolicy: addresses,
 		};
@@ -499,7 +500,7 @@ const sendEmail = operation({
 	name: "send_email",
 	title: "Send email",
 	description:
-		"Sends a message from a mailbox you may send from: text or HTML, with files if you like. Your policy, which list_mailboxes gives, says whether it goes on its own or waits for a person to approve it (state: held): all of your mail, none of it, or what goes to anyone the policy doesn't name. Whichever it is, mail whose every recipient is an address of your own workspace on this server goes on its own, unless your policy is one from before that was so, which holds it like the rest until an owner or admin saves it; the answer's state says which happened. One that goes on its own answers with how sending went, which is sent when it went, and may be waiting or uncertain. It counts against your messages a day either way.",
+		"Sends a message from a mailbox you may send from: text or HTML, with files if you like. Your policy, which list_mailboxes gives, says whether it goes on its own or waits for a person to approve it (state: held): all of your mail, none of it, or what goes to anyone the policy doesn't name. Whichever it is, mail whose every recipient is an address of your own workspace on this server goes on its own, unless your policy is one from before that was so, which holds it like the rest until an owner or admin saves it; the answer's state says which happened. One that goes on its own answers with how sending went, which is sent when it went, and may be waiting or uncertain. Under never, each To and Cc must be a workspace address, an allowed address or domain, or a sender in a mailbox you can read, unless an admin enabled unrestricted targets. A target refusal uses none of your daily budget.",
 	input: z.object({
 		mailbox: mailboxInput,
 		to: addressesInput.min(1).describe(`To and cc together take ${MAX_RECIPIENTS} at most.`),
@@ -517,7 +518,7 @@ const sendEmail = operation({
 	output: OUTPUTS.send_email,
 	hints: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
 	routes: [{ method: "POST", path: "/mailboxes/{mailbox}/messages" }],
-	refusals: [403, 409, 429],
+	refusals: [403, 409, 429, 503],
 	maxBody: MAX_SEND_BODY,
 	async run(access, { mailbox, to, cc, subject, text, html, attachments, from, draftId, context }) {
 		const box = await findMailbox(access, mailbox);
@@ -585,7 +586,7 @@ const sendTemplate = operation({
 	output: OUTPUTS.send_template,
 	hints: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
 	routes: [{ method: "POST", path: "/mailboxes/{mailbox}/template-messages" }],
-	refusals: [403, 409, 429],
+	refusals: [403, 409, 429, 503],
 	async run(access, { mailbox, template, version, values, to, cc, draftId, context }) {
 		const box = await findMailbox(access, mailbox);
 		const found = await access.template(template, version ?? null);
@@ -625,7 +626,7 @@ const reply = operation({
 	name: "reply",
 	title: "Reply",
 	description:
-		"Answers a message in its thread, to whoever it asks answers to go to, from the address it came to: text or HTML, with files if you like. Goes on its own or waits for approval as send_email does.",
+		"Answers a message in its thread, from the address it came to. A reply to proved mail follows Reply-To. For unproved mail it goes to From and keeps only permitted Cc addresses. You can send text or HTML, with files if you like. Goes on its own or waits for approval as send_email does.",
 	input: z.object({
 		mailbox: mailboxInput,
 		messageId: idInput,
@@ -638,7 +639,7 @@ const reply = operation({
 	output: OUTPUTS.reply,
 	hints: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
 	routes: [{ method: "POST", path: "/mailboxes/{mailbox}/messages/{messageId}/reply" }],
-	refusals: [403, 409, 429],
+	refusals: [403, 409, 429, 503],
 	maxBody: MAX_SEND_BODY,
 	async run(access, { mailbox, messageId, text, html, attachments, draftId, context }) {
 		const box = await findMailbox(access, mailbox);
@@ -648,19 +649,25 @@ const reply = operation({
 		const { reply } = message;
 		if (reply.to.length === 0) throw new ApiError("The message names nobody to answer.", 409);
 		return sent(
-			await access.outbox(box.id, {
-				action: "send",
-				to: reply.to,
-				cc: reply.cc,
-				subject: reply.subject,
-				text: text ?? "",
-				html: html ?? null,
-				attachments: attachments ?? [],
-				replyTo: message.id,
-				from: reply.from,
-				draft: draftId ?? crypto.randomUUID(),
-				context: context ?? null,
-			}),
+			await access.outbox(
+				box.id,
+				{
+					action: "send",
+					to: reply.to,
+					cc: reply.cc,
+					subject: reply.subject,
+					text: text ?? "",
+					html: html ?? null,
+					attachments: attachments ?? [],
+					replyTo: message.id,
+					from: reply.from,
+					draft: draftId ?? crypto.randomUUID(),
+					context: context ?? null,
+				},
+				message.sent
+					? "sent"
+					: { proved: message.verifiedDomain !== null, senderDomain: reply.senderDomain ?? null },
+			),
 		);
 	},
 });
@@ -756,7 +763,7 @@ const createWebhook = operation({
 	name: "create_webhook",
 	title: "Create webhook",
 	description:
-		"Makes a webhook of your own, so you hear of mail without waiting for it: Mail posts each event you choose, of mailboxes you may read, to your https URL, and tries again for about a day while it fails. Each POST is signed per Standard Webhooks (webhook-id, webhook-timestamp and webhook-signature headers) with the secret this answer gives, once: keep it. A body is { type, timestamp, data }, and data names the workspace, the mailbox and the message, never its text, which read_email gives; what senders wrote comes marked as such, and members are given by id, not by name. A mailbox you may no longer read goes quiet, and the webhook goes when the key you make it with is revoked. Test it with test_webhook.",
+		"Makes a webhook of your own, so you hear of mail without waiting for it: Mail posts each event you choose, of mailboxes you may read, to your https URL, and tries again for about a day while it fails. Each POST is signed per Standard Webhooks (webhook-id, webhook-timestamp and webhook-signature headers) with the secret this answer gives, once: keep it. A body is { type, timestamp, data }, and data names the workspace, the mailbox and the message, never its text, which read_email gives; what senders wrote comes marked as such, and members are given by id, not by name. A mailbox you may no longer read goes quiet, and the webhook goes when the key you make it with is revoked. The exact host must be listed in your webhook hosts unless an admin enabled unrestricted targets. Test it with test_webhook.",
 	input: z.object({
 		url: webhookUrlInput,
 		events: webhookEventsInput,
@@ -765,7 +772,7 @@ const createWebhook = operation({
 	output: OUTPUTS.create_webhook,
 	hints: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
 	routes: [{ method: "POST", path: "/webhooks" }],
-	refusals: [409],
+	refusals: [403, 409],
 	async run(access, { url, events, mailboxes }) {
 		const mailboxIds = await mailboxIdsOf(access, mailboxes ?? null);
 		const { webhook, secret } = await access.createWebhook({ url, events, mailboxIds });
@@ -777,7 +784,7 @@ const updateWebhook = operation({
 	name: "update_webhook",
 	title: "Update webhook",
 	description:
-		"Changes a webhook of yours: where it goes, what it hears of, or whether it is active. Pausing it drops what it had yet to deliver; taking a mailbox or an event off it drops what waited for those. One an admin paused (pausedByAdmin) only an admin resumes. With newSecret: true it gets a new secret, which this answer gives once, and signs what it sends from then on with it, retries too.",
+		"Changes a webhook of yours: where it goes, what it hears of, or whether it is active. Changing the URL or resuming a paused webhook requires an allowed host unless an admin enabled unrestricted targets. Pausing it drops what it had yet to deliver; taking a mailbox or an event off it drops what waited for those. One an admin paused (pausedByAdmin) only an admin resumes. With newSecret: true it gets a new secret, which this answer gives once, and signs what it sends from then on with it, retries too.",
 	input: z.object({
 		webhookId: webhookIdInput,
 		url: webhookUrlInput.optional(),
@@ -789,7 +796,7 @@ const updateWebhook = operation({
 	output: OUTPUTS.update_webhook,
 	hints: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
 	routes: [{ method: "PATCH", path: "/webhooks/{webhookId}" }],
-	refusals: [409],
+	refusals: [403, 409],
 	async run(access, { webhookId, url, events, mailboxes, active, newSecret }) {
 		const changes = url !== undefined || events !== undefined || mailboxes !== undefined;
 		if (!changes && active === undefined && !newSecret) {
@@ -826,12 +833,12 @@ const testWebhook = operation({
 	name: "test_webhook",
 	title: "Test webhook",
 	description:
-		"Has a webhook of yours post a webhook.test event, whatever it listens to, to check that your receiver gets it and checks its signature. One at a time, while it is active; see how it went with list_webhooks.",
+		"Has a webhook of yours post a webhook.test event, whatever it listens to, to check that your receiver gets it and checks its signature. The host must still be allowed unless an admin enabled unrestricted targets. One at a time, while it is active; see how it went with list_webhooks.",
 	input: z.object({ webhookId: webhookIdInput }),
 	output: OUTPUTS.test_webhook,
 	hints: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
 	routes: [{ method: "POST", path: "/webhooks/{webhookId}/test" }],
-	refusals: [409],
+	refusals: [403, 409],
 	async run(access, { webhookId }) {
 		await access.testWebhook(webhookId);
 		return { queued: true };
@@ -991,6 +998,9 @@ function answered(answer: Answer): Answer {
 
 /** What became of a message the outbox took. */
 function sent(answer: Answer) {
+	if (answer.status === 503 && answer.body.error === SENDER_CHECK_PENDING) {
+		throw new ApiError(SENDER_CHECK_PENDING, 503);
+	}
 	const { body } = answered(answer);
 	return { id: body.id, threadId: body.threadId, state: body.state };
 }

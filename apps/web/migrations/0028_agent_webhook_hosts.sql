@@ -1,0 +1,1 @@
+ALTER TABLE `agent_policy` ADD `webhook_hosts` text DEFAULT '[]' NOT NULL;

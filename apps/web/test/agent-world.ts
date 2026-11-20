@@ -3,7 +3,7 @@ import { createWorkspace, signUp } from "./accounts";
 import { startMail } from "./mail-worker";
 
 /** Cloudflare's own headers, as Email Routing puts them above a message, with its DMARC verdict. */
-const fromCloudflare = (domain: string, dmarc: string) => [
+export const fromCloudflare = (domain: string, dmarc: string) => [
 	`Received: from mail.${domain} (mail.${domain} [192.0.2.1]) by cloudflare-email.net (unknown) id ABC for <x@example.com>; Sun, 08 Nov 2026 09:00:00 +0000`,
 	"ARC-Seal: i=1; a=rsa-sha256; s=cf2024-1; d=cloudflare-email.net; cv=none; b=abc",
 	`ARC-Authentication-Results: i=1; mx.cloudflare.net; dmarc=${dmarc}`,
@@ -201,8 +201,14 @@ export function agentWorld(origin: string, prefix: string) {
 
 	return {
 		/** Starts the Worker, with handlers for more hosts it may reach, such as a webhook's. */
-		async start(hosts: Record<string, (request: Request) => Response | Promise<Response>> = {}) {
-			mail = await startMail(origin, { hosts: { ...hosts, "cloudflare-dns.com": dns } });
+		async start(
+			hosts: Record<string, (request: Request) => Response | Promise<Response>> = {},
+			inspectMailboxes = false,
+		) {
+			mail = await startMail(origin, {
+				inspectMailboxes,
+				hosts: { ...hosts, "cloudflare-dns.com": dns },
+			});
 			owner = await signUp(mail, origin, "Owner");
 		},
 		async dispose() {

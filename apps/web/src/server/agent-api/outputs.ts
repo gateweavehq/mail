@@ -133,10 +133,11 @@ export const OUTPUTS = {
 				.describe(
 					'Which of your mail waits for a person to approve it: "never", it all goes on its own; "unlisted", what goes to anyone withoutApproval doesn\'t name; "always", all of it. Mail whose every recipient is an address of your own workspace on this server may go on its own whichever it is.',
 				),
+			webhookHosts: z.array(z.string()).describe("Exact hosts allowed for your webhooks."),
 			withoutApproval: z
 				.array(z.string())
 				.describe(
-					'Under "unlisted", the addresses, and domains written @example.com, your mail goes to as it is, while mail to anyone else waits for a person to approve it. Empty under "never" and "always", which need no list.',
+					'Under "unlisted", the addresses, and domains written @example.com, your mail goes to as it is, while mail to anyone else waits for a person to approve it. Under "never" these are allowed mail targets. Empty under "always".',
 				),
 		}),
 		addressPolicy: z.looseObject({

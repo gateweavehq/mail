@@ -12,7 +12,7 @@ import type { Template } from "../../lib/templates";
 import type { Webhook, WebhookDelivery, WebhookEventType } from "../../lib/webhooks";
 import type { AgentAddressAction } from "../directory/agent-addresses";
 import type { SentFile } from "../mailbox/download";
-import type { OutboxAction } from "../mailbox/send";
+import type { AgentReply, OutboxAction } from "../mailbox/send";
 
 // What an agent's operations may do, whether they come over MCP or REST. They reach Mail only
 // through MailAccess, which goes through the same functions as the agent's own routes, with its
@@ -90,7 +90,7 @@ export interface MailAccess {
 	): Promise<SentFile | { tooLarge: number } | null>;
 	/** Lists the addresses it made in a mailbox, with `null`, or makes or ends one. */
 	addresses(mailboxId: string, action: AgentAddressAction | null): Promise<Answer>;
-	outbox(mailboxId: string, action: OutboxAction): Promise<Answer>;
+	outbox(mailboxId: string, action: OutboxAction, reply?: AgentReply): Promise<Answer>;
 	/**
 	 * Its own webhooks, with each one's latest deliveries. The webhooks object decides as each
 	 * event is queued, and again as it is sent, which mailboxes it may still hear of.
@@ -120,7 +120,7 @@ export interface MailAccess {
 }
 
 /** The statuses a failure the caller can act on answers with, over REST. */
-export type FailureStatus = 400 | 401 | 403 | 404 | 409 | 429;
+export type FailureStatus = 400 | 401 | 403 | 404 | 409 | 429 | 503;
 
 /**
  * A failure the caller can act on: a tool error over MCP, an answer with its status over REST. Any

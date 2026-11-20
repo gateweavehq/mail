@@ -239,6 +239,16 @@ describe("the agent API", () => {
 			(await auth("/agents/update", { agentId: agent.id, name: "Dispatch <East> & West" })).status,
 		).toBe(200);
 		const to = "disclosed@example.org";
+		expect(
+			(
+				await auth("/agents/set-policy", {
+					agentId: agent.id,
+					approval: "never",
+					sendPerDay: 20,
+					allowed: [to],
+				})
+			).status,
+		).toBe(200);
 		const sent = await done<{ id: string; state: string }>(
 			agent.key,
 			"send_email",
@@ -415,6 +425,16 @@ describe("the agent API", () => {
 			).ok,
 		).toBe(true);
 		const to = "disclosed-via-resend@example.org";
+		expect(
+			(
+				await auth("/agents/set-policy", {
+					agentId: agent.id,
+					approval: "never",
+					sendPerDay: 20,
+					allowed: [to],
+				})
+			).status,
+		).toBe(200);
 		const sent = await done<{ id: string; state: string }>(
 			agent.key,
 			"send_email",

@@ -20,9 +20,16 @@ export const MAX_LOGGED_DETAIL = 300;
  */
 export const AGENT_LOG_KINDS = {
 	reads: ["message.read", "code.read", "attachment.read", "mail.searched"],
-	mail: ["message.sent", "message.held", "message.approved", "message.rejected"],
+	mail: ["message.refused", "message.sent", "message.held", "message.approved", "message.rejected"],
 	addresses: ["address.made", "address.ended"],
-	webhooks: ["webhook.made", "webhook.changed", "webhook.deleted", "webhook.tested"],
+	webhooks: [
+		"webhook.refused",
+		"webhook.made",
+		"webhook.hosts-seeded",
+		"webhook.changed",
+		"webhook.deleted",
+		"webhook.tested",
+	],
 	people: [
 		"agent.made",
 		"agent.renamed",
@@ -92,6 +99,10 @@ export function agentLogVerb(entry: Pick<AgentLogEntry, "action" | "detail">): s
 			return "downloaded a file from a message";
 		case "mail.searched":
 			return "searched a mailbox";
+		case "message.refused":
+			return "was refused a send to an unapproved recipient";
+		case "webhook.refused":
+			return "was refused a webhook host";
 		case "message.sent":
 			return "sent a message";
 		case "message.held":
@@ -104,6 +115,8 @@ export function agentLogVerb(entry: Pick<AgentLogEntry, "action" | "detail">): s
 			return "made an address";
 		case "address.ended":
 			return "ended an address";
+		case "webhook.hosts-seeded":
+			return "had its existing webhook hosts added";
 		case "webhook.made":
 			return "made a webhook";
 		case "webhook.changed":
