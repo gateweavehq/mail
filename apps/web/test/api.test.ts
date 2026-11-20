@@ -288,6 +288,16 @@ describe("the agent API", () => {
 		const space = await workspace();
 		const agent = await agentOf(space);
 		const to = "html-links@example.org";
+		expect(
+			(
+				await auth("/agents/set-policy", {
+					agentId: agent.id,
+					approval: "never",
+					sendPerDay: 20,
+					allowed: [to],
+				})
+			).status,
+		).toBe(200);
 		const html =
 			'<p>See <a href="https://example.org/report?year=2026&amp;format=full" title="Annual report">the <strong>full <em>report</em></strong></a> or <a href="https://example.org/help">help</a> for details.</p>';
 		const sent = await done<{ id: string; state: string }>(
