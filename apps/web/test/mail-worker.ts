@@ -170,6 +170,39 @@ export default {
 };
 `;
 
+// Only sender-check tests replace a bucket read. Other keys and all writes still use R2.
+const SENDER_CHECK_MAILBOX = `
+export * from "./index.js";
+export { default } from "./index.js";
+import { Mailbox as BuiltMailbox } from "./index.js";
+
+export class Mailbox extends BuiltMailbox {
+	constructor(ctx, env) {
+		const bucket = env.RAW_MAIL;
+		const raw = new Proxy(bucket, {
+			get(target, name) {
+				if (name === "get") return async (key, options) => {
+					if (options?.range && key === "stalled-original") return new Promise(() => {});
+					if (options?.range && key === "paused-original") {
+						const response = await fetch("https://original.test/paused");
+						return { body: response.body, size: Number(response.headers.get("content-length")) };
+					}
+					return bucket.get(key, options);
+				};
+				const value = target[name];
+				return typeof value === "function" ? value.bind(target) : value;
+			},
+		});
+		super(ctx, { ...env, RAW_MAIL: raw });
+	}
+
+	async fetch() {
+		await this.ctx.storage.setAlarm(Date.now());
+		return new Response();
+	}
+}
+`;
+
 /** Every module of the built Worker. Its migrations are imported as text. */
 function builtModules(): V4ModuleDefinition[] {
 	const modules: V4ModuleDefinition[] = [];
@@ -210,6 +243,8 @@ export async function startMail(
 		settings = {},
 		isolateSettings = [],
 		keptIn,
+		inspectMailboxes = false,
+		senderCheckTests = false,
 	}: {
 		isolates?: number;
 		hosts?: Record<string, (request: Request) => Response | Promise<Response>>;
@@ -222,12 +257,20 @@ export async function startMail(
 		/** Settings that only this copy has, as a deployment's old and new versions would differ. */
 		isolateSettings?: Record<string, string>[];
 		keptIn?: string;
+		inspectMailboxes?: boolean;
+		senderCheckTests?: boolean;
 	} = {},
 ) {
 	const config = JSON.parse(readFileSync(join(serverDir, "wrangler.json"), "utf8")) as BuiltConfig;
 	const outbound: string[] = [];
 	const logs: WorkerLog[] = [];
 	const modules = builtModules();
+	if (senderCheckTests)
+		modules.unshift({
+			type: "ESModule",
+			path: join(serverDir, "sender-check-test.js"),
+			contents: SENDER_CHECK_MAILBOX,
+		});
 	const secret = randomBytes(32).toString("base64url");
 	// Raw mail is sealed, as a deployment with this setting seals it. `settings` may name another.
 	const secretsKey = randomBytes(32).toString("base64");
@@ -236,6 +279,7 @@ export async function startMail(
 	const mf = new Miniflare(
 		convertV4MiniflareOptions({
 			unsafeTriggerHandlers: true,
+			unsafeInspectDurableObjects: inspectMailboxes,
 			...(keptIn ? { resourcePersistencePath: keptIn } : {}),
 			// Keep what the Worker logs for `logs`, and still show it as Miniflare would.
 			handleStructuredLogs: (log) => {
@@ -402,6 +446,17 @@ export async function startMail(
 		db,
 		/** The bucket raw mail goes to, to see what is kept. */
 		bucket,
+		webhooksStorage: (name: string) =>
+			mf.unsafeGetDurableObjectStorage("mail", "Webhooks", { name }),
+		async triggerMailboxAlarm(name: string) {
+			// Miniflare types this proxy as a Request. It forwards to the namespace in workerd.
+			const namespace = (await mf.getDurableObjectNamespace("MAILBOX")) as unknown as {
+				idFromName(name: string): unknown;
+				get(id: unknown): { fetch(url: string): Promise<Response> };
+			};
+			await namespace.get(namespace.idFromName(name)).fetch("https://mailbox.test/alarm");
+		},
+		mailboxStorage: (name: string) => mf.unsafeGetDurableObjectStorage("mail", "Mailbox", { name }),
 		/** The Worker's `BETTER_AUTH_SECRET`, to check what it signs. */
 		secret,
 		/** Runs the Worker's Cron Trigger once, as Cloudflare would, in one copy of the Worker. */

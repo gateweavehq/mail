@@ -203,9 +203,12 @@ export const agentPolicy = sqliteTable("agent_policy", {
 	/**
 	 * Which of its mail waits for a person: `never`, `unlisted` or `always`. Null in a row from
 	 * before there was a choice, which reads as it did then (`readPolicy`): by its list alone, and
-	 * with mail inside the workspace waiting too. Every row written since says one of the three.
+	 * with mail inside the workspace waiting too.
 	 */
 	approval: text("approval"),
+	anyRecipient: integer("any_recipient", { mode: "boolean" }).notNull().default(false),
+	webhookHosts: text("webhook_hosts").notNull().default("[]"),
+	webhookHostsSeeded: integer("webhook_hosts_seeded", { mode: "boolean" }).notNull().default(false),
 	updatedBy: text("updated_by").references(() => user.id, { onDelete: "set null" }),
 	updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
 });

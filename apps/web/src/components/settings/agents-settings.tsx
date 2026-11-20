@@ -30,6 +30,7 @@ import {
 	MAX_AGENT_LIVE_ADDRESSES,
 } from "#/lib/agent-addresses";
 import {
+	type AgentPolicy,
 	type Approval,
 	MAX_AGENT_SEND_PER_DAY,
 	MAX_ALLOWED_ENTRIES,
@@ -375,7 +376,8 @@ function AgentRow({
 }) {
 	const router = useRouter();
 	const { slug } = useWorkspace();
-	const [action, setAction] = useState<"rename" | "sending" | "addresses" | "delete" | null>(null);
+	const [action, setAction] = useState<"rename" | "addresses" | "delete" | null>(null);
+	const [sending, setSending] = useState<AgentPolicy | null>(null);
 	const [revoking, setRevoking] = useState<AgentKeyInfo | null>(null);
 
 	async function newKey() {
@@ -454,7 +456,13 @@ function AgentRow({
 					</DropdownMenuTrigger>
 					<DropdownMenuContent align="end">
 						<DropdownMenuItem onSelect={() => setAction("rename")}>Rename</DropdownMenuItem>
-						<DropdownMenuItem onSelect={() => setAction("sending")}>
+						<DropdownMenuItem
+							onSelect={async () => {
+								const result = await authClient.agents.policy({ query: { agentId: agent.id } });
+								if (result.error) toast.error("Could not read sending settings");
+								else setSending(result.data);
+							}}
+						>
 							<Send />
 							Sending
 						</DropdownMenuItem>
@@ -520,7 +528,9 @@ function AgentRow({
 				</ConfirmDialog>
 			)}
 			{action === "rename" && <RenameAgentDialog agent={agent} onClose={() => setAction(null)} />}
-			{action === "sending" && <PolicyDialog agent={agent} onClose={() => setAction(null)} />}
+			{sending && (
+				<PolicyDialog agent={{ ...agent, policy: sending }} onClose={() => setSending(null)} />
+			)}
 			{action === "addresses" && (
 				<AddressPolicyDialog agent={agent} domains={domains} onClose={() => setAction(null)} />
 			)}
@@ -533,7 +543,7 @@ const APPROVAL_CHOICES: { value: Approval; label: string; help: string }[] = [
 	{
 		value: "never",
 		label: "It sends on its own",
-		help: "Nobody reads its mail first. Its messages a day are what bounds it.",
+		help: "It may write to workspace addresses, allowed recipients and people who wrote to a mailbox it can read.",
 	},
 	{
 		value: "unlisted",
@@ -552,6 +562,8 @@ export function PolicyDialog({ agent, onClose }: { agent: AgentInfo; onClose: ()
 	const router = useRouter();
 	const [perDay, setPerDay] = useState(String(agent.policy.sendPerDay));
 	const [approval, setApproval] = useState<Approval>(agent.policy.approval);
+	const [anyRecipient, setAnyRecipient] = useState(agent.policy.anyRecipient);
+	const [hosts, setHosts] = useState(agent.policy.webhookHosts.join("\n"));
 	const [allowed, setAllowed] = useState(agent.policy.allowed.join("\n"));
 	const [pending, setPending] = useState(false);
 	const [error, setError] = useState<string | null>(null);
@@ -578,7 +590,10 @@ export function PolicyDialog({ agent, onClose }: { agent: AgentInfo; onClose: ()
 			agentId: agent.id,
 			sendPerDay,
 			approval,
+			anyRecipient,
 			allowed: entries,
+			...(!agent.policy.webhookHostsPending &&
+				hosts !== agent.policy.webhookHosts.join("\n") && { webhookHosts: typedAllowed(hosts) }),
 		});
 		setPending(false);
 		if (result.error) {
@@ -596,7 +611,7 @@ export function PolicyDialog({ agent, onClose }: { agent: AgentInfo; onClose: ()
 
 	return (
 		<Dialog open onOpenChange={(open) => !open && !pending && onClose()}>
-			<DialogContent className="max-w-md">
+			<DialogContent className="max-h-[90dvh] overflow-y-auto max-w-md">
 				<DialogHeader>
 					<DialogTitle className="wrap-anywhere">What {agent.name} can send</DialogTitle>
 					<DialogDescription>
@@ -653,7 +668,7 @@ export function PolicyDialog({ agent, onClose }: { agent: AgentInfo; onClose: ()
 						})}
 					</fieldset>
 					<div className="space-y-2">
-						<Label htmlFor="agent-allowed">Goes without approval to</Label>
+						<Label htmlFor="agent-allowed">Allowed addresses and domains</Label>
 						<Textarea
 							id="agent-allowed"
 							value={allowed}
@@ -662,15 +677,42 @@ export function PolicyDialog({ agent, onClose }: { agent: AgentInfo; onClose: ()
 							onChange={(event) => setAllowed(event.target.value)}
 							rows={4}
 							placeholder={"ops@example.com\n@example.com"}
-							aria-describedby="agent-allowed-help agent-allowed-unused"
+							aria-describedby="agent-allowed-help"
 						/>
 						<p id="agent-allowed-help" className="text-xs text-muted-foreground">
-							One a line: an address, or a domain after an @ for anyone there.
+							Enter one address or @domain per line.
 						</p>
-						<p id="agent-allowed-unused" role="status" className="text-xs font-medium">
-							{approval !== "unlisted" && allowed.trim()
-								? "This list is kept but not used: it counts only when you choose “It sends on its own to those listed, and the rest waits” above."
-								: ""}
+					</div>
+					<div className="space-y-2">
+						<Label htmlFor="agent-webhook-hosts">Allowed webhook hosts</Label>
+						<Textarea
+							id="agent-webhook-hosts"
+							value={hosts}
+							disabled={agent.policy.webhookHostsPending}
+							onChange={(event) => setHosts(event.target.value)}
+							rows={2}
+							placeholder="hooks.example.com"
+							aria-describedby="agent-webhook-help"
+						/>
+						<p id="agent-webhook-help" className="text-xs text-muted-foreground">
+							{agent.policy.webhookHostsPending
+								? "Existing webhook hosts couldn't be loaded. Try again in a moment."
+								: "Enter one exact host per line for the agent's webhooks."}
+						</p>
+					</div>
+					<div className="space-y-1">
+						<label className="flex items-center gap-2 text-sm font-medium">
+							<input
+								type="checkbox"
+								checked={anyRecipient}
+								aria-describedby="any-recipient-risk"
+								onChange={(event) => setAnyRecipient(event.target.checked)}
+							/>
+							Allow any recipient and webhook host
+						</label>
+						<p id="any-recipient-risk" className="text-xs text-muted-foreground">
+							A message the agent reads could steer it to send data to anyone. Its approval setting
+							still applies.
 						</p>
 					</div>
 					<p className="text-xs text-muted-foreground">

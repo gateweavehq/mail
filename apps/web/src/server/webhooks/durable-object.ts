@@ -37,6 +37,7 @@ import {
 	secretStart,
 	urlRefusal,
 } from "./signing";
+import { webhookHost, webhookTargets } from "./targets";
 
 /**
  * What a mailbox hands over of mail it stored, or of mail it sends. Header values are as written,
@@ -83,7 +84,12 @@ export interface WebhookLink {
 	origin: string;
 }
 
-export type Refused = { ok: false; status: 400 | 404 | 409; error: string };
+export type Refused = {
+	ok: false;
+	status: 400 | 403 | 404 | 409;
+	error: string;
+	refusedHost?: string;
+};
 
 /**
  * Who asks: an owner or admin, for every webhook of the workspace, or an agent, for its own, with
@@ -202,6 +208,20 @@ const refused = (status: Refused["status"], error: string): Refused => ({
 	error,
 });
 
+/** The exact host must be an allowed domain; a single email address grants no webhook access. */
+function refusedTarget(url: string, targets: string[] | null): Refused | null {
+	if (!URL.canParse(url)) return refused(400, "Enter an http or https URL.");
+	if (targets === null) return null;
+	const host = webhookHost(url);
+	if (targets.includes(host)) return null;
+	return {
+		ok: false,
+		status: 403,
+		refusedHost: host,
+		error: `Webhook host ${host} is not allowed. Ask an owner or admin to add ${host} to the agent's webhook hosts or turn off target restrictions for this agent.`,
+	};
+}
+
 /**
  * A workspace's webhooks, with their secrets, and the deliveries on their way to them. Mailboxes
  * hand it what they stored, from an outbox of their own; it queues one delivery for each webhook
@@ -277,6 +297,8 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 		fields: Fields,
 		asker: Asker,
 	): Promise<{ ok: true; webhook: Webhook; secret: string } | Refused> {
+		const target = refusedTarget(fields.url, await this.#targets(asker));
+		if (target) return target;
 		const refusal = this.#urlRefusal(fields.url, link, asker);
 		if (refusal) return refused(400, refusal);
 		const sql = this.ctx.storage.sql;
@@ -333,17 +355,26 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 		asker: Asker,
 		renew = false,
 	): Promise<{ ok: true; webhook: Webhook; secret: string | null } | Refused> {
-		if (patch.url !== undefined) {
-			const refusal = this.#urlRefusal(patch.url, link, asker);
-			if (refusal) return refused(400, refusal);
-		}
 		const sql = this.ctx.storage.sql;
 		const secret = renew ? newSecret() : null;
 		const stored = secret === null ? null : await this.#stored(id, secret);
+		const changesTarget = (row: WebhookRow) =>
+			(patch.url !== undefined && patch.url !== row.url) || (patch.active === true && !row.active);
+		const before = this.#row(id, asker);
+		if (!before) return refused(404, "No such webhook.");
+		const targets = changesTarget(before) ? await this.#targets(asker) : null;
 		const now = Date.now();
 		return this.ctx.storage.transactionSync(() => {
 			const row = this.#row(id, asker);
 			if (!row) return refused(404, "No such webhook.");
+			if (changesTarget(row)) {
+				const target = refusedTarget(patch.url ?? row.url, targets);
+				if (target) return target;
+			}
+			if (patch.url !== undefined && patch.url !== row.url) {
+				const refusal = this.#urlRefusal(patch.url, link, asker);
+				if (refusal) return refused(400, refusal);
+			}
 			const agents = row.agentMemberId !== null;
 			const redirects =
 				patch.url !== undefined || patch.events !== undefined || patch.mailboxIds !== undefined;
@@ -435,10 +466,13 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 		asker: Asker,
 	): Promise<{ ok: true; agentMemberId: string | null } | Refused> {
 		const sql = this.ctx.storage.sql;
+		const targets = await this.#targets(asker);
 		const now = Date.now();
 		const queued = this.ctx.storage.transactionSync(() => {
 			const row = this.#row(id, asker);
 			if (!row) return refused(404, "No such webhook.");
+			const target = refusedTarget(row.url, targets);
+			if (target) return target;
 			if (row.active !== 1) return refused(409, "Resume the webhook first.");
 			const waiting = sql
 				.exec(
@@ -928,6 +962,30 @@ export class Webhooks extends DurableObject<Cloudflare.Env> {
 		if ("admin" in asker) return urlRefusal(url, link.origin);
 		if (new URL(url).protocol !== "https:") return "Use an https URL.";
 		return urlRefusal(url, this.#meta("origin") ?? link.origin);
+	}
+
+	async #targets(asker: Asker): Promise<string[] | null> {
+		if ("admin" in asker) return null;
+		return this.#policy(asker.agent);
+	}
+
+	/** Lets agent settings incorporate existing URLs before an owner sees or replaces the list. */
+	async seedWebhookHosts(memberId: string): Promise<void> {
+		await this.#policy(memberId);
+	}
+
+	#policy(memberId: string) {
+		const workspaceId = this.ctx.id.name;
+		if (!workspaceId) throw new Error("A webhooks object without a name");
+		return webhookTargets(createDb(this.env.DB), workspaceId, memberId, () =>
+			this.ctx.storage.sql
+				.exec<{ url: string }>(
+					"SELECT url FROM webhook WHERE agent_member_id = ? ORDER BY created_at, id",
+					memberId,
+				)
+				.toArray()
+				.map((row) => row.url),
+		);
 	}
 
 	/** A sealer for this workspace's secrets, or null when the deployment can't seal. */

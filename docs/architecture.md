@@ -776,20 +776,49 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
       own to a list of addresses and domains (`@example.com`, not its subdomains) and the rest
       waits; `always`, all of it waits. `outboxAnswer` (`mailbox/send.ts`) is the one place that
       decides, for `send_email`, `reply` and `send_template` alike (`waitsForApproval`), and no
-      operation of the agent API writes a policy: only `/agents/set-policy`, which takes a
-      person's session, does. **An agent that sends on its own can be made, by a message it
-      reads, to write to anyone, up to its day's count.** That count is the bound, with the
-      workspace's own day, the suppression list, an admin's pause and the agent's log, which
-      records every message it sent with whom it went to; `always` remains for an agent that
-      reads untrusted mail and should not write freely. Mail that stays inside the agent's own
-      workspace never waits, whatever the policy says (`staysInWorkspace`, in `mailbox/direct.ts`):
-      every recipient, To and Cc, is a live address of that workspace, on a domain that workspace
-      holds, by the rule mail straight to a mailbox goes by, below, so DNS must say today what
-      the directory says, and the sender must still be the mailbox's own. Another workspace's
-      address on the same server, an address that ended or was removed, and a domain that only
-      looks like the workspace's all follow the policy, as does any message when D1 or DNS can't
-      say. A paused agent's key sends nothing, so not that either, and what it wrote that waited
-      to be tried again is held like the rest. **A policy from before this** keeps exactly what it
+      operation of the agent API lets an agent choose its policy. An owner or admin saves it at
+      `/agents/set-policy` with a recent sign-in. Under `never`, each To and Cc must be a workspace
+      address, an allowed address or domain, or the From address of mail still held in a mailbox the
+      agent can read, whether or not DMARC passed. A stranger who writes to that mailbox becomes
+      someone the agent may answer. Under `never`, a restricted agent keeps the original To and Cc
+      only when the mailbox records the original as `sent` and its writer is this agent or a person
+      in the workspace. Every other send state, including a missing status, uses the usual target check. Even after the
+      policy tightens, the agent can reply to recipients it previously sent to. A person or the
+      policy allowed that send, and a reply continues the thread. For mail another agent sent,
+      each recipient must pass the usual target check. A mailbox indexes each incoming From. For older
+      mail it checks a matching entry against the original header, since the old listing could
+      shorten an address or omit a second From. After three checks that find the original missing
+      or unreadable, including a seal naming an unknown key when keys are configured, the mailbox
+      drops the hint. Temporary read errors and a server without sealing keys retry with an
+      increasing wait of up to an hour. A send waits up to three seconds for a mailbox's inline
+      check, then decides from the sender records the mailbox has at that point. A pending check can return 503 during the first hour after
+      it was recorded (when the mail arrived, or when the mailbox was upgraded), even if it waits
+      behind another check for the same address and has not been tried yet.
+      After that, checks continue in the background and the unresolved sender counts as unknown.
+      A failed DNS lookup for a workspace target also returns 503. A refused send uses none of the
+      day's count. Its activity entry gives the subject, up to five refused addresses and the
+      remaining count. A reply to proved mail follows Reply-To when present. Unproved mail is
+      answered at From. Under `never`, a recipient on the exact normalized From domain passes
+      when the message is proved. On a shared mail provider this includes other users of that
+      provider. This is accepted because DMARC proves the sender belongs to that domain and
+      anyone copied there already received the sender's message. Other recipients must pass the
+      usual target check. An unknown Cc is dropped and an unknown To refuses the reply.
+      With `anyRecipient`, even unproved Cc
+      skips target checks. A sender can still ask the agent to reply to them with a customer
+      list. The target check does not decide what information may leave. An agent needs the exact
+      host in `webhookHosts` to create, redirect, resume or test a webhook, in every approval mode.
+      The workspace seeds its existing hosts once and records the additions in the agent log. Owners
+      and admins can turn off both target checks for an individual agent with `anyRecipient`.
+      Removing a host from the list leaves delivery to existing webhooks enabled until someone
+      pauses or deletes them. Mail that stays inside the agent's own workspace never waits, whatever
+      the policy says (`staysInWorkspace`, in `mailbox/direct.ts`): every recipient, To and Cc, is a
+      live address of that workspace, on a domain that workspace holds, by the rule mail straight to
+      a mailbox goes by, below, so DNS must say today what the directory says, and the sender must
+      still be the mailbox's own. Another workspace's address on the same server, an address that
+      ended or was removed, and a domain that only looks like the workspace's all follow the policy,
+      as does mail waiting for approval when DNS can't confirm it stays inside. A paused agent's key
+      sends nothing, so not that either, and what it wrote that waited to be tried again is held
+      like the rest. **A policy from before this** keeps exactly what it
       had: a row without `approval`, or an agent without a row, reads by its list alone as it
       did (empty, everything waits; `readPolicy`), and its mail inside the workspace waits like
       the rest (`insideWaits`), until a person saves its policy, which writes one of the three.

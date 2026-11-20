@@ -71,7 +71,7 @@ async function receiver(request: Request): Promise<Response> {
 	return new Response("ok", { status: answers.get(path)?.shift() ?? 200 });
 }
 
-beforeAll(() => world.start({ [RECEIVER]: receiver }));
+beforeAll(() => world.start({ [RECEIVER]: receiver }, true));
 afterAll(() => world.dispose());
 
 /** Every path its own, so each test reads only what was sent to its webhooks. */
@@ -695,12 +695,224 @@ function grant(space: { slug: string; signUps: { id: string } }, memberId: strin
 	});
 }
 
+async function agentWithReceiver(space: Awaited<ReturnType<typeof workspace>>) {
+	const agent = await world.agentOf(space);
+	const set = await world.auth("/agents/set-policy", {
+		agentId: agent.id,
+		approval: "never",
+		sendPerDay: 20,
+		// Independently exercise the refusal to point at Mail even when its host is listed.
+		allowed: [],
+		webhookHosts: [RECEIVER, new URL(origin).hostname],
+	});
+	expect(set.status).toBe(200);
+	return agent;
+}
+
 describe("an agent's own webhooks", () => {
+	it("refuse unlisted hosts on create, URL changes and tests, and log only the host", async () => {
+		const space = await workspace();
+		const agent = await world.agentOf(space);
+		const create = (url: string) =>
+			asAgent<{ webhook: AgentHook }>(agent.key, "POST", "/webhooks", {
+				url,
+				events: ["message.received"],
+			});
+		const set = async (
+			approval: string,
+			allowed: string[],
+			webhookHosts: string[] = [],
+			anyRecipient = false,
+		) =>
+			expect(
+				(
+					await world.auth("/agents/set-policy", {
+						agentId: agent.id,
+						sendPerDay: 20,
+						approval,
+						allowed,
+						webhookHosts,
+						anyRecipient,
+					})
+				).status,
+			).toBe(200);
+		for (const approval of ["never", "unlisted", "always"]) {
+			await set(approval, ["@evil.example", "@example.org"], ["example.org"]);
+			for (const host of ["evil.example", "sub.example.org"]) {
+				const refused = await create(`https://${host}/private?token=hidden`);
+				expect(refused.status).toBe(403);
+				expect(refused.body.error).toContain(`add ${host}`);
+			}
+		}
+		expect((await ownHooks(agent.key)).webhooks).toEqual([]);
+		const disguised = await create("https://example.org:private@evil.example/in");
+		expect(disguised.status).toBe(403);
+		expect(disguised.body.error).toContain("add evil.example");
+		await set("always", [], ["B\u00dcCHER.example."]);
+		const made = await create("https://BÜCHER.example.:8443/in");
+		expect(made.status).toBe(200);
+		const path = `/webhooks/${made.body.webhook.id}`;
+		const changed = await asAgent(agent.key, "PATCH", path, {
+			url: "https://evil.example/private",
+		});
+		expect(changed.status).toBe(403);
+		expect((await ownHooks(agent.key)).webhooks[0]?.url).toBe(made.body.webhook.url);
+		await set("always", []);
+		expect((await asAgent(agent.key, "POST", `${path}/test`, {})).status).toBe(403);
+		expect((await asAgent(agent.key, "PATCH", path, { active: true })).status).toBe(200);
+		expect((await asAgent(agent.key, "PATCH", path, { active: false })).status).toBe(200);
+		expect((await asAgent(agent.key, "PATCH", path, { active: true })).status).toBe(403);
+		const response = await world.mail.fetch(
+			`${origin}/api/agents/${space.slug}/${agent.id}/log?kind=webhooks`,
+			{
+				headers: world.owner.headers,
+			},
+		);
+		const page = (await response.json()) as { entries: { action: string; detail: string }[] };
+		const refused = page.entries.filter((entry) => entry.action === "webhook.refused");
+		expect(refused.map((entry) => entry.detail).sort()).toEqual([
+			...Array<string>(5).fill("evil.example"),
+			...Array<string>(3).fill("sub.example.org"),
+			"xn--bcher-kva.example",
+			"xn--bcher-kva.example",
+		]);
+		expect(JSON.stringify(refused)).not.toContain("private");
+		await set("never", ["@evil.example"], ["evil.example"]);
+		expect((await create("https://evil.example/listed")).status).toBe(200);
+		await set("always", [], [], true);
+		expect((await create("https://evil.example/in")).status).toBe(200);
+	});
+
+	it("answers 400 for malformed webhook URLs on create, update and test", async () => {
+		const space = await workspace();
+		const agent = await agentWithReceiver(space);
+		const url = "https://[";
+		expect(
+			(await asAgent(agent.key, "POST", "/webhooks", { url, events: ["message.received"] })).status,
+		).toBe(400);
+		const made = await agentHook(agent.key, newPath());
+		const path = `/webhooks/${made.webhook.id}`;
+		expect((await asAgent(agent.key, "PATCH", path, { url })).status).toBe(400);
+		const sql = await world.mail.webhooksStorage(space.workspaceId);
+		await sql.exec("UPDATE webhook SET url = ? WHERE id = ?", url, made.webhook.id);
+		expect((await asAgent(agent.key, "POST", `${path}/test`, {})).status).toBe(400);
+	});
+
+	it("seeds only the agent's old hosts once and keeps a full allowed list intact", async () => {
+		const space = await workspace();
+		const agent = await agentWithReceiver(space);
+		const made = await agentHook(agent.key, newPath());
+		await agentHook(agent.key, newPath());
+		await world.auth("/agents/set-policy", {
+			agentId: agent.id,
+			sendPerDay: 20,
+			approval: "never",
+			allowed: [],
+			webhookHosts: ["hooks.example.com"],
+		});
+		await agentHook(agent.key, newPath(), { url: "https://Hooks.example.com.:443/old" });
+		const hosts = [RECEIVER, "hooks.example.com"].sort();
+		const check = () =>
+			asAgent(agent.key, "PATCH", `/webhooks/${made.webhook.id}`, {
+				url: `https://${RECEIVER}/${crypto.randomUUID()}`,
+			});
+		const sql = (statement: string) => world.mail.db.prepare(statement).bind(agent.memberId);
+		const policy = () =>
+			sql(
+				"SELECT allowed, approval, webhook_hosts, webhook_hosts_seeded AS seeded FROM agent_policy WHERE member_id = ?",
+			).first();
+		const logs = () =>
+			sql(
+				"SELECT detail FROM agent_log WHERE action = 'webhook.hosts-seeded' AND agent_member_id = ?",
+			).all<{ detail: string }>();
+		await sql("DELETE FROM agent_policy WHERE member_id = ?").run();
+		expect((await check()).status).toBe(200);
+		expect(await policy()).toMatchObject({ seeded: 1, allowed: "[]", approval: null });
+		expect(JSON.parse(String((await policy())?.webhook_hosts)).sort()).toEqual(hosts);
+		expect(
+			(await logs()).results.map((row: { detail: string }) => row.detail.split(", ").sort()),
+		).toEqual([hosts]);
+		expect((await check()).status).toBe(200);
+		expect((await logs()).results).toHaveLength(1);
+
+		// An older client changes the budget before anyone opens this agent's settings.
+		await sql(
+			"UPDATE agent_policy SET webhook_hosts = '[]', webhook_hosts_seeded = 0 WHERE member_id = ?",
+		).run();
+		const full = Array.from({ length: 100 }, (_, i) => `a${i}@example.com`).sort();
+		const save = await world.auth("/agents/set-policy", {
+			agentId: agent.id,
+			approval: "unlisted",
+			sendPerDay: 7,
+			allowed: full,
+		});
+		expect(save.status).toBe(200);
+		const read = (path: string) =>
+			world.mail.fetch(origin + path, { headers: world.owner.headers });
+		const agents = await read(`/api/auth/agents/list?organizationId=${space.workspaceId}`);
+		expect(await agents.json()).toContainEqual(
+			expect.objectContaining({
+				id: agent.id,
+				policy: expect.objectContaining({ webhookHostsPending: true }),
+			}),
+		);
+		expect(await policy()).toMatchObject({ seeded: 0, webhook_hosts: "[]" });
+		// A transient D1 error leaves seeding pending. The single-agent settings still open.
+		await world.mail.db
+			.prepare(
+				"CREATE TRIGGER seed_unavailable BEFORE INSERT ON agent_log WHEN NEW.action = 'webhook.hosts-seeded' BEGIN SELECT RAISE(ABORT, 'private failure value'); END",
+			)
+			.run();
+		try {
+			const fallback = await read(`/api/auth/agents/policy?agentId=${agent.id}`);
+			expect(fallback.status).toBe(200);
+			expect(await fallback.json()).toMatchObject({
+				webhookHosts: [],
+				webhookHostsPending: true,
+				allowed: full,
+			});
+			const edits = { agentId: agent.id, sendPerDay: 8, approval: "unlisted", allowed: full };
+			expect((await world.auth("/agents/set-policy", { ...edits, webhookHosts: [] })).status).toBe(
+				409,
+			);
+			expect((await world.auth("/agents/set-policy", edits)).status).toBe(200);
+			expect(await policy()).toMatchObject({ seeded: 0 });
+		} finally {
+			await world.mail.db.prepare("DROP TRIGGER seed_unavailable").run();
+		}
+		const settings = await read(`/api/agents/${space.slug}/${agent.id}`);
+		expect(settings.status).toBe(200);
+		expect(await (await read(`/api/auth/agents/policy?agentId=${agent.id}`)).json()).toMatchObject({
+			sendPerDay: 8,
+			webhookHosts: expect.arrayContaining(hosts),
+		});
+		expect(await policy()).toMatchObject({
+			seeded: 1,
+			allowed: JSON.stringify(full),
+			approval: "unlisted",
+		});
+		expect((await check()).status).toBe(200);
+		const key = { authorization: `Bearer ${agent.key}` };
+		expect(
+			(await written(space, key, { to: ["x@hooks.example.com"], subject: "Needs approval" })).state,
+		).toBe("held");
+
+		const remove = await world.auth("/agents/set-policy", {
+			agentId: agent.id,
+			sendPerDay: 7,
+			approval: "never",
+			allowed: [],
+			webhookHosts: ["hooks.example.com"],
+		});
+		expect(remove.status).toBe(200);
+		expect((await check()).status).toBe(403);
+	});
+
 	it("are made, changed, tested and deleted with its key, and only its own", async () => {
 		const space = await workspace();
 		// Each takes the sign-ups mailbox from the one before, which needs none here.
-		const other = await world.agentOf(space);
-		const agent = await world.agentOf(space);
+		const other = await agentWithReceiver(space);
+		const agent = await agentWithReceiver(space);
 		// The workspace's own are its admins', however many an agent has.
 		const theirs = await hook(space.slug, newPath());
 		for (let n = 1; n < 10; n++) await hook(space.slug, newPath());
@@ -796,7 +1008,7 @@ describe("an agent's own webhooks", () => {
 
 	it("tell only of mailboxes the agent may read now, and not of what it did itself", async () => {
 		const space = await workspace();
-		const agent = await world.agentOf(space);
+		const agent = await agentWithReceiver(space);
 		const key = { authorization: `Bearer ${agent.key}` };
 		const path = newPath();
 		const { secret } = await agentHook(agent.key, path, {
@@ -879,7 +1091,7 @@ describe("an agent's own webhooks", () => {
 
 	it("drop a retry once the agent may no longer read its mailbox, and go with the agent", async () => {
 		const space = await workspace();
-		const agent = await world.agentOf(space);
+		const agent = await agentWithReceiver(space);
 		const path = newPath();
 		// The first try fails, so a retry waits.
 		answers.set(path, [500]);
@@ -904,7 +1116,7 @@ describe("an agent's own webhooks", () => {
 
 	it("hear nothing while their agent is paused, retries neither, and hear again once resumed", async () => {
 		const space = await workspace();
-		const agent = await world.agentOf(space);
+		const agent = await agentWithReceiver(space);
 		const path = newPath();
 		// The first try fails, so a retry waits.
 		answers.set(path, [500]);
@@ -933,7 +1145,7 @@ describe("an agent's own webhooks", () => {
 
 	it("go with the key that made them, retries too", async () => {
 		const space = await workspace();
-		const agent = await world.agentOf(space);
+		const agent = await agentWithReceiver(space);
 		const path = newPath();
 		answers.set(path, [500]);
 		const made = await agentHook(agent.key, path);
@@ -949,7 +1161,7 @@ describe("an agent's own webhooks", () => {
 
 	it("are an admin's to pause, resume, test or delete, but not to redirect", async () => {
 		const space = await workspace();
-		const agent = await world.agentOf(space);
+		const agent = await agentWithReceiver(space);
 		const path = newPath();
 		const made = await agentHook(agent.key, path);
 		const id = made.webhook.id;

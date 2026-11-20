@@ -120,7 +120,9 @@ describe("the skill for agents", () => {
 		// The read of its own policy names the three, as the policy has them.
 		expect(OUTPUTS.list_mailboxes.shape.sending.shape.approval.options).toEqual([...APPROVALS]);
 		expect(flat).toContain("`sending.approval`, which of your mail waits for a person");
-		expect(flat).toContain("- `never`: your mail goes at once, to anyone.");
+		expect(flat).toContain(
+			"- `never`: mail goes on its own to workspace addresses, addresses or domains on your allowed list, and From addresses of mail still held in mailboxes you may read.",
+		);
 		expect(flat).toContain(
 			"- `unlisted`: it goes at once only when every recipient, in `to` and `cc`, is in `sending.withoutApproval`.",
 		);

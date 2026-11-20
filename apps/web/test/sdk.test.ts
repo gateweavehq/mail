@@ -72,6 +72,7 @@ describe("the SDK", () => {
 		expect(listed.sending).toEqual({
 			perDay: 20,
 			approval: "unlisted",
+			webhookHosts: [],
 			withoutApproval: ["@example.org"],
 		});
 
@@ -165,6 +166,13 @@ describe("the SDK", () => {
 		const space = await workspace();
 		const agent = await agentOf(space);
 		const mail = clientOf(agent.key);
+		const policy = await auth("/agents/set-policy", {
+			agentId: agent.id,
+			sendPerDay: 20,
+			allowed: [],
+			webhookHosts: [RECEIVER],
+		});
+		expect(policy.status).toBe(200);
 		const made = await mail.createWebhook({
 			url: `https://${RECEIVER}/sdk-hook`,
 			events: ["message.received"],

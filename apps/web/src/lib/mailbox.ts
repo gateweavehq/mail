@@ -167,7 +167,13 @@ export interface OpenedMessage {
 	 * What a reply starts with: who it goes to, its subject, and which of the mailbox's addresses it
 	 * goes from, which is null when the mailbox has none it may send from.
 	 */
-	reply: { to: string[]; cc: string[]; subject: string; from: string | null };
+	reply: {
+		senderDomain?: string | null;
+		to: string[];
+		cc: string[];
+		subject: string;
+		from: string | null;
+	};
 }
 
 /** The most of a query that is sent. Search itself looks at less. */

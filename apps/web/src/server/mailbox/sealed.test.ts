@@ -1,6 +1,9 @@
 import { randomBytes } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
+import { migrate } from "./schema";
 import { RawMail, type RawRef, SEALED_CHUNK, SealError, sealedSize } from "./sealed";
+import { checkOldSenders, nextSenderCheck } from "./sender-index";
+import { nodeStorage } from "./testing";
 
 // Node has no FixedLengthStream. This one counts what passes, as workerd's does.
 class FixedLength extends TransformStream<Uint8Array, Uint8Array> {
@@ -84,6 +87,51 @@ describe("sealed raw mail", () => {
 		expect(stored?.length).toBe(sealedSize(mail.length));
 		expect(text(stored ?? null)).not.toContain("quarterly");
 		expect(text(await raw.bytes(ref))).toBe(mail);
+	});
+
+	it("keeps the sender check pending until the sealing key is restored", async () => {
+		const { bucket } = memoryBucket();
+		const raw = new RawMail(bucket, { SECRETS_KEY: KEY });
+		const mail = "From: writer@example.org\r\n\r\nHello";
+		const ref = { object: "original", seal: await raw.newSeal(), size: mail.length };
+		await raw.put(ref, mail);
+		const { db, storage } = nodeStorage();
+		migrate(storage);
+		db.prepare(
+			"INSERT INTO message (id,state,delivery_key,object,seal,size,arrived_at,envelope_from,envelope_to,sender_check_at) VALUES ('old','stored','key',?,?,?,1,'from','to',0)",
+		).run(ref.object, ref.seal, ref.size);
+		const check = (reader: RawMail, now: number) =>
+			checkOldSenders(storage, async (row) => (await reader.get(row))?.body ?? null, now);
+		let now = 0;
+		for (let attempt = 0; attempt < 8; attempt++) {
+			await check(new RawMail(bucket, {}), now);
+			const next = nextSenderCheck(storage.sql);
+			expect(next).toBeGreaterThan(now);
+			now = next ?? 0;
+		}
+		await check(raw, now);
+		expect(
+			db.prepare("SELECT sender_address, sender_attempts, sender_check_at FROM message").get(),
+		).toEqual({ sender_address: "writer@example.org", sender_attempts: 0, sender_check_at: null });
+	});
+
+	it("gives up on a sender after three tries with a retired sealing key", async () => {
+		const { bucket, ref } = await sealedMail(32);
+		const reader = new RawMail(bucket, { SECRETS_KEY: randomBytes(32).toString("base64") });
+		const { db, storage } = nodeStorage();
+		migrate(storage);
+		db.prepare(
+			"INSERT INTO message (id,state,delivery_key,object,seal,size,arrived_at,envelope_from,envelope_to,sender_check_at) VALUES ('old','stored','key',?,?,?,1,'from','to',0)",
+		).run(ref.object, ref.seal, ref.size);
+		for (const now of [0, 60_000, 120_000]) {
+			expect(nextSenderCheck(storage.sql)).toBe(now);
+			await checkOldSenders(storage, async (row) => (await reader.get(row))?.body ?? null, now);
+		}
+		expect(nextSenderCheck(storage.sql)).toBeNull();
+		expect(db.prepare("SELECT sender_address, sender_attempts FROM message").get()).toEqual({
+			sender_address: null,
+			sender_attempts: 3,
+		});
 	});
 
 	it("reads mail of any size, across the chunks' edges", async () => {

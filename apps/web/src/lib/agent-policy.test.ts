@@ -5,12 +5,32 @@ import {
 	DEFAULT_AGENT_POLICY,
 	goesWithoutApproval,
 	isAllowedRecipient,
+	MAX_ALLOWED_ENTRIES,
 	NEW_AGENT_POLICY,
 	policySummary,
 	readAllowed,
 	readPolicy,
+	WebhookHost,
 	waitsForApproval,
 } from "./agent-policy";
+
+import { MAX_AGENT_WEBHOOKS, MAX_WEBHOOKS } from "./webhooks";
+
+it("has room to seed every webhook and takes only exact hosts", () => {
+	expect(MAX_WEBHOOKS).toBeLessThanOrEqual(MAX_ALLOWED_ENTRIES);
+	expect(MAX_AGENT_WEBHOOKS).toBeLessThanOrEqual(MAX_ALLOWED_ENTRIES);
+	expect(WebhookHost.parse("B\u00dcCHER.example.")).toBe("xn--bcher-kva.example");
+	for (const entry of ["@example.org", "*.example.org", "example.org/path", "example.org:443"]) {
+		expect(WebhookHost.safeParse(entry).success).toBe(false);
+	}
+	expect(
+		AgentPolicyInput.safeParse({
+			sendPerDay: 1,
+			allowed: [],
+			webhookHosts: Array(101).fill("example.org"),
+		}).success,
+	).toBe(false);
+});
 
 describe("isAllowedRecipient", () => {
 	const allowed = ["ops@example.org", "@acme.test"];
@@ -53,17 +73,25 @@ describe("AllowedEntry", () => {
 	it("reads addresses and domains in lower case", () => {
 		expect(AllowedEntry.parse(" Ops@Example.org ")).toBe("ops@example.org");
 		expect(AllowedEntry.parse("@Acme.Test")).toBe("@acme.test");
+		expect(AllowedEntry.parse("@local")).toBe("@local");
+		expect(AllowedEntry.parse("@[::1]")).toBe("@[::1]");
+	});
+
+	it("normalises international domains and refuses URL syntax in a mail domain", () => {
+		expect(AllowedEntry.parse("Ops@B\u00dcCHER.example.")).toBe("ops@xn--bcher-kva.example");
+		expect(isAllowedRecipient("Ops@B\u00dcCHER.example.", ["@xn--bcher-kva.example"])).toBe(true);
+		for (const domain of [
+			"example.org/path",
+			"example.org:443",
+			"example.org%2f",
+			"evil@example.org",
+		]) {
+			expect(AllowedEntry.safeParse(`ops@${domain}`).success).toBe(false);
+		}
 	});
 
 	it("refuses what is neither", () => {
-		for (const entry of [
-			"acme.test",
-			"@",
-			"@acme",
-			"a@acme.test,b@acme.test",
-			"@*.acme.test",
-			"a@b",
-		]) {
+		for (const entry of ["acme.test", "@", "a@acme.test,b@acme.test", "@*.acme.test", "a@b"]) {
 			expect(AllowedEntry.safeParse(entry).success).toBe(false);
 		}
 	});
@@ -82,7 +110,14 @@ describe("a policy from before there was a choice", () => {
 	// MAIL-58, R2: a row as it was stored then has no `approval`, and an agent may have no row.
 	it("with an empty list has everything wait, mail inside the workspace too", () => {
 		const policy = readPolicy({ sendPerDay: 7, allowed: "[]", approval: null });
-		expect(policy).toEqual({ sendPerDay: 7, approval: "always", allowed: [], insideWaits: true });
+		expect(policy).toEqual({
+			sendPerDay: 7,
+			approval: "always",
+			allowed: [],
+			webhookHosts: [],
+			anyRecipient: false,
+			insideWaits: true,
+		});
 		expect(waitsForApproval(policy, ["a@acme.test"])).toBe(true);
 	});
 
@@ -97,6 +132,8 @@ describe("a policy from before there was a choice", () => {
 		expect(DEFAULT_AGENT_POLICY).toEqual({
 			sendPerDay: 20,
 			approval: "always",
+			webhookHosts: [],
+			anyRecipient: false,
 			allowed: [],
 			insideWaits: true,
 		});
@@ -111,6 +148,8 @@ describe("a policy that says which mail waits", () => {
 		expect(NEW_AGENT_POLICY).toEqual({
 			sendPerDay: 20,
 			approval: "never",
+			webhookHosts: [],
+			anyRecipient: false,
 			allowed: [],
 			insideWaits: false,
 		});

@@ -365,6 +365,24 @@ async function rest(key: string, method: string, path: string, data: object = {}
 const SAMPLE = { product: "Gateweave", first_name: "Ann", code: "4821" };
 
 describe("sending a template as an agent", () => {
+	it("refuses a rendered template to an unknown recipient under never", async () => {
+		const space = await workspace();
+		const agent = await agentOf(space);
+		await save(space, WELCOME);
+		const answer = await rest(
+			agent.key,
+			"POST",
+			`/mailboxes/${space.signUps.id}/template-messages`,
+			{
+				template: "Welcome",
+				values: SAMPLE,
+				to: ["elsewhere@example.net"],
+			},
+		);
+		expect(answer.status).toBe(403);
+		expect(answer.body.error).toContain("elsewhere@example.net");
+	});
+
 	it("R6: lists templates and sends the rendered message with the agent disclosure", {
 		timeout: 60_000,
 	}, async () => {

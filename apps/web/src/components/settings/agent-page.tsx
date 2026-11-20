@@ -103,9 +103,26 @@ export function AgentPage({ activity, log }: { activity: AgentActivity; log: Age
 							went to.
 						</li>
 					</ul>
+					<dl className="space-y-1">
+						{agent.policy.approval !== "always" && (
+							<div>
+								<dt className="font-medium">Allowed addresses and domains</dt>
+								<dd className="wrap-anywhere">{agent.policy.allowed.join(", ") || "None"}</dd>
+							</div>
+						)}
+						<div>
+							<dt className="font-medium">Allowed webhook hosts</dt>
+							<dd className="wrap-anywhere">
+								{agent.policy.webhookHostsPending
+									? "Not loaded yet"
+									: agent.policy.webhookHosts.join(", ") || "None"}
+							</dd>
+						</div>
+					</dl>
 					<p>
-						An agent that sends on its own can be made, by a message it reads, to write to anyone,
-						up to its messages a day. Have everything wait for one that reads mail from strangers.
+						{agent.policy.anyRecipient
+							? "This agent may choose any recipient and webhook host."
+							: "When sending on its own under Never, this agent can write to workspace addresses, allowed recipients and senders in mailboxes it can read. A sender can still ask the agent to reply with sensitive information."}
 					</p>
 				</div>
 				{changing && <PolicyDialog agent={agent} onClose={() => setChanging(false)} />}

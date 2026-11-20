@@ -1019,6 +1019,7 @@ describe("an agent", () => {
 		const agent = await makeAgent(box);
 		const person = await join(box.workspaceId);
 		const recipient = `ada.${box.slug}@example.org`;
+		await everythingWaits(agent);
 		// Only someone given the mailbox can be let send from it.
 		expect((await letSend(box, [], [agent.memberId])).status).toBe(400);
 		expect((await letSend(box, [agent.memberId], [])).status).toBe(200);
@@ -1211,6 +1212,8 @@ describe("an agent", () => {
 			approval: "unlisted",
 			allowed: ["@acme.test", "b@acme.test"],
 			insideWaits: false,
+			webhookHosts: [],
+			anyRecipient: false,
 		};
 		expect(await saved.json()).toEqual({ id: agent.id, policy: stored });
 		const listed = await mail.fetch(

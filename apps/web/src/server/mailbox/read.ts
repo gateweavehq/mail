@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, ne } from "drizzle-orm";
 import PostalMime from "postal-mime";
+import { normalTarget } from "../../lib/agent-policy";
 import type { Delivery } from "../../lib/delivery";
 import type {
 	ListedMessage,
@@ -13,7 +14,7 @@ import type {
 	ThreadsPage,
 } from "../../lib/mailbox";
 import { MAX_QUERY_SENT } from "../../lib/mailbox";
-import { keptContext, type SendStatus } from "../../lib/outbox";
+import { isAddress, keptContext, MAX_RECIPIENTS, type SendStatus } from "../../lib/outbox";
 import { canReadMailbox, isAdminRole } from "../../lib/roles";
 import { type Caller, currentCaller, currentMember } from "../access";
 import { noteAgent } from "../agent-log";
@@ -26,7 +27,7 @@ import type { StoredSummary } from "./durable-object";
 import { cleanHtml, framePolicy, MAX_SHOWN_HTML, mayLoadImages } from "./html";
 import { allowsImages } from "./image-senders";
 import { mailboxStub } from "./index";
-import { decoded, people, sender } from "./people";
+import { decoded, people, receivedFrom, sender } from "./people";
 import { rawMail, SealError } from "./sealed";
 import { envelopeAddresses, replySender, senderAddresses } from "./senders";
 import { textOfHtml } from "./text";
@@ -88,6 +89,26 @@ async function signedIn(slug: string): Promise<Caller | null> {
 
 /** An open mailbox, as `openMailbox` gives it. */
 type OpenMailbox = NonNullable<Awaited<ReturnType<typeof openMailbox>>>;
+
+/** The other mailboxes this agent can read, from its current grants in the opened workspace. */
+export async function otherGrantedMailboxes(box: OpenMailbox) {
+	const { memberId, workspaceId, role } = box.member.membership;
+	const { mailbox, mailboxAccess } = schema;
+	const grants = await db
+		.select({ id: mailbox.id, everyone: mailbox.everyone })
+		.from(mailboxAccess)
+		.innerJoin(mailbox, eq(mailbox.id, mailboxAccess.mailboxId))
+		.where(
+			and(
+				eq(mailbox.organizationId, workspaceId),
+				eq(mailboxAccess.memberId, memberId),
+				ne(mailbox.id, box.id),
+			),
+		);
+	return grants
+		.filter(({ everyone }) => canReadMailbox(role, { everyone, granted: true }))
+		.map(({ id }) => id);
+}
 
 /**
  * The names of those who sent these messages from the mailbox, or approved them, by membership,
@@ -364,11 +385,40 @@ async function readMessage(
 	const cc = people(email.cc);
 	// A reply goes where the message asks, or to whoever wrote it. One to a message the mailbox
 	// sent goes to those it went to, as another word to them.
+	const mayRedirect = !box.member.keyed || row.verifiedDomain !== null;
 	const answerTo = sent
 		? to
-		: people(email.replyTo).length > 0
+		: mayRedirect && people(email.replyTo).length > 0
 			? people(email.replyTo)
 			: people(email.from ? [email.from] : []);
+	const replyTo = answerTo.map((person) => person.address).filter(Boolean);
+	const copied = cc.map((person) => person.address).filter(Boolean);
+	// Take the domain from the original. The listing may have shortened the From header.
+	const fromHeaders = email.headers.filter(
+		(header) => header.key.replace(/[^a-z]/g, "") === "from",
+	);
+	const [field] = fromHeaders;
+	const originalFrom =
+		fromHeaders.length === 1 && field?.key === "from" ? receivedFrom(field.value) : null;
+	// A copied address cannot prevent a reply by repeating the sender or naming malformed addresses.
+	// The outbox checks the remaining candidates against the agent's current policy and mailboxes.
+	const recipients = new Set(replyTo.map(normalTarget));
+	const replyCc = sent
+		? copied.filter((address) => {
+				const target = normalTarget(address);
+				if (target === null) return isAddress(address);
+				if (recipients.has(target) || (!box.member.keyed && !isAddress(address))) return false;
+				recipients.add(target);
+				return true;
+			})
+		: box.member.keyed
+			? [...new Set(copied.map(normalTarget))]
+					.filter(
+						(address): address is string =>
+							address !== null && isAddress(address) && !recipients.has(address),
+					)
+					.slice(0, Math.max(0, MAX_RECIPIENTS - replyTo.length))
+			: [];
 	const remoteImages = email.html ? mayLoadImages(email.html) : false;
 	// By the domain the message was proved to come from, and for a person: a key reads no HTML.
 	const imagesAllowed =
@@ -404,8 +454,11 @@ async function readMessage(
 		})),
 		sent,
 		reply: {
-			to: answerTo.map((person) => person.address).filter(Boolean),
-			cc: sent ? cc.map((person) => person.address).filter(Boolean) : [],
+			...(box.member.keyed && {
+				senderDomain: originalFrom?.slice(originalFrom.lastIndexOf("@") + 1) ?? null,
+			}),
+			to: replyTo,
+			cc: replyCc,
 			subject: replySubject(decoded(row.subject)),
 			from: replySender(
 				envelopeAddresses(row),

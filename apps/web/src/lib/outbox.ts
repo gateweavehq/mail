@@ -314,3 +314,7 @@ export function quoted(text: string, said: string): string {
 	// Leave room for what the reply says above it.
 	return `\n\n${plain}\n${quote}`.slice(0, MAX_TEXT - 10_000);
 }
+
+/** A legacy mailbox is still checking original From headers for this agent's recipients. */
+export const SENDER_CHECK_PENDING =
+	"Mail could not finish checking this agent's recipients. Try sending again shortly.";

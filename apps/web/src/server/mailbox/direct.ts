@@ -51,13 +51,16 @@ export async function isOwnSender(db: Database, sender: Sender, now: Date): Prom
  * it goes to is a live one here, and DNS says today that their domains are held as the directory
  * says (`heldToday`). Throws when D1 doesn't say.
  */
-export const goesDirectly = (
+export const goesDirectly = async (
 	db: Database,
 	lookUp: LookUpDomain,
 	sender: Sender,
 	recipients: string[],
 	now: Date,
-): Promise<boolean> => allHere(db, lookUp, sender, recipients, now, false);
+): Promise<boolean> =>
+	recipients.length > 0 &&
+	(await localRecipients(db, lookUp, sender, recipients, now, false, true)).length ===
+		recipients.length;
 
 /**
  * Whether a message stays inside its sender's workspace: what `goesDirectly` asks, and every address
@@ -66,50 +69,75 @@ export const goesDirectly = (
  * address on this server is outside, as is one that has ended or been removed, and a domain that
  * only looks like the workspace's is found in no directory. Throws when D1 doesn't say.
  */
-export const staysInWorkspace = (
+export const staysInWorkspace = async (
 	db: Database,
 	lookUp: LookUpDomain,
 	sender: Sender,
 	recipients: string[],
 	now: Date,
-): Promise<boolean> => allHere(db, lookUp, sender, recipients, now, true);
+): Promise<boolean> =>
+	recipients.length > 0 &&
+	(await localRecipients(db, lookUp, sender, recipients, now, true, true)).length ===
+		recipients.length;
 
-async function allHere(
+/** Individual destinations that stay in the workspace, including on a message also going outside. */
+export const workspaceRecipients = (
+	db: Database,
+	lookUp: LookUpDomain,
+	sender: Sender,
+	recipients: string[],
+	now: Date,
+	pending: Set<string>,
+) => localRecipients(db, lookUp, sender, recipients, now, true, false, pending);
+
+async function localRecipients(
 	db: Database,
 	lookUp: LookUpDomain,
 	sender: Sender,
 	recipients: string[],
 	now: Date,
 	inside: boolean,
-): Promise<boolean> {
-	if (recipients.length === 0 || !(await isOwnSender(db, sender, now))) return false;
+	all: boolean,
+	pending?: Set<string>,
+): Promise<string[]> {
+	if (recipients.length === 0 || !(await isOwnSender(db, sender, now))) return [];
 	const found = await Promise.all(recipients.map((recipient) => findAddress(db, recipient, now)));
-	if (!found.every((one) => one && (!inside || one.workspaceId === sender.workspaceId))) {
-		return false;
-	}
+	const local = recipients.filter((_, index) => {
+		const one = found[index];
+		return one && (!inside || one.workspaceId === sender.workspaceId);
+	});
+	if (!local.length || (all && local.length !== recipients.length)) return [];
 	const senderDomain = domainOf(sender.address);
-	const receiving = new Set(recipients.map(domainOf));
+	const receiving = new Set(local.map(domainOf));
 	const holders = await domainHolders(db, [senderDomain, ...receiving]);
-	const checks = [...new Set([senderDomain, ...receiving])].map(async (domain) => {
+	async function held(domain: string, receives: boolean) {
 		const holder = holders.get(domain);
-		if (!holder) return false;
-		// The sender's domain must still be the sending workspace's, and, for mail that is to stay
-		// inside it, so must every domain it goes to.
-		if ((inside || domain === senderDomain) && holder.workspaceId !== sender.workspaceId) {
+		if (
+			!holder ||
+			((inside || domain === senderDomain) && holder.workspaceId !== sender.workspaceId)
+		) {
 			return false;
 		}
-		return heldToday(holder, await recordsOf(lookUp, domain, now), receiving.has(domain));
-	});
-	try {
-		return (await Promise.all(checks)).every(Boolean);
-	} catch (error) {
-		// DNS couldn't say, which is no answer either way: the provider takes it, and an agent's
-		// policy decides whether it waits.
-		console.error("mailbox: DNS couldn't say whether mail can go straight to a mailbox here", {
-			name: error instanceof Error ? error.name : "unknown",
-		});
-		return false;
+		try {
+			return heldToday(holder, await recordsOf(lookUp, domain, now), receives);
+		} catch (error) {
+			console.error("mailbox: DNS couldn't say whether mail can go straight to a mailbox here", {
+				name: error instanceof Error ? error.name : "unknown",
+			});
+			for (const address of local) {
+				if (!receives || domainOf(address) === domain) pending?.add(address);
+			}
+			return false;
+		}
 	}
+	if (!(await held(senderDomain, false))) return [];
+	const domains = new Set<string>();
+	await Promise.all(
+		[...receiving].map(async (domain) => {
+			if (await held(domain, true)) domains.add(domain);
+		}),
+	);
+	return local.filter((address) => domains.has(domainOf(address)));
 }
 
 /**

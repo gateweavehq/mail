@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createWorkspace, signUp } from "./accounts";
+import { fromCloudflare } from "./agent-world";
 import { type SentEmail, startMail } from "./mail-worker";
 
 // Which of an agent's mail waits for a person (MAIL-58): a new agent sends on its own, an owner or
@@ -66,6 +67,7 @@ async function receiver(request: Request): Promise<Response> {
 
 type Mail = Awaited<ReturnType<typeof startMail>>;
 
+let originalRead: (() => Promise<Response>) | undefined;
 let mail: Mail;
 let owner: Awaited<ReturnType<typeof signUp>>;
 let counter = 0;
@@ -85,6 +87,8 @@ interface Policy {
 	approval: Approval;
 	allowed: string[];
 	insideWaits: boolean;
+	anyRecipient: boolean;
+	webhookHosts: string[];
 }
 
 async function directory(slug: string, action?: unknown) {
@@ -299,7 +303,16 @@ async function logOf(agent: Agent) {
 
 beforeAll(async () => {
 	mail = await startMail(origin, {
-		hosts: { "cloudflare-dns.com": dns, [RECEIVER]: receiver },
+		inspectMailboxes: true,
+		senderCheckTests: true,
+		hosts: {
+			"cloudflare-dns.com": dns,
+			[RECEIVER]: receiver,
+			"original.test": () => {
+				if (!originalRead) throw new Error("Unexpected read of a paused original");
+				return originalRead();
+			},
+		},
 		settings: { MAILBOX_BYTES: String(MAILBOX_BYTES), SEND_PER_DAY: String(SEND_PER_DAY) },
 	});
 	owner = await signUp(mail, origin, "Owner");
@@ -309,11 +322,635 @@ afterAll(async () => {
 	await mail?.dispose();
 });
 
+/** A received message kept by a mailbox, with the headers the receiving provider adds. */
+async function receive(
+	box: Box,
+	from: string,
+	headers: string[] = [],
+	verdict = "none",
+	to = box.address,
+) {
+	const subject = `Inbound ${++counter}`;
+	const raw = [
+		...fromCloudflare(from.split("@")[1] ?? "", verdict),
+		`From: Customer <${from}>`,
+		`To: ${to}`,
+		`Subject: ${subject}`,
+		`Message-ID: <${counter}@example.com>`,
+		...headers,
+		"",
+		"Customer correspondence.",
+	].join("\r\n");
+	expect((await mail.deliver("relay@example.org", box.address, raw)).status).toBe(200);
+	const received = (await messages(box)).find((message) => message.subject === subject);
+	if (!received) throw new Error("Expected the received message");
+	return received.id;
+}
+
+describe("where an agent may send on its own", () => {
+	it("holds sends during the first hour of a clipped From check, then logs definitive refusals", async () => {
+		const space = await workspace();
+		const agent = await agentOf(space);
+		const writer = "writer@example.org";
+		const other = "unrelated@example.org";
+		const id = await receive(space.desk, writer);
+		const sql = await mail.mailboxStorage(space.desk.id);
+		const now = Date.now();
+		await sql.exec(
+			"UPDATE message SET sender_address = NULL, sender_check_at = ?, sender_check_started = ? WHERE id = ?",
+			now + 60_000,
+			now - 59 * 60_000,
+			id,
+		);
+		for (const target of [writer, other]) {
+			const pending = await agentSends(space, agent, [target]);
+			expect(pending.status).toBe(503);
+			expect(await pending.json()).toMatchObject({
+				error: "Mail could not finish checking this agent's recipients. Try sending again shortly.",
+			});
+		}
+		expect(await logOf(agent)).toEqual([]);
+		await sql.exec("UPDATE message SET sender_check_started = ? WHERE id = ?", now - 3_600_000, id);
+		for (const target of [writer, other]) {
+			expect((await agentSends(space, agent, [target])).status).toBe(403);
+		}
+		expect(await logOf(agent)).toEqual(
+			[writer, other].map((detail) => ({ action: "message.refused", detail })),
+		);
+		await sql.exec("UPDATE message SET sender_check_at = 0 WHERE id = ?", id);
+		expect(await stateOf(space, agent, [writer])).toBe("sent");
+	});
+
+	it("answers a send while R2 is still reading the candidate's original", async () => {
+		const space = await workspace();
+		const agent = await agentOf(space);
+		const address = "stalled@example.org";
+		const id = await receive(space.desk, address);
+		const sql = await mail.mailboxStorage(space.desk.id);
+		await sql.exec(
+			"UPDATE message SET object = 'stalled-original', seal = NULL, sender_check_at = -1, sender_check_started = ? WHERE id = ?",
+			Date.now(),
+			id,
+		);
+		const start = Date.now();
+		const pending = await agentSends(space, agent, [address]);
+		expect(Date.now() - start).toBeLessThan(5000);
+		expect(pending.status).toBe(503);
+		expect(await pending.json()).toMatchObject({
+			error: "Mail could not finish checking this agent's recipients. Try sending again shortly.",
+		});
+		expect(
+			(
+				await sql.exec<{ due: number }>(
+					"SELECT sender_check_at AS due FROM message WHERE id = ?",
+					id,
+				)
+			)[0]?.due,
+		).toBeGreaterThan(start);
+	});
+
+	it("holds a send when a confirmed From disappears while another original is open", async () => {
+		const space = await workspace();
+		const agent = await agentOf(space);
+		const a = "first-writer@example.org";
+		const b = "second-writer@example.org";
+		const confirmed = await receive(space.desk, a);
+		const hint = await receive(space.desk, a);
+		const checking = await receive(space.desk, b);
+		const sql = await mail.mailboxStorage(space.desk.id);
+		await sql.exec(
+			"UPDATE message SET sender_check_at = ?, sender_check_started = ? WHERE id = ?",
+			Date.now() + 60_000,
+			Date.now(),
+			hint,
+		);
+		await sql.exec(
+			"UPDATE message SET object = 'paused-original', seal = NULL, sender_check_at = -1, sender_check_started = ? WHERE id = ?",
+			Date.now(),
+			checking,
+		);
+		let deleted: number | undefined;
+		originalRead = async () => {
+			deleted = (
+				await mail.fetch(`${origin}/api/mail/${space.slug}/${space.desk.id}/${confirmed}`, {
+					method: "DELETE",
+					headers: { ...owner.headers, origin },
+				})
+			).status;
+			return new Response(`From: ${b}\r\n\r\n`);
+		};
+		try {
+			const result = await agentSends(space, agent, [a, b]);
+			expect(deleted).toBe(200);
+			expect(result.status).toBe(503);
+			expect(
+				await sql.exec(
+					"SELECT sender_address, sender_check_at FROM message WHERE id = ?",
+					checking,
+				),
+			).toEqual([{ sender_address: b, sender_check_at: null }]);
+		} finally {
+			originalRead = undefined;
+		}
+	});
+
+	it("stops checking a missing original after three alarm attempts and refuses the recipient", async () => {
+		const space = await workspace();
+		const agent = await agentOf(space);
+		const id = await receive(space.desk, "missing@example.org");
+		const sql = await mail.mailboxStorage(space.desk.id);
+		const [row] = await sql.exec<{ object: string }>("SELECT object FROM message WHERE id = ?", id);
+		if (!row) throw new Error("Expected the stored original");
+		await mail.bucket.delete(row.object);
+		const send = () => agentSends(space, agent, ["unknown@example.org"]);
+		for (let attempt = 1; attempt <= 3; attempt++) {
+			await sql.exec(
+				"UPDATE message SET sender_address = NULL, sender_check_at = ?, sender_check_started = coalesce(sender_check_started, ?) WHERE id = ?",
+				Date.now() + 3_600_000,
+				Date.now(),
+				id,
+			);
+			expect((await send()).status).toBe(503);
+			await sql.exec("UPDATE message SET sender_check_at = 0 WHERE id = ?", id);
+			await mail.triggerMailboxAlarm(space.desk.id);
+			await expect
+				.poll(
+					async () =>
+						(await sql.exec("SELECT sender_attempts FROM message WHERE id = ?", id))[0]
+							?.sender_attempts,
+				)
+				.toBe(attempt);
+		}
+		await expect
+			.poll(() => sql.exec("SELECT sender_address, sender_check_at FROM message WHERE id = ?", id))
+			.toEqual([{ sender_address: null, sender_check_at: null }]);
+		expect((await send()).status).toBe(403);
+		expect(await logOf(agent)).toEqual([
+			{ action: "message.refused", detail: "unknown@example.org" },
+		]);
+	});
+
+	it("normalizes an IDN, case and a trailing dot against a received From on send_email", async () => {
+		const space = await workspace();
+		const agent = await agentOf(space);
+		await receive(space.desk, "customer@xn--exmple-cua.com");
+		const response = await api(agent, "POST", `/mailboxes/${space.desk.id}/messages`, {
+			to: ["Customer@Ex\u00e4mple.com."],
+			subject: "Update",
+			text: "Shipped.",
+		});
+		expect(await response.json()).toMatchObject({ state: "sent" });
+		expect(await sentTo("customer@xn--exmple-cua.com")).toHaveLength(1);
+	});
+
+	it("logs only the first five refused recipients and answers with all seven", async () => {
+		const space = await workspace();
+		const agent = await agentOf(space);
+		const to = Array.from({ length: 7 }, (_, i) => `unknown${i}@example.net`);
+		const response = await agentSends(space, agent, to);
+		expect(response.status).toBe(403);
+		expect(((await response.json()) as { error: string }).error).toContain(to.join(", "));
+		expect(await logOf(agent)).toEqual([
+			{ action: "message.refused", detail: `${to.slice(0, 5).join(", ")} and 2 more` },
+		]);
+	});
+
+	it("retries a failed DNS lookup before storing, refusing or counting a workspace send", async () => {
+		const space = await workspace();
+		const agent = await agentOf(space);
+		const billing = await space.mailbox("billing");
+		await saved(agent, { approval: "never", sendPerDay: 1 });
+		unanswered.add(space.domain);
+		const send = () =>
+			api(agent, "POST", `/mailboxes/${space.desk.id}/messages`, {
+				to: [billing.address],
+				subject: "Update",
+				text: "Ready.",
+			});
+		try {
+			expect((await send()).status).toBe(503);
+			expect(await messages(space.desk)).toEqual([]);
+			expect(await messages(billing)).toEqual([]);
+			expect(await sentTo(billing.address)).toEqual([]);
+			expect(await logOf(agent)).toEqual([]);
+		} finally {
+			unanswered.delete(space.domain);
+		}
+		expect(await (await send()).json()).toMatchObject({ state: "sent" });
+	});
+
+	it("accepts a local recipient known to another readable mailbox while DNS is down", async () => {
+		const space = await workspace();
+		const agent = await agentOf(space);
+		const billing = await space.mailbox("billing");
+		await directory(space.slug, {
+			action: "set-mailbox-access",
+			mailboxId: billing.id,
+			everyone: false,
+			memberIds: [agent.memberId],
+			senderIds: [],
+		});
+		await receive(billing, billing.address);
+		await receive(billing, "external@sender.test");
+		unanswered.add(space.domain);
+		try {
+			expect(await stateOf(space, agent, [billing.address, "external@sender.test"])).toBe("sent");
+			expect(
+				(await agentSends(space, agent, [billing.address, "unknown@foreign.test"])).status,
+			).toBe(403);
+		} finally {
+			unanswered.delete(space.domain);
+		}
+	});
+
+	it("refuses and logs a reply to another agent's outside recipient", async () => {
+		const space = await workspace();
+		const other = await agentOf(space);
+		const to = "x@evil.test";
+		await saved(other, { approval: "never", anyRecipient: true });
+		const first = (await (await agentSends(space, other, [to], ["copy@evil.test"])).json()) as Sent;
+		const agent = await agentOf(space);
+		const reply = () =>
+			api(agent, "POST", `/mailboxes/${space.desk.id}/messages/${first.id}/reply`, {
+				text: "Received.",
+			});
+		expect((await reply()).status).toBe(403);
+		expect(await logOf(agent)).toEqual([{ action: "message.refused", detail: to }]);
+		await saved(agent, { approval: "never", allowed: [to] });
+		expect(await (await reply()).json()).toMatchObject({ state: "sent" });
+		expect(await sentTo("copy@evil.test")).toHaveLength(1);
+	});
+
+	it("keeps a person's outside recipient on a reply", async () => {
+		const space = await workspace();
+		const agent = await agentOf(space);
+		const to = "x@evil.test";
+		const written = await mail.fetch(`${origin}/api/mail/${space.slug}/${space.desk.id}/outbox`, {
+			method: "POST",
+			headers: { ...owner.headers, origin, "content-type": "application/json" },
+			body: JSON.stringify({
+				action: "send",
+				draft: crypto.randomUUID(),
+				to: [to],
+				subject: "Update",
+				text: "First.",
+			}),
+		});
+		expect(written.status).toBe(200);
+		const first = (await written.json()) as Sent;
+		const reply = await api(
+			agent,
+			"POST",
+			`/mailboxes/${space.desk.id}/messages/${first.id}/reply`,
+			{ text: "Another update." },
+		);
+		expect(await reply.json()).toMatchObject({ state: "sent" });
+		expect((await sentTo(to)).at(-1)).toMatchObject({
+			from: expect.anything(),
+			to: [to],
+			text: expect.stringContaining("Another update."),
+		});
+	});
+
+	it("drops a sent message's Cc that repeats To with different case on reply", async () => {
+		const space = await workspace();
+		const agent = await agentOf(space);
+		const id = await receive(
+			space.desk,
+			space.desk.address,
+			["Cc: a@example.test, copy@example.test"],
+			"none",
+			"A@Example.test",
+		);
+		const sql = await mail.mailboxStorage(space.desk.id);
+		await sql.exec("UPDATE message SET sent_by = ? WHERE id = ?", agent.memberId, id);
+		await sql.exec("INSERT INTO outgoing (message, state, request) VALUES (?, 'sent', '{}')", id);
+		const reply = await api(agent, "POST", `/mailboxes/${space.desk.id}/messages/${id}/reply`, {
+			text: "Received.",
+		});
+		expect(await reply.json()).toMatchObject({ state: "sent" });
+		expect((await sentTo("copy@example.test")).at(-1)).toMatchObject({
+			to: [expect.stringMatching(/^a@example\.test$/i)],
+			cc: ["copy@example.test"],
+		});
+	});
+
+	it("drops a malformed stored Cc when replying to sent mail", async () => {
+		const space = await workspace();
+		const agent = await agentOf(space);
+		const id = await receive(space.desk, space.desk.address, [
+			"Cc: good@example.org, Bad <broken@>",
+		]);
+		const sql = await mail.mailboxStorage(space.desk.id);
+		await sql.exec("UPDATE message SET sent_by = ? WHERE id = ?", agent.memberId, id);
+		await sql.exec("INSERT INTO outgoing (message, state, request) VALUES (?, 'sent', '{}')", id);
+		const reply = await api(agent, "POST", `/mailboxes/${space.desk.id}/messages/${id}/reply`, {
+			text: "Received.",
+		});
+		expect(await reply.json()).toMatchObject({ state: "sent" });
+		expect((await sentTo("good@example.org")).at(-1)).toMatchObject({ cc: ["good@example.org"] });
+	});
+
+	it("refuses a reply to this agent's held message after approval changes to never", async () => {
+		const space = await workspace();
+		const agent = await agentOf(space);
+		const to = "stranger@elsewhere.test";
+		const cc = "copied@elsewhere.test";
+		await saved(agent, { approval: "always" });
+		const first = (await (await agentSends(space, agent, [to], [cc])).json()) as Sent;
+		expect(first.state).toBe("held");
+		for (const allowed of [[], [to]]) {
+			await saved(agent, { approval: "never", allowed });
+			const reply = await api(
+				agent,
+				"POST",
+				`/mailboxes/${space.desk.id}/messages/${first.id}/reply`,
+				{ text: "Following up." },
+			);
+			expect(reply.status).toBe(403);
+		}
+		expect(await sentTo(to)).toEqual([]);
+		expect(await sentTo(cc)).toEqual([]);
+	});
+
+	it("stores a webhook host with the spelling its URL uses", async () => {
+		const space = await workspace();
+		const agent = await agentOf(space);
+		await saved(agent, { allowed: ["@1.1.1.01"], webhookHosts: ["1.1.1.01"] });
+		expect(await listedPolicy(space, agent)).toMatchObject({
+			allowed: ["@1.1.1.01"],
+			webhookHosts: ["1.1.1.1"],
+		});
+		expect(
+			(
+				await api(agent, "POST", "/webhooks", {
+					url: "https://1.1.1.1/x",
+					events: ["message.received"],
+				})
+			).status,
+		).toBe(200);
+	});
+
+	it("keeps this agent's original To and Cc after its allowed list narrows", async () => {
+		const space = await workspace();
+		const agent = await agentOf(space);
+		const to = "first@example.net",
+			cc = "copied@example.net";
+		await saved(agent, { approval: "never", allowed: [to, cc] });
+		const first = (await (await agentSends(space, agent, [to], [cc])).json()) as Sent;
+		expect(first.state).toBe("sent");
+		await saved(agent, { approval: "never", allowed: [] });
+		const reply = await api(
+			agent,
+			"POST",
+			`/mailboxes/${space.desk.id}/messages/${first.id}/reply`,
+			{ text: "Another update." },
+		);
+		expect(await reply.json()).toMatchObject({ state: "sent" });
+		expect((await sentTo(to)).at(-1)).toMatchObject({ cc: [cc] });
+		expect(await sentTo(cc)).toHaveLength(2);
+	});
+
+	it("refuses unknown To and Cc before storing mail or spending the agent's last send", async () => {
+		const space = await workspace();
+		const agent = await agentOf(space);
+		const from = "outsider@example.com";
+		const unknown = "evil@example.net";
+		const elsewhere = "another@example.net";
+		await receive(space.desk, from);
+		await saved(agent, { approval: "never", sendPerDay: 1 });
+		const path = `/mailboxes/${space.desk.id}/messages`;
+		const body = { subject: "Customer list", text: "Private message body." };
+		const refused = await api(agent, "POST", path, {
+			...body,
+			to: [unknown],
+			cc: [from, elsewhere],
+		});
+		expect(refused.status).toBe(403);
+		const error = ((await refused.json()) as { error: string }).error;
+		expect(error).toContain(unknown);
+		expect(error).toContain(elsewhere);
+		expect(error).toMatch(/owner|admin/i);
+		expect(error).toMatch(/allowed/i);
+		expect(error).not.toContain(from);
+		expect(await messages(space.desk)).toHaveLength(1);
+		expect(await sentTo(unknown)).toHaveLength(0);
+		const response = await mail.fetch(
+			`${origin}/api/agents/${space.slug}/${agent.id}/log?kind=mail`,
+			{
+				headers: owner.headers,
+			},
+		);
+		const log = (await response.json()) as {
+			entries: { action: string; subject: string; detail: string }[];
+		};
+		expect(log.entries).toHaveLength(1);
+		expect(log.entries[0]).toMatchObject({ action: "message.refused", subject: body.subject });
+		expect(log.entries[0]?.detail).toContain(unknown);
+		expect(log.entries[0]?.detail).toContain(elsewhere);
+		expect(JSON.stringify(log)).not.toContain(body.text);
+		const send = () => api(agent, "POST", path, { ...body, to: [from] });
+		expect(await (await send()).json()).toMatchObject({ state: "sent" });
+		expect((await send()).status).toBe(429);
+		expect(await sentTo(from)).toHaveLength(1);
+	});
+
+	it("allows an unknown recipient after the owner turns off target restrictions", async () => {
+		const space = await workspace();
+		const agent = await agentOf(space);
+		const path = `/mailboxes/${space.desk.id}/messages`;
+		const body = { subject: "Order", text: "Delivered." };
+		const unknown = "evil@example.net";
+		await saved(agent, {
+			approval: "never",
+			anyRecipient: true,
+			webhookHosts: ["hooks.example.org"],
+		});
+		expect(await saved(agent, { approval: "never", sendPerDay: 3 })).toMatchObject({
+			anyRecipient: true,
+			webhookHosts: ["hooks.example.org"],
+		});
+		expect((await listedPolicy(space, agent))?.anyRecipient).toBe(true);
+		const changes = await mail.fetch(
+			`${origin}/api/agents/${space.slug}/${agent.id}/log?kind=people`,
+			{ headers: owner.headers },
+		);
+		const recent = (await changes.json()) as {
+			entries: { action: string; detail: string; by: { agent: boolean; name: string } }[];
+		};
+		expect(recent.entries.find((entry) => entry.action === "policy.changed")).toMatchObject({
+			by: { agent: false, name: "Owner" },
+			detail: expect.stringMatching(/any recipient/i),
+		});
+		expect(await (await api(agent, "POST", path, { ...body, to: [unknown] })).json()).toMatchObject(
+			{ state: "sent" },
+		);
+		await saved(agent, { approval: "never", anyRecipient: false });
+		const { results } = await mail.db
+			.prepare(
+				"SELECT detail FROM agent_log WHERE agent_member_id = ? AND action = 'policy.changed' ORDER BY rowid",
+			)
+			.bind(agent.memberId)
+			.all<{ detail: string }>();
+		expect(results.map((row: { detail: string }) => row.detail)).toEqual([
+			expect.stringContaining("Any recipient and webhook host allowed"),
+			expect.stringContaining("Any recipient and webhook host allowed"),
+			expect.stringContaining("Target restrictions on"),
+		]);
+	});
+
+	it("uses From in mail still held by any mailbox it may read", async () => {
+		const space = await workspace();
+		const agent = await agentOf(space);
+		const other = await space.mailbox("correspondence");
+		const from = "Writer@example.org";
+		const id = await receive(other, from);
+		const grant = async (readers: string[]) =>
+			directory(space.slug, {
+				action: "set-mailbox-access",
+				mailboxId: other.id,
+				everyone: false,
+				memberIds: readers,
+				senderIds: [],
+			});
+		await grant([]);
+		expect((await agentSends(space, agent, [from])).status).toBe(403);
+		await grant([agent.memberId]);
+		await saved(agent, { approval: "never", allowed: ["listed@example.net"] });
+		expect(
+			await stateOf(space, agent, [other.address, "listed@example.net"], [from.toLowerCase()]),
+		).toBe("sent");
+		expect((await agentSends(space, agent, ["relay@example.org"])).status).toBe(403);
+		const removed = await mail.fetch(`${origin}/api/mail/${space.slug}/${other.id}/${id}`, {
+			method: "DELETE",
+			headers: { ...owner.headers, origin },
+		});
+		expect(removed.status).toBe(200);
+		expect((await agentSends(space, agent, [from])).status).toBe(403);
+	});
+
+	it("refuses and logs a proved foreign Reply-To before spending the day's only send", async () => {
+		const space = await workspace();
+		const agent = await agentOf(space);
+		await saved(agent, { approval: "never", sendPerDay: 1 });
+		const from = "a@sender.test";
+		const victim = "victim@elsewhere.test";
+		const id = await receive(space.desk, from, [`Reply-To: ${victim}`], "pass");
+		const reply = await api(agent, "POST", `/mailboxes/${space.desk.id}/messages/${id}/reply`, {
+			text: "Received.",
+		});
+		expect(reply.status).toBe(403);
+		expect(await logOf(agent)).toEqual([{ action: "message.refused", detail: victim }]);
+		expect(await messages(space.desk)).toHaveLength(1);
+		expect(await sentTo(victim)).toEqual([]);
+		expect(await stateOf(space, agent, [from])).toBe("sent");
+	});
+
+	it("drops a same-domain Cc on an unproved reply", async () => {
+		const space = await workspace();
+		const agent = await agentOf(space);
+		const from = "a@freemail.test";
+		const id = await receive(space.desk, from, ["Cc: b@freemail.test"]);
+		const reply = await api(agent, "POST", `/mailboxes/${space.desk.id}/messages/${id}/reply`, {
+			text: "Received.",
+		});
+		expect(await reply.json()).toMatchObject({ state: "sent" });
+		expect(await sentTo(from)).toHaveLength(1);
+		expect(await sentTo("b@freemail.test")).toHaveLength(0);
+	});
+
+	it("refuses a subdomain Reply-To on proved mail", async () => {
+		const space = await workspace();
+		const agent = await agentOf(space);
+		const id = await receive(space.desk, "a@sender.test", ["Reply-To: u@sub.sender.test"], "pass");
+		const reply = await api(agent, "POST", `/mailboxes/${space.desk.id}/messages/${id}/reply`, {
+			text: "Received.",
+		});
+		expect(reply.status).toBe(403);
+		expect(await logOf(agent)).toEqual([
+			{ action: "message.refused", detail: "u@sub.sender.test" },
+		]);
+	});
+
+	it("normalizes IDN, case and a trailing dot in a proved From domain on reply", async () => {
+		const space = await workspace();
+		const agent = await agentOf(space);
+		const to = "u@xn--bcher-kva.test";
+		const id = await receive(space.desk, "a@B\u00dcCHER.TEST.", [`Reply-To: ${to}`], "pass");
+		const reply = await api(agent, "POST", `/mailboxes/${space.desk.id}/messages/${id}/reply`, {
+			text: "Received.",
+		});
+		expect(await reply.json()).toMatchObject({ state: "sent" });
+		expect(await sentTo(to)).toHaveLength(1);
+	});
+
+	it("keeps only permitted Cc on a proved reply", async () => {
+		const space = await workspace();
+		const agent = await agentOf(space);
+		const colleague = "colleague@sender.test";
+		const id = await receive(
+			space.desk,
+			"a@sender.test",
+			[`Cc: victim@elsewhere.test, ${colleague}`],
+			"pass",
+		);
+		const reply = await api(agent, "POST", `/mailboxes/${space.desk.id}/messages/${id}/reply`, {
+			text: "Received.",
+		});
+		expect(await reply.json()).toMatchObject({ state: "sent" });
+		expect((await sentTo(colleague)).at(-1)).toMatchObject({ cc: [colleague] });
+	});
+
+	it("uses Reply-To only on proved incoming mail and drops unknown Cc on an unproved reply", async () => {
+		const space = await workspace();
+		const agent = await agentOf(space);
+		const from = "customer@example.com";
+		const replyTo = "help@example.com";
+		const unknown = "reply-elsewhere@example.net";
+		const reply = async (id: string) => {
+			const answer = await api(agent, "POST", `/mailboxes/${space.desk.id}/messages/${id}/reply`, {
+				text: "Your order arrived.",
+			});
+			expect(await answer.json()).toMatchObject({ state: "sent" });
+		};
+		const proved = await receive(space.desk, from, ["Reply-To: help@EXAMPLE.COM."], "pass");
+		await reply(proved);
+		expect(await sentTo(replyTo)).toHaveLength(1);
+		expect(await sentTo(from)).toHaveLength(0);
+		const unproved = await receive(
+			space.desk,
+			from,
+			[`Reply-To: ${unknown}`, `Cc: ${unknown}`],
+			"fail",
+		);
+		await reply(unproved);
+		expect(await sentTo(from)).toHaveLength(1);
+		expect(await sentTo(unknown)).toHaveLength(0);
+		expect((await agentSends(space, agent, [replyTo], [], { replyTo: proved })).status).toBe(403);
+		const listed = "billing@example.org";
+		await saved(agent, { approval: "never", allowed: [listed] });
+		const copied = await receive(space.desk, from, [`Cc: ${listed}, ${unknown}`]);
+		await reply(copied);
+		expect((await sentTo(listed)).map((email) => email.cc)).toEqual([[listed]]);
+		expect(await sentTo(unknown)).toHaveLength(0);
+		await saved(agent, { approval: "never", anyRecipient: true });
+		await reply(unproved);
+		expect((await sentTo(unknown)).at(-1)).toMatchObject({ to: [from], cc: [unknown] });
+	});
+});
+
 describe("a new agent", () => {
 	it("is made to send on its own, a few messages a day, with its policy stored", async () => {
 		const space = await workspace();
 		const agent = await agentOf(space);
-		const made: Policy = { sendPerDay: 20, approval: "never", allowed: [], insideWaits: false };
+		const made: Policy = {
+			sendPerDay: 20,
+			approval: "never",
+			allowed: [],
+			insideWaits: false,
+			webhookHosts: [],
+			anyRecipient: false,
+		};
 		expect(agent.policy).toEqual(made);
 		expect(await listedPolicy(space, agent)).toEqual(made);
 		const row = await mail.db
@@ -323,8 +960,8 @@ describe("a new agent", () => {
 		expect(row).toEqual({ send_per_day: 20, allowed: "[]", approval: "never" });
 
 		const outside = `ada.${space.slug}@example.org`;
-		expect(await stateOf(space, agent, [outside])).toBe("sent");
-		expect(await sentTo(outside)).toHaveLength(1);
+		expect((await agentSends(space, agent, [outside])).status).toBe(403);
+		expect(await sentTo(outside)).toHaveLength(0);
 	});
 });
 
@@ -347,16 +984,19 @@ describe("an agent's policy, changed by an owner or admin", () => {
 			approval: "unlisted",
 			allowed: [listed],
 			insideWaits: false,
+			webhookHosts: [],
+			anyRecipient: false,
 		});
 		expect(await stateOf(space, agent, [listed])).toBe("sent");
 		expect(await stateOf(space, agent, [other])).toBe("held");
 		expect(await stateOf(space, agent, [listed], [other])).toBe("held");
 
-		// And a list kept under "never" holds nothing back.
+		// Under "never" a listed recipient goes and an unknown recipient is refused.
 		expect(await saved(agent, { approval: "never", allowed: [listed] })).toMatchObject({
 			approval: "never",
 		});
-		expect(await stateOf(space, agent, [other])).toBe("sent");
+		expect(await stateOf(space, agent, [listed])).toBe("sent");
+		expect((await agentSends(space, agent, [other])).status).toBe(403);
 		expect(await listedPolicy(space, agent)).toMatchObject({ approval: "never" });
 	});
 
@@ -442,6 +1082,8 @@ describe("an agent from before there was a choice", () => {
 			approval: "always",
 			allowed: [],
 			insideWaits: true,
+			webhookHosts: [],
+			anyRecipient: false,
 		});
 		expect(await stateOf(space, agent, [`ada.${space.slug}@example.org`])).toBe("held");
 		expect(await stateOf(space, agent, [inside.address])).toBe("held");
@@ -459,6 +1101,8 @@ describe("an agent from before there was a choice", () => {
 			approval: "unlisted",
 			allowed: [listed],
 			insideWaits: true,
+			webhookHosts: [],
+			anyRecipient: false,
 		});
 		expect(await stateOf(space, agent, [listed])).toBe("sent");
 		expect(await stateOf(space, agent, [`ada.${space.slug}@example.org`])).toBe("held");
@@ -479,6 +1123,9 @@ describe("an agent from before there was a choice", () => {
 			approval: "always",
 			allowed: [],
 			insideWaits: true,
+			webhookHosts: [],
+			webhookHostsPending: true,
+			anyRecipient: false,
 		});
 		expect(await stateOf(space, agent, [`ada.${space.slug}@example.org`])).toBe("held");
 		expect(await stateOf(space, agent, [inside.address])).toBe("held");
@@ -486,7 +1133,12 @@ describe("an agent from before there was a choice", () => {
 		const read = (await (await api(agent, "GET", "/mailboxes")).json()) as {
 			sending: Record<string, unknown>;
 		};
-		expect(read.sending).toEqual({ perDay: 20, approval: "always", withoutApproval: [] });
+		expect(read.sending).toEqual({
+			perDay: 20,
+			approval: "always",
+			webhookHosts: [],
+			withoutApproval: [],
+		});
 	});
 
 	it("gets mail inside its workspace through only once a person saves its policy", async () => {
@@ -499,6 +1151,8 @@ describe("an agent from before there was a choice", () => {
 		expect(await saved(agent, { approval: "always" })).toMatchObject({
 			approval: "always",
 			insideWaits: false,
+			webhookHosts: [],
+			anyRecipient: false,
 		});
 		expect(await stateOf(space, agent, [inside.address])).toBe("sent");
 		expect(await stateOf(space, agent, [`ada.${space.slug}@example.org`])).toBe("held");
@@ -538,6 +1192,8 @@ describe("mail that stays inside the agent's own workspace", () => {
 		await saved(agent, { approval: "unlisted", allowed: [`@${theirs.domain}`] });
 		expect(await stateOf(space, agent, [theirs.desk.address])).toBe("sent");
 		await saved(agent, { approval: "never" });
+		expect((await agentSends(space, agent, [theirs.desk.address])).status).toBe(403);
+		await saved(agent, { approval: "never", allowed: [theirs.desk.address] });
 		expect(await stateOf(space, agent, [theirs.desk.address])).toBe("sent");
 		expect(await messages(theirs.desk)).toHaveLength(2);
 	});
@@ -796,7 +1452,7 @@ describe("an agent's day", () => {
 			await saved(agent, {
 				sendPerDay: 2,
 				approval,
-				allowed: approval === "unlisted" ? [listed] : [],
+				allowed: [listed],
 			});
 			expect(await stateOf(space, agent, [listed]), approval).toBe(
 				approval === "always" ? "held" : "sent",
@@ -826,6 +1482,7 @@ describe("the workspace's day", () => {
 		const space = await workspace();
 		const agent = await agentOf(space);
 		expect(agent.policy.sendPerDay).toBeGreaterThan(SEND_PER_DAY);
+		await saved(agent, { approval: "never", allowed: ["@example.org"] });
 		let n = 0;
 		const over = await afterTheLast(space, agent, () => `day${++n}.${space.slug}@example.org`);
 		expect(over.status).toBe(429);
@@ -852,16 +1509,41 @@ describe("an agent, of its own policy", () => {
 		const agent = await agentOf(space);
 		const sending = async () =>
 			((await (await api(agent, "GET", "/mailboxes")).json()) as { sending: unknown }).sending;
-		expect(await sending()).toEqual({ perDay: 20, approval: "never", withoutApproval: [] });
-		await saved(agent, { sendPerDay: 5, approval: "unlisted", allowed: ["@acme.test"] });
+		expect(await sending()).toEqual({
+			perDay: 20,
+			approval: "never",
+			webhookHosts: [],
+			withoutApproval: [],
+		});
+		await saved(agent, {
+			approval: "never",
+			allowed: ["@acme.test"],
+			webhookHosts: ["hooks.example.org"],
+		});
+		expect(await sending()).toMatchObject({
+			withoutApproval: ["@acme.test"],
+			webhookHosts: ["hooks.example.org"],
+		});
+		await saved(agent, {
+			sendPerDay: 5,
+			approval: "unlisted",
+			allowed: ["@acme.test"],
+			webhookHosts: [],
+		});
 		expect(await sending()).toEqual({
 			perDay: 5,
 			approval: "unlisted",
+			webhookHosts: [],
 			withoutApproval: ["@acme.test"],
 		});
 		// A list kept under another choice lets nothing through, so it isn't given as one that does.
 		await saved(agent, { sendPerDay: 5, approval: "always", allowed: ["@acme.test"] });
-		expect(await sending()).toEqual({ perDay: 5, approval: "always", withoutApproval: [] });
+		expect(await sending()).toEqual({
+			perDay: 5,
+			approval: "always",
+			webhookHosts: [],
+			withoutApproval: [],
+		});
 	});
 
 	it("can't change it, by any route or by anything it sends", async () => {
@@ -925,10 +1607,12 @@ describe("an agent, of its own policy", () => {
 			approval: "always",
 			allowed: [],
 			insideWaits: false,
+			webhookHosts: [],
+			anyRecipient: false,
 		});
 
 		// And a send answers in the same shape, held or sent.
-		await saved(agent, { approval: "never" });
+		await saved(agent, { approval: "never", allowed: [outside] });
 		const gone = await api(agent, "POST", `/mailboxes/${space.desk.id}/messages`, {
 			to: [outside],
 			subject: "On my own",
@@ -964,6 +1648,7 @@ describe("what is told of an agent's mail", () => {
 		const write = async (to: string) =>
 			(await (await agentSends(space, agent, [to])).json()) as Sent;
 
+		await saved(agent, { approval: "never", allowed: [outside] });
 		const alone = await write(outside);
 		await saved(agent, { approval: "always" });
 		const inside = await write(billing.address);

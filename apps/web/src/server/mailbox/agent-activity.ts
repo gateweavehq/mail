@@ -6,7 +6,7 @@ import { isAdminRole } from "../../lib/roles";
 import { bearsKey, currentMember } from "../access";
 import { agentLogPage } from "../agent-log";
 import { db, getAuth } from "../auth";
-import { AGENT_ROLE } from "../auth/agents";
+import { AGENT_ROLE, settingsPolicy } from "../auth/agents";
 import { schema } from "../db";
 import { liveAt } from "../directory/agent-address-store";
 import type { StoredSummary } from "./durable-object";
@@ -31,6 +31,7 @@ export async function agentActivity(slug: string, agentId: string): Promise<Agen
 	});
 	const agent = agents.find((one) => one.id === agentId);
 	if (!agent) return null;
+	agent.policy = await settingsPolicy(db, workspaceId, agent.memberId);
 
 	const { agentMailbox, mailbox, mailboxAccess, mailAddress, mailDomain } = schema;
 	const [mailboxes, grants, addresses] = await Promise.all([

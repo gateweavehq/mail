@@ -43,6 +43,7 @@ const FAILURE_WORDS: Record<FailureStatus | 413 | 500, string> = {
 	413: "The body is larger than any request takes.",
 	429: "Too many for now. Retry-After, when there, says in how many seconds to try again.",
 	500: "Mail couldn't do it just now. Try again.",
+	503: "Mail could not finish checking the recipients. Retry shortly.",
 };
 
 /** The OpenAPI document of the agent API, served at /api/v1/openapi.json. */
