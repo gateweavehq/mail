@@ -24,7 +24,9 @@ its webhooks only to hosts it may use. This release has two D1 migrations.
 
   Anything else is refused: no message is made, it uses none of the day's count, and the
   activity page shows the subject and the refused addresses. Mail an agent has read can no longer
-  talk it into writing to a stranger. ([#75](https://github.com/gateweavehq/mail/pull/75))
+  make it write to an address that never wrote to the mailbox. A message's From is not proved by
+  this rule, so a forged From can still name an address the agent may then answer; "Allow any
+  recipient" removes even this limit. ([#75](https://github.com/gateweavehq/mail/pull/75))
 - **An agent's replies go only where they may.** On mail whose sender was proved, a reply
   follows Reply-To. On mail that was not proved, it goes to From, and each Cc must pass the same
   check. A reply to mail the mailbox sent keeps its original To and each distinct Cc.
@@ -54,9 +56,9 @@ its webhooks only to hosts it may use. This release has two D1 migrations.
 - **Older mailboxes.** A mailbox that holds mail from before Mail indexed every sender checks
   that mail's sender against the stored original before trusting it. While a check cannot
   finish, a send to that sender answers 503 for up to an hour, then the sender counts as unknown.
-- **Agents that wrote to outside addresses** under "Never" before this release are refused from
-  now on. Add those addresses to the agent's allowed list, or turn on "Allow any recipient and
-  webhook host" for it.
+- **An agent under "Never" that wrote to addresses outside these three kinds** is refused for
+  those addresses from now on; addresses already on its allowed list still work. Add the others
+  to its list, or turn on "Allow any recipient and webhook host" for it.
 
 ## [0.3.0] - 2026-11-19
 
