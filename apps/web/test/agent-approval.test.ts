@@ -67,6 +67,7 @@ async function receiver(request: Request): Promise<Response> {
 
 type Mail = Awaited<ReturnType<typeof startMail>>;
 
+let originalRead: (() => Promise<Response>) | undefined;
 let mail: Mail;
 let owner: Awaited<ReturnType<typeof signUp>>;
 let counter = 0;
@@ -303,7 +304,15 @@ async function logOf(agent: Agent) {
 beforeAll(async () => {
 	mail = await startMail(origin, {
 		inspectMailboxes: true,
-		hosts: { "cloudflare-dns.com": dns, [RECEIVER]: receiver },
+		senderCheckTests: true,
+		hosts: {
+			"cloudflare-dns.com": dns,
+			[RECEIVER]: receiver,
+			"original.test": () => {
+				if (!originalRead) throw new Error("Unexpected read of a paused original");
+				return originalRead();
+			},
+		},
 		settings: { MAILBOX_BYTES: String(MAILBOX_BYTES), SEND_PER_DAY: String(SEND_PER_DAY) },
 	});
 	owner = await signUp(mail, origin, "Owner");
@@ -372,6 +381,79 @@ describe("where an agent may send on its own", () => {
 		expect(await stateOf(space, agent, [writer])).toBe("sent");
 	});
 
+	it("answers a send while R2 is still reading the candidate's original", async () => {
+		const space = await workspace();
+		const agent = await agentOf(space);
+		const address = "stalled@example.org";
+		const id = await receive(space.desk, address);
+		const sql = await mail.mailboxStorage(space.desk.id);
+		await sql.exec(
+			"UPDATE message SET object = 'stalled-original', seal = NULL, sender_check_at = -1, sender_check_started = ? WHERE id = ?",
+			Date.now(),
+			id,
+		);
+		const start = Date.now();
+		const pending = await agentSends(space, agent, [address]);
+		expect(Date.now() - start).toBeLessThan(5000);
+		expect(pending.status).toBe(503);
+		expect(await pending.json()).toMatchObject({
+			error: "Mail could not finish checking this agent's recipients. Try sending again shortly.",
+		});
+		expect(
+			(
+				await sql.exec<{ due: number }>(
+					"SELECT sender_check_at AS due FROM message WHERE id = ?",
+					id,
+				)
+			)[0]?.due,
+		).toBeGreaterThan(start);
+	});
+
+	it("holds a send when a confirmed From disappears while another original is open", async () => {
+		const space = await workspace();
+		const agent = await agentOf(space);
+		const a = "first-writer@example.org";
+		const b = "second-writer@example.org";
+		const confirmed = await receive(space.desk, a);
+		const hint = await receive(space.desk, a);
+		const checking = await receive(space.desk, b);
+		const sql = await mail.mailboxStorage(space.desk.id);
+		await sql.exec(
+			"UPDATE message SET sender_check_at = ?, sender_check_started = ? WHERE id = ?",
+			Date.now() + 60_000,
+			Date.now(),
+			hint,
+		);
+		await sql.exec(
+			"UPDATE message SET object = 'paused-original', seal = NULL, sender_check_at = -1, sender_check_started = ? WHERE id = ?",
+			Date.now(),
+			checking,
+		);
+		let deleted: number | undefined;
+		originalRead = async () => {
+			deleted = (
+				await mail.fetch(`${origin}/api/mail/${space.slug}/${space.desk.id}/${confirmed}`, {
+					method: "DELETE",
+					headers: { ...owner.headers, origin },
+				})
+			).status;
+			return new Response(`From: ${b}\r\n\r\n`);
+		};
+		try {
+			const result = await agentSends(space, agent, [a, b]);
+			expect(deleted).toBe(200);
+			expect(result.status).toBe(503);
+			expect(
+				await sql.exec(
+					"SELECT sender_address, sender_check_at FROM message WHERE id = ?",
+					checking,
+				),
+			).toEqual([{ sender_address: b, sender_check_at: null }]);
+		} finally {
+			originalRead = undefined;
+		}
+	});
+
 	it("stops checking a missing original after three alarm attempts and refuses the recipient", async () => {
 		const space = await workspace();
 		const agent = await agentOf(space);
@@ -382,15 +464,15 @@ describe("where an agent may send on its own", () => {
 		await mail.bucket.delete(row.object);
 		const send = () => agentSends(space, agent, ["unknown@example.org"]);
 		for (let attempt = 1; attempt <= 3; attempt++) {
-			// Move the retry close enough to run the real alarm during the test. A check is recorded
-			// with its start, as on arrival.
 			await sql.exec(
 				"UPDATE message SET sender_address = NULL, sender_check_at = ?, sender_check_started = coalesce(sender_check_started, ?) WHERE id = ?",
-				Date.now() + 500,
+				Date.now() + 3_600_000,
 				Date.now(),
 				id,
 			);
 			expect((await send()).status).toBe(503);
+			await sql.exec("UPDATE message SET sender_check_at = 0 WHERE id = ?", id);
+			await mail.triggerMailboxAlarm(space.desk.id);
 			await expect
 				.poll(
 					async () =>
@@ -542,6 +624,7 @@ describe("where an agent may send on its own", () => {
 		);
 		const sql = await mail.mailboxStorage(space.desk.id);
 		await sql.exec("UPDATE message SET sent_by = ? WHERE id = ?", agent.memberId, id);
+		await sql.exec("INSERT INTO outgoing (message, state, request) VALUES (?, 'sent', '{}')", id);
 		const reply = await api(agent, "POST", `/mailboxes/${space.desk.id}/messages/${id}/reply`, {
 			text: "Received.",
 		});
@@ -560,11 +643,52 @@ describe("where an agent may send on its own", () => {
 		]);
 		const sql = await mail.mailboxStorage(space.desk.id);
 		await sql.exec("UPDATE message SET sent_by = ? WHERE id = ?", agent.memberId, id);
+		await sql.exec("INSERT INTO outgoing (message, state, request) VALUES (?, 'sent', '{}')", id);
 		const reply = await api(agent, "POST", `/mailboxes/${space.desk.id}/messages/${id}/reply`, {
 			text: "Received.",
 		});
 		expect(await reply.json()).toMatchObject({ state: "sent" });
 		expect((await sentTo("good@example.org")).at(-1)).toMatchObject({ cc: ["good@example.org"] });
+	});
+
+	it("refuses a reply to this agent's held message after approval changes to never", async () => {
+		const space = await workspace();
+		const agent = await agentOf(space);
+		const to = "stranger@elsewhere.test";
+		const cc = "copied@elsewhere.test";
+		await saved(agent, { approval: "always" });
+		const first = (await (await agentSends(space, agent, [to], [cc])).json()) as Sent;
+		expect(first.state).toBe("held");
+		for (const allowed of [[], [to]]) {
+			await saved(agent, { approval: "never", allowed });
+			const reply = await api(
+				agent,
+				"POST",
+				`/mailboxes/${space.desk.id}/messages/${first.id}/reply`,
+				{ text: "Following up." },
+			);
+			expect(reply.status).toBe(403);
+		}
+		expect(await sentTo(to)).toEqual([]);
+		expect(await sentTo(cc)).toEqual([]);
+	});
+
+	it("stores a webhook host with the spelling its URL uses", async () => {
+		const space = await workspace();
+		const agent = await agentOf(space);
+		await saved(agent, { allowed: ["@1.1.1.01"], webhookHosts: ["1.1.1.01"] });
+		expect(await listedPolicy(space, agent)).toMatchObject({
+			allowed: ["@1.1.1.01"],
+			webhookHosts: ["1.1.1.1"],
+		});
+		expect(
+			(
+				await api(agent, "POST", "/webhooks", {
+					url: "https://1.1.1.1/x",
+					events: ["message.received"],
+				})
+			).status,
+		).toBe(200);
 	});
 
 	it("keeps this agent's original To and Cc after its allowed list narrows", async () => {
@@ -574,6 +698,7 @@ describe("where an agent may send on its own", () => {
 			cc = "copied@example.net";
 		await saved(agent, { approval: "never", allowed: [to, cc] });
 		const first = (await (await agentSends(space, agent, [to], [cc])).json()) as Sent;
+		expect(first.state).toBe("sent");
 		await saved(agent, { approval: "never", allowed: [] });
 		const reply = await api(
 			agent,

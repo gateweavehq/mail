@@ -85,6 +85,9 @@ export function mailboxLimit(env: Cloudflare.Env): number {
 /** How long a delivery may take between being given a place and saying it's there. */
 export const PENDING_MS = 15 * 60 * 1000;
 
+/** Give R2 three seconds to settle an old From while the sender waits for an answer. */
+const INLINE_SENDER_CHECK_MS = 3000;
+
 /** How long mail waits to be tried again when D1 doesn't say whether the agent who wrote it is paused. */
 const PAUSE_UNKNOWN_MS = 60 * 1000;
 
@@ -529,11 +532,21 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 		const found = known();
 		const missing = addresses.filter((address) => !found.includes(address));
 		if (!missing.length) return { found, pending: [] };
-		await this.#checkOldSenders(missing);
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		try {
+			await Promise.race([
+				this.#checkOldSenders(missing),
+				new Promise<void>((resolve) => {
+					timer = setTimeout(resolve, INLINE_SENDER_CHECK_MS);
+				}),
+			]);
+		} finally {
+			clearTimeout(timer);
+		}
 		const confirmed = known();
 		const pending = pendingSenders(
 			this.ctx.storage.sql,
-			missing.filter((address) => !confirmed.includes(address)),
+			addresses.filter((address) => !confirmed.includes(address)),
 		);
 		const next = nextSenderCheck(this.ctx.storage.sql);
 		if (next !== null) await this.#alarmBy(Math.max(Date.now(), next));

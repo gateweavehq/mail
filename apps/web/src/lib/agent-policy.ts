@@ -81,12 +81,14 @@ export function normalTarget(value: string): string | null {
 }
 
 /** Whole hosts also serve webhooks on single-label names or IP literals. */
-function normalizedHost(entry: string): string | null {
+function normalizedHost(entry: string, kind: "mail" | "webhook"): string | null {
 	const domain = entry.replace(/\.$/, "");
 	if (!domain || /[\s\\/%?#@*]/u.test(domain)) return null;
 	try {
-		const ascii = toAscii(domain.toLowerCase());
-		if (ascii && isAddress(`a@${ascii}`)) return ascii;
+		if (kind === "mail") {
+			const ascii = toAscii(domain.toLowerCase());
+			if (ascii && isAddress(`a@${ascii}`)) return ascii;
+		}
 		const host = new URL(`https://${domain}`).hostname;
 		if (domain.includes(":") && !(domain.startsWith("[") && domain.endsWith("]"))) return null;
 		return host.length <= 253 &&
@@ -103,7 +105,7 @@ export const AllowedEntry = z
 	.string()
 	.trim()
 	.transform((entry, ctx) => {
-		const host = entry.startsWith("@") ? normalizedHost(entry.slice(1)) : null;
+		const host = entry.startsWith("@") ? normalizedHost(entry.slice(1), "mail") : null;
 		const target = host ? `@${host}` : normalTarget(entry);
 		if (target !== null) return target;
 		ctx.addIssue({ code: "custom", message: "Enter an address or @domain." });
@@ -114,7 +116,7 @@ export const WebhookHost = z
 	.string()
 	.trim()
 	.transform((entry, ctx) => {
-		const host = normalizedHost(entry);
+		const host = normalizedHost(entry, "webhook");
 		if (host !== null) return host;
 		ctx.addIssue({ code: "custom", message: "Enter a webhook host, such as hooks.example.com." });
 		return z.NEVER;

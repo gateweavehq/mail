@@ -781,7 +781,8 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
       address, an allowed address or domain, or the From address of mail still held in a mailbox the
       agent can read, whether or not DMARC passed. A stranger who writes to that mailbox becomes
       someone the agent may answer. Under `never`, a restricted agent keeps the original To and Cc
-      of sent mail when the writer is this agent or a person in the workspace. Even after the
+      only when the mailbox records the original as `sent` and its writer is this agent or a person
+      in the workspace. Every other send state, including a missing status, uses the usual target check. Even after the
       policy tightens, the agent can reply to recipients it previously sent to. A person or the
       policy allowed that send, and a reply continues the thread. For mail another agent sent,
       each recipient must pass the usual target check. A mailbox indexes each incoming From. For older
@@ -789,7 +790,8 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
       shorten an address or omit a second From. After three checks that find the original missing
       or unreadable, including a seal naming an unknown key when keys are configured, the mailbox
       drops the hint. Temporary read errors and a server without sealing keys retry with an
-      increasing wait of up to an hour. A pending check can return 503 during the first hour after
+      increasing wait of up to an hour. A send waits up to three seconds for a mailbox's inline
+      check, then decides from the sender records the mailbox has at that point. A pending check can return 503 during the first hour after
       it was recorded (when the mail arrived, or when the mailbox was upgraded), even if it waits
       behind another check for the same address and has not been tried yet.
       After that, checks continue in the background and the unresolved sender counts as unknown.

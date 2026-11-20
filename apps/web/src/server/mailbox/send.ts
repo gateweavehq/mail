@@ -304,7 +304,7 @@ export async function outboxAnswer(
 	if (!text.trim()) return refuse("There is nothing to send: write some text or HTML.", 400);
 
 	const from = await senderAddresses(workspaceId, box.id);
-	let answering: Answering = { sentBy: null, inReplyTo: null, references: [], addresses: [] };
+	let answering: Answering = { sentAuthor: null, inReplyTo: null, references: [], addresses: [] };
 	if (action.replyTo) {
 		const found = await answered(box.stub, action.replyTo);
 		if (!found) return refuse("The message you are answering is gone.", 404);
@@ -374,19 +374,20 @@ export async function outboxAnswer(
 			recipients = [...action.to];
 			lower = recipients.map((address) => address.toLowerCase());
 		}
-		let keepSentTargets = reply === "sent";
+		const sentReply = reply === "sent" && answering.sentAuthor !== null;
+		let keepSentTargets = sentReply;
 		if (
 			keepSentTargets &&
 			!policy.anyRecipient &&
 			policy.approval === "never" &&
-			answering.sentBy !== memberId
+			answering.sentAuthor !== memberId
 		) {
 			const author =
-				answering.sentBy &&
+				answering.sentAuthor &&
 				(await db
 					.select({ role: member.role })
 					.from(member)
-					.where(and(eq(member.id, answering.sentBy), eq(member.organizationId, workspaceId)))
+					.where(and(eq(member.id, answering.sentAuthor), eq(member.organizationId, workspaceId)))
 					.get());
 			keepSentTargets = Boolean(author && isPersonRole(toRole(author.role)));
 		}
@@ -409,7 +410,7 @@ export async function outboxAnswer(
 			const { outside, pending } = await refusedRecipients(box, sender, targets, policy.allowed);
 			if (pending) return refuse(SENDER_CHECK_PENDING, 503);
 			// Drop copied strangers before counting the reply. A refused To still stops it.
-			if (reply && outside.size) {
+			if ((received || sentReply) && outside.size) {
 				action.cc = action.cc.filter((address) => !outside.has(address.toLowerCase()));
 				recipients = [...action.to, ...action.cc];
 				lower = recipients.map((address) => address.toLowerCase());
@@ -616,7 +617,7 @@ function tooMany(retryAfter: number | null | undefined, who = "This workspace ha
 
 /** What a reply takes from the message it answers. */
 interface Answering {
-	sentBy: string | null;
+	sentAuthor: string | null;
 	inReplyTo: string | null;
 	/** The ids it follows, oldest first, ending with the answered message's own. */
 	references: string[];
@@ -635,6 +636,7 @@ async function answered(
 ): Promise<Answering | null> {
 	const row = await stub.get(messageId);
 	if (!row) return null;
+	const sentAuthor = statusOf(row)?.state === "sent" ? row.sentBy : null;
 	let headers: Header[];
 	try {
 		const object = await rawMail(env).get(row);
@@ -645,7 +647,7 @@ async function answered(
 		// Its own id is in its row, which still threads the reply, without the ids before it.
 		const own = messageIds(row.messageId)[0] ?? null;
 		return {
-			sentBy: row.sentBy,
+			sentAuthor,
 			inReplyTo: own,
 			references: own ? [own] : [],
 			addresses: envelopeAddresses(row),
@@ -657,7 +659,7 @@ async function answered(
 	const followed =
 		before.length > 0 ? before : messageIds(firstHeader(headers, "in-reply-to")).slice(0, 1);
 	const references = [...new Set([...followed, ...(own ? [own] : [])])];
-	return { sentBy: row.sentBy, inReplyTo: own, references, addresses: envelopeAddresses(row) };
+	return { sentAuthor, inReplyTo: own, references, addresses: envelopeAddresses(row) };
 }
 
 /**
