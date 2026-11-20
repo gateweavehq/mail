@@ -54,6 +54,7 @@ interface Opened {
 	verifiedDomain: string | null;
 	dmarc: string | null;
 	text: string;
+	textCut: boolean;
 	hasHtml: boolean;
 	remoteImages: boolean;
 	imagesAllowed: boolean;
@@ -600,19 +601,30 @@ describe("reading a message", () => {
 		expect(html).not.toContain("onerror");
 	});
 
-	it("keeps the destination and text of a link with no closing tag", async () => {
-		const box = await mailboxWithAddress();
-		await kept(
-			box.address,
-			message(box.address, {
-				extra: ["MIME-Version: 1.0", "Content-Type: text/html; charset=utf-8"],
-				body: 'See <a href="https://example.org/open"><b>the open link</b>',
-			}),
-		);
-		const [listed] = (await messages(box.slug, box.mailboxId)).messages;
-		const opened = await open(box.slug, box.mailboxId, listed?.id ?? "");
-		expect(opened.text).toBe("See (https://example.org/open) the open link");
-	});
+	it.each([false, true])(
+		"keeps each link's label and destination when the last link has no closing tag (cut: %s)",
+		async (cut) => {
+			const box = await mailboxWithAddress();
+			const links =
+				'See <a href="https://example.org/closed"><em>the closed link</em></a> or ' +
+				'<a href="https://example.org/open"><b>the open link</b>';
+			// Pad with a comment so the cutoff removes the final closing tag without filling the text.
+			const body = cut ? `<!--${"x".repeat(1_000_000 - links.length - 7)}-->${links}</a>` : links;
+			await kept(
+				box.address,
+				message(box.address, {
+					extra: ["MIME-Version: 1.0", "Content-Type: text/html; charset=utf-8"],
+					body,
+				}),
+			);
+			const [listed] = (await messages(box.slug, box.mailboxId)).messages;
+			const opened = await open(box.slug, box.mailboxId, listed?.id ?? "");
+			expect(opened.textCut).toBe(cut);
+			expect(opened.text).toBe(
+				"See the closed link (https://example.org/closed) or (https://example.org/open) the open link",
+			);
+		},
+	);
 
 	it("shows a mailbox's page with its messages", async () => {
 		const box = await mailboxWithAddress();

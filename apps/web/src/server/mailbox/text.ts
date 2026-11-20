@@ -4,33 +4,41 @@ import PostalMime from "postal-mime";
 /** The most HTML turned into text for one message, in characters. */
 export const MAX_HTML_READ = 1_000_000;
 
-async function linksAfterLabels(html: string): Promise<string> {
-	let openAnchors = 0;
+async function linksAfterLabels(html: string, boundary: string): Promise<string> {
+	const links: { address: string; closed: boolean }[] = [];
+	// Reuse the random MIME boundary so the sender cannot supply an opening marker.
+	const marker = `<a data-${boundary}="`;
 	try {
 		const rewritten = await new HTMLRewriter()
 			.on("a", {
 				element(element) {
 					if (element.namespaceURI !== "http://www.w3.org/1999/xhtml") return;
 					const href = element.getAttribute("href")?.trim();
+					// HTMLRewriter returns the attribute as written. Leave entities for
+					// PostalMime to decode once, and keep literal angles out of its markup.
+					const link = href
+						? { address: href.replace(/</g, "&lt;").replace(/>/g, "&gt;"), closed: false }
+						: undefined;
 					// Keep the tag boundaries for PostalMime, but hide the attributes from its
 					// href matcher, which can mistake words in a title for a destination.
-					element.before("<a>", { html: true });
+					element.before(link ? `${marker}${links.length}">` : "<a>", { html: true });
+					if (link) links.push(link);
 					element.removeAndKeepContent();
-					openAnchors++;
 					element.onEndTag((end) => {
-						openAnchors--;
-						// HTMLRewriter returns the attribute as written. Leave entities for
-						// PostalMime to decode once, and keep literal angles out of its markup.
-						const address = href?.replace(/</g, "&lt;").replace(/>/g, "&gt;");
-						end.before(address ? `</a> (${address})` : "</a>", { html: true });
+						if (link) link.closed = true;
+						end.before(link ? `</a> (${link.address})` : "</a>", { html: true });
 					});
 				},
 			})
 			.transform(new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } }))
 			.text();
-		// An unclosed anchor (including one left open by the size limit) has no end
-		// callback. Use the original so a destination is still in the text.
-		return openAnchors === 0 ? rewritten : html;
+		// An anchor left open, including by the size limit, has no end callback.
+		// Put its destination at the opening so it still appears with the label.
+		return rewritten.replace(new RegExp(`${marker}(\\d+)">`, "g"), (match, index: string) => {
+			const link = links[Number(index)];
+			if (!link) return match;
+			return link.closed ? "<a>" : `<a> (${link.address}) `;
+		});
 	} catch {
 		// If the rewriter cannot process malformed HTML, keep PostalMime's fallback.
 		return html;
@@ -56,7 +64,7 @@ export async function textOfHtml(html: string): Promise<{ text: string; cut: boo
 		"Content-Type: text/html; charset=utf-8",
 		"Content-Transfer-Encoding: 8bit",
 		"",
-		await linksAfterLabels(html.slice(0, MAX_HTML_READ)),
+		await linksAfterLabels(html.slice(0, MAX_HTML_READ), boundary),
 		`--${boundary}--`,
 		"",
 	].join("\r\n");
