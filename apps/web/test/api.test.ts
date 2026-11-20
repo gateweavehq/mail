@@ -274,6 +274,35 @@ describe("the agent API", () => {
 		expect(copy.html?.trimEnd()).toBe(email?.html);
 	});
 
+	it("sends HTML-only mail with link labels before addresses in the generated text", async () => {
+		const space = await workspace();
+		const agent = await agentOf(space);
+		const to = "html-links@example.org";
+		const html =
+			'<p>See <a href="https://example.org/report?year=2026&amp;format=full" title="Annual report">the <strong>full <em>report</em></strong></a> or <a href="https://example.org/help">help</a> for details.</p>';
+		const sent = await done<{ id: string; state: string }>(
+			agent.key,
+			"send_email",
+			"POST",
+			`${box(space.signUps.id)}/messages`,
+			{ to: [to], subject: "Linked report", html },
+		);
+		expect(sent.state).toBe("sent");
+		const email = (await world.mail.emails()).find((one) => one.to.includes(to));
+		const text =
+			"See the full report (https://example.org/report?year=2026&format=full) or help (https://example.org/help) for details.";
+		expect(email?.text?.split("\n\n").at(-1)).toBe(text);
+		expect(email?.html).toContain(html);
+		const copy = await storedCopy(space, sent.id);
+		expect(
+			copy.text
+				?.trimEnd()
+				.split(/\r?\n\r?\n/)
+				.at(-1),
+		).toBe(text);
+		expect(copy.html?.trimEnd()).toBe(email?.html);
+	});
+
 	it("R2/R4: keeps human HTML as before and sends no disclosure for a session", async () => {
 		const space = await workspace();
 		const to = "human@example.org";
