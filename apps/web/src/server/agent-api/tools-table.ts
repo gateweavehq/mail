@@ -33,6 +33,16 @@ export const NEEDS: Record<string, string> = {
 	test_webhook: "Webhooks: one it made, and an allowed host when its target policy applies",
 };
 
+/**
+ * A sentence the table says in place of an operation's first, where that one leaves out what the
+ * mailbox does: a reply goes from the address the message came to or from, or else the mailbox's
+ * first available one (replySender in mailbox/senders.ts, which skips expired addresses).
+ */
+export const SAYS: Record<string, string> = {
+	reply:
+		"Answers a message in its thread, from the address it came to or from, or from the mailbox's first available address when that one has expired.",
+};
+
 export const TOOLS_START = "<!-- mcp-tools:start -->";
 export const TOOLS_END = "<!-- mcp-tools:end -->";
 
@@ -67,7 +77,7 @@ export function toolsTable(operations: readonly Operation[] = OPERATIONS): strin
 		if (needs === undefined) throw new Error(`NEEDS has no entry for ${operation.name}.`);
 		return [
 			`\`${operation.name}\``,
-			firstSentence(operation.description),
+			SAYS[operation.name] ?? firstSentence(operation.description),
 			properties(operation.input),
 			properties(operation.output),
 			http(operation),
