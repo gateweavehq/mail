@@ -8,14 +8,16 @@ installing the tools below or signing in to Cloudflare. The DNS steps after that
 host and weren't timed.
 
 This is the shortest path: no custom domain for the Worker, no Email Routing and no Email Sending.
-Without Email Routing nothing reaches the address, and without Email Sending nothing leaves it, so
-this page stops at an address that exists. Receiving and sending are in
-[self-hosting.md](self-hosting.md).
+Without Email Routing, mail from outside can't reach the address, and without Email Sending the
+address can't send to anyone elsewhere, so this page stops at an address that exists. Mail between
+addresses on this same server can be delivered directly, with neither, once each domain keeps its
+TXT record and its MX records point to Cloudflare, which this page doesn't set up. Receiving and
+sending are in [self-hosting.md](self-hosting.md).
 
 ## What you need
 
 - A Cloudflare account on the Workers Paid plan. The Free plan gives a request too little CPU for a
-  password sign-in; [self-hosting.md](self-hosting.md) has the numbers. R2 must be turned on once
+  password sign-in; [self-hosting.md](self-hosting.md) gives the reason. R2 must be turned on once
   in the dashboard, under R2 Object Storage, because Mail keeps each message there: until then the
   deploy fails when it makes the bucket.
 - [Git](https://git-scm.com/downloads).
@@ -111,11 +113,12 @@ this page stops at an address that exists. Receiving and sending are in
    to use other names, change those four before this step. The Worker's name is also the first part
    of its address. The names under `env` are Gateweave's own deployments: leave them alone.
 
-   If your account already has a Worker, a database, a bucket or a queue under one of these names,
-   the deploy uses it instead of making a new one. A Worker of that name gets Mail's code in place
-   of its own and keeps its secrets, a database of that name gets Mail's migrations, a bucket is
-   used as it is, and a queue gets Mail as its consumer. To keep a new Mail apart from what you
-   have, choose other names first.
+   If your account already has an earlier Mail under these names, the deploy updates it: its Worker
+   gets the new code and keeps its secrets, and its database gets the new migrations. A different
+   Worker under the name is overwritten, or the deploy fails if it has no `BETTER_AUTH_SECRET`. A
+   queue that another Worker consumes makes the deploy fail, since a queue has one consumer Worker.
+   A database or bucket of that name is used whatever is in it. To keep a new Mail apart from what
+   you have, choose unused names.
 
    <details>
    <summary>Expected output</summary>
@@ -191,25 +194,21 @@ this page stops at an address that exists. Receiving and sending are in
 
    </details>
 
-5. Make the key that encrypts mail, keep a copy of it, and give it to the Worker. Run the first
-   command and copy what it prints into a password manager or somewhere as safe.
+5. Make the key that encrypts mail and keep a copy of it. If this server already has a
+   `SECRETS_KEY`, as when step 4 updated an earlier Mail, skip steps 5 and 6: setting a new one
+   makes its mail, the workspaces' provider keys and the webhook signing secrets unreadable. To
+   change a key, follow "Changing the key" in [self-hosting.md](self-hosting.md#where-mail-is-kept).
 
    ```sh
    node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))"
    ```
 
-   Then store it as a secret. Wrangler asks for the value: paste the key.
-
-   ```sh
-   pnpm wrangler secret put SECRETS_KEY
-   ```
-
-   Wrangler never shows a secret again, so your copy is the only one. Mail encrypted under one
-   `SECRETS_KEY` can't be read under another: lose the key and you lose the mail it encrypted, and
-   the keys and webhook signing secrets that workspaces keep with it. No mail arrives on this
-   path, but set it now rather than after the first message. `openssl rand -base64 32` makes an
-   equal key where OpenSSL is installed. To change the key later, follow "Changing the key" in
-   [self-hosting.md](self-hosting.md#where-mail-is-kept).
+   Copy what it prints into a password manager or somewhere as safe. Wrangler never shows a secret
+   again, so your copy is the only one. Mail encrypted under one `SECRETS_KEY` can't be read under
+   another: lose the key and you lose the mail it encrypted, and the keys and webhook signing
+   secrets that workspaces keep with it. No mail arrives on this path, but set the key now rather
+   than after the first message. `openssl rand -base64 32` makes an equal key where OpenSSL is
+   installed.
 
    <details>
    <summary>Expected output</summary>
@@ -218,8 +217,20 @@ this page stops at an address that exists. Receiving and sending are in
    K3k0tq9b1v0Zr3m7oXwY5n2hQf8dUeJt6sLpCgAyN4I=
    ```
 
-   The first command prints 44 characters of your own, different from these. The second asks
-   `Enter a secret value:` and then prints:
+   It prints 44 characters of your own, different from these.
+
+   </details>
+
+6. Give the key to the Worker. Wrangler asks for the value: paste the key from step 5.
+
+   ```sh
+   pnpm wrangler secret put SECRETS_KEY
+   ```
+
+   <details>
+   <summary>Expected output</summary>
+
+   It asks `Enter a secret value:` and then prints:
 
    ```text
    ▲ [WARNING] Multiple environments are defined in the Wrangler configuration file, but no target environment was specified for the secret put command.
@@ -233,7 +244,7 @@ this page stops at an address that exists. Receiving and sending are in
 
    </details>
 
-6. Open the address from step 4 in your browser. It opens the sign-in page, **Sign in to Gateweave
+7. Open the address from step 4 in your browser. It opens the sign-in page, **Sign in to Gateweave
    Mail**. Choose **Create an account**, enter a name, an email address and a password of at least 8
    characters, then **Create account**. Mail sends no email unless you set it up, so it asks for no
    confirmation and any address will do.
@@ -251,7 +262,7 @@ this page stops at an address that exists. Receiving and sending are in
 
    </details>
 
-7. Under **New workspace**, give it a name such as `Acme`, which fills **URL** with `acme`, and
+8. Under **New workspace**, give it a name such as `Acme`, which fills **URL** with `acme`, and
    choose **Create workspace**.
 
    <details>
@@ -263,7 +274,7 @@ this page stops at an address that exists. Receiving and sending are in
 
    </details>
 
-8. Under **New mailbox**, type a name such as `Support` and choose **Make mailbox**. Leave "Everyone
+9. Under **New mailbox**, type a name such as `Support` and choose **Make mailbox**. Leave "Everyone
    in the workspace can read it" unticked: you are the owner, and an owner reads every mailbox.
 
    <details>
@@ -275,28 +286,28 @@ this page stops at an address that exists. Receiving and sending are in
 
    </details>
 
-9. Choose **Settings** in the sidebar, which opens on the **Members** tab, then the **Domains** tab.
-   Under **Domain name** type your domain, such as `example.com`, and choose **Add domain**. Each
-   domain or subdomain is proved on its own: proving `example.com` gives no addresses on `mail.example.com`.
+10. Choose **Settings** in the sidebar, which opens on the **Members** tab, then the **Domains** tab.
+    Under **Domain name** type your domain, such as `example.com`, and choose **Add domain**. Each
+    domain or subdomain is proved on its own: proving `example.com` gives no addresses on `mail.example.com`.
 
-   <details>
-   <summary>Expected output</summary>
+    <details>
+    <summary>Expected output</summary>
 
-   A row for the domain appears under **Domains**, marked "Waiting for proof", with "Add this TXT
-   record to the domain's DNS:" and a Name and a Value under it:
+    A row for the domain appears under **Domains**, marked "Waiting for proof", with "Add this TXT
+    record to the domain's DNS:" and a Name and a Value under it:
 
-   ```text
-   Name   _gateweave-mail.example.com
-   Value  gateweave-mail-verification=3f9c2a7e5b1d4c8a9e0f6b2d7a4c1e85
-   ```
+    ```text
+    Name   _gateweave-mail.example.com
+    Value  gateweave-mail-verification=3f9c2a7e5b1d4c8a9e0f6b2d7a4c1e85
+    ```
 
-   The Value is 32 characters after the equals sign, and yours differs. Copy both from the page.
+    The Value is 32 characters after the equals sign, and yours differs. Copy both from the page.
 
-   </details>
+    </details>
 
 <!-- timed run stops here -->
 
-10. At your DNS host, add a TXT record with that name and that value. Some hosts want only
+11. At your DNS host, add a TXT record with that name and that value. Some hosts want only
     `_gateweave-mail` as the name and add the domain themselves. Paste the value exactly, with no
     quotes of your own.
 
@@ -308,7 +319,7 @@ this page stops at an address that exists. Receiving and sending are in
 
     </details>
 
-11. Back on **Settings** › **Domains**, choose **Check DNS** on the domain's row. Mail asks
+12. Back on **Settings** › **Domains**, choose **Check DNS** on the domain's row. Mail asks
     Cloudflare's public DNS resolver, not your DNS host, so a record that is only just added may need
     another try after a few minutes.
 
@@ -317,22 +328,28 @@ this page stops at an address that exists. Receiving and sending are in
 
     While the record isn't seen, the row says "No matching TXT record yet. A new one can take a few
     minutes to show." and stays "Waiting for proof". Once it is seen, the row says **Proved**, with
-    a collapsed **Its TXT record** that asks you to keep the record in DNS, and a line about mail:
-    "Proved, but it has no MX records yet. Turning on Email Routing adds them." If the domain's mail
-    already goes somewhere else, it says instead that not all its MX records point to Cloudflare.
-    Both are fine here: this path doesn't receive mail.
+    a collapsed **Its TXT record** that asks you to keep the record in DNS. A line about mail comes
+    with it, one of three:
+    - "Proved, but it has no MX records yet. Turning on Email Routing adds them."
+    - "Proved, but not all its MX records point to Cloudflare, so some or all of its mail won't
+      reach this server."
+    - "Proved. Its MX records point to Cloudflare, which is right if this server's account runs
+      it." This one is also shown when those records serve another Cloudflare account, so it
+      doesn't tell you Mail will receive.
+
+    Each is fine here: this path doesn't receive mail.
 
     </details>
 
-12. Choose **Mailboxes** in the sidebar. On the **Support** card, under **New address**, type
+13. Choose **Mailboxes** in the sidebar. On the **Support** card, under **New address**, type
     `hello`, leave **At** on your domain and **How long** on "For good", and choose **Add address**.
 
     <details>
     <summary>Expected output</summary>
 
     The card lists `hello@example.com`, with a **Remove** button beside it, and "No addresses yet."
-    is gone. The address exists in Mail's directory. Until Email Routing sends the domain's mail to
-    the Worker, nothing arrives at it.
+    is gone. The address exists in Mail's directory. Mail from outside starts arriving once Email
+    Routing sends the domain's mail to the Worker.
 
     </details>
 
