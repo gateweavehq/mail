@@ -70,6 +70,8 @@ tools that run on Cloudflare, next to [Gateweave Track](https://github.com/gatew
   to agents. Mail's MCP server, at `/mcp`, has tools that wait for mail to come and hand over the
   code in a sign-up or sign-in message without the rest of its text. The same operations are a
   REST API at `/api/v1`, described by an OpenAPI document at `/api/v1/openapi.json`.
+  [docs/mcp.md](docs/mcp.md) is the reference: how to connect, and a table of every tool with its
+  input, output, route and what it needs.
   A mailbox can let an agent send too, in text or HTML and with files. An agent sends on its
   own unless an owner or admin has its mail wait for someone who reads the mailbox to approve or
   reject it: all of it, or what goes to anyone its settings don't name. Mail to its own
