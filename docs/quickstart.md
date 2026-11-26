@@ -111,6 +111,12 @@ this page stops at an address that exists. Receiving and sending are in
    to use other names, change those four before this step. The Worker's name is also the first part
    of its address. The names under `env` are Gateweave's own deployments: leave them alone.
 
+   If your account already has a Worker, a database, a bucket or a queue under one of these names,
+   the deploy uses it instead of making a new one. A Worker of that name gets Mail's code in place
+   of its own and keeps its secrets, a database of that name gets Mail's migrations, a bucket is
+   used as it is, and a queue gets Mail as its consumer. To keep a new Mail apart from what you
+   have, choose other names first.
+
    <details>
    <summary>Expected output</summary>
 
