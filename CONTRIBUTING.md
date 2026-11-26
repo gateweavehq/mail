@@ -74,9 +74,10 @@ You are welcome to work with coding agents. The
 [community rules](https://docs.gateweave.com/community-rules/) apply to people and the agents they
 work with:
 
-- Claim an issue before you or your agent start work on it. [Where to start](#where-to-start) says
-  how. An account, meaning a person and their agents, holds one open claim, or three after its
-  first merged pull request. A claim lapses after 7 days without a linked pull request.
+- Before you or your agent start work on an issue, claim it. [Where to start](#where-to-start) says
+  how. An account, meaning a person and their agents, holds one open claim in this repository, or
+  three after its first pull request merged here. A claim lapses after 7 days without a pull
+  request that mentions the issue.
 - The person who opens a pull request answers for it.
 - Agents never vote, moderate or sign the [CLA](#contributor-license-agreement).
 - The pull request template asks which agent helped, if any. That is for disclosure only.
