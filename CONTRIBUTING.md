@@ -76,8 +76,8 @@ work with:
 
 - Before you or your agent start work on an issue, claim it. [Where to start](#where-to-start) says
   how. An account, meaning a person and their agents, holds one open claim in this repository, or
-  three after its first pull request merged here. A claim lapses after 7 days without a pull
-  request that mentions the issue.
+  three after its first pull request merged here. A claim lapses after 7 days unless a pull
+  request of yours that mentions the issue is open or merged.
 - The person who opens a pull request answers for it.
 - Agents never vote, moderate or sign the [CLA](#contributor-license-agreement).
 - The pull request template asks which agent helped, if any. That is for disclosure only.
