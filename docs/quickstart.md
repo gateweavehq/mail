@@ -1,10 +1,11 @@
 # Quickstart
 
-About N minutes from a fresh clone gets you Gateweave Mail on your own Cloudflare account, at a
-workers.dev address, deployed from the command line, with you signed in as its first account, a
-workspace, a mailbox and an address on a domain you have proved with one TXT record. The time
-counts the steps up to the TXT record, and leaves out installing Git, Node and pnpm and the wait
-for your DNS host.
+A fresh clone gets you Gateweave Mail on your own Cloudflare account, at a workers.dev address,
+deployed from the command line, with you signed in as its first account, a workspace, a mailbox and
+an address on a domain you have proved with one TXT record. Following this page on 26 November 2026
+took about 4 minutes up to adding the TXT record, starting from an empty package cache, not counting
+installing the tools below or signing in to Cloudflare. The DNS steps after that depend on your DNS
+host and weren't timed.
 
 This is the shortest path: no custom domain for the Worker, no Email Routing and no Email Sending.
 Without Email Routing nothing reaches the address, and without Email Sending nothing leaves it, so
@@ -18,7 +19,8 @@ this page stops at an address that exists. Receiving and sending are in
   in the dashboard, under R2 Object Storage, because Mail keeps each message there: until then the
   deploy fails when it makes the bucket.
 - [Git](https://git-scm.com/downloads).
-- [Node.js](https://nodejs.org) 24 (22 and later work) and [pnpm](https://pnpm.io/installation) 12.
+- [Node.js](https://nodejs.org) 24, the version in `.node-version`, and
+  [pnpm](https://pnpm.io/installation) 12.
 - A browser, for signing in to Cloudflare and for Mail itself.
 - A domain whose DNS you can edit, to add one TXT record. `example.com` below stands for yours.
 
@@ -58,11 +60,13 @@ this page stops at an address that exists. Receiving and sending are in
    + @biomejs/biome 2.6.8
    + typescript 7.0.2
 
-   Done in 52s using pnpm v12.4.2
+   Done in 20s using pnpm v12.4.2
    ```
 
-   The counts and the time differ a little from release to release and machine to machine. On a
-   machine that has installed these packages before, `reused` is high and `downloaded` is 0.
+   Before these lines you may see download-progress lines, and lines from the install scripts of
+   `workerd` and `esbuild`. The counts and the time differ a little from release to release and
+   machine to machine. On a machine that has installed these packages before, `reused` is high and
+   `downloaded` is 0.
 
    </details>
 
@@ -84,7 +88,10 @@ this page stops at an address that exists. Receiving and sending are in
 
    </details>
 
-4. Deploy.
+4. Deploy. If your login can reach more than one Cloudflare account, the deploy can't ask which
+   to use: run `pnpm wrangler whoami` to see them with their ids, then set
+   `export CLOUDFLARE_ACCOUNT_ID=<id>` (in PowerShell, `$env:CLOUDFLARE_ACCOUNT_ID = "<id>"`) for
+   the one you want.
 
    ```sh
    pnpm run deploy
@@ -109,14 +116,23 @@ this page stops at an address that exists. Receiving and sending are in
 
    ```text
    ...
+   (!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, ...
+     - import "./scripts/dev-secrets" without a file extension (vite.config.ts:10:28). ...
+   (!) ... (the same warning, twice more)
    vite v8.3.8 building client environment for production...
    ...
    ✓ built in 12s
    vite v8.3.8 building ssr environment for production...
    ...
+   WARNING Missing required secrets: BETTER_AUTH_SECRET. Add them to .dev.vars, .env, or set as environment variables.
+   ...
    ✓ built in 6s
-    ⛅️ wrangler 4.164.0
-   🌀 Creating queue 'gateweave-mail-events'
+    ⛅️ wrangler 4.164.0 (update available 4.168.0)
+   ✅ Created queue 'gateweave-mail-events'
+
+   Configure your Worker to send messages to this queue:
+   ...
+   Configure your Worker to consume messages from this queue:
    ...
    Total Upload: 4682 KiB / gzip: 1101 KiB
    The following bindings need to be provisioned:
@@ -127,10 +143,12 @@ this page stops at an address that exists. Receiving and sending are in
    Provisioning DB (D1 Database)...
    Resource name found in config: gateweave-mail
    🌀 Creating new D1 Database "gateweave-mail"...
+   ✨ DB provisioned 🎉
 
    Provisioning RAW_MAIL (R2 Bucket)...
    Resource name found in config: gateweave-mail
    🌀 Creating new R2 Bucket "gateweave-mail"...
+   ✨ RAW_MAIL provisioned 🎉
 
    🎉 Resources provisioned, continuing with deployment...
    Durable Object exports reconciliation:
@@ -160,9 +178,10 @@ this page stops at an address that exists. Receiving and sending are in
    │ 0028_agent_webhook_hosts.sql     │ ✅     │
    ```
 
-   The address on the line after `Deployed` is yours. The migration table lists every migration
-   with a tick; the last one is shown above, and the number of migrations grows with releases. The
-   deploy takes about a minute and a quarter on a warm package cache.
+   Your address is the `https://...workers.dev` line right after `Deployed ... triggers`, in the
+   middle of the output: scroll up past the migration table, which comes after it and lists every
+   migration with a tick. The last one is shown above, and the number of migrations grows with
+   releases. The deploy takes about a minute and a quarter.
 
    </details>
 
@@ -250,9 +269,9 @@ this page stops at an address that exists. Receiving and sending are in
 
    </details>
 
-9. Choose **Settings** in the sidebar, then the **Domains** tab. Under **Domain name** type your
-   domain, such as `example.com`, and choose **Add domain**. Each domain or subdomain is proved on
-   its own: proving `example.com` gives no addresses on `mail.example.com`.
+9. Choose **Settings** in the sidebar, which opens on the **Members** tab, then the **Domains** tab.
+   Under **Domain name** type your domain, such as `example.com`, and choose **Add domain**. Each
+   domain or subdomain is proved on its own: proving `example.com` gives no addresses on `mail.example.com`.
 
    <details>
    <summary>Expected output</summary>
