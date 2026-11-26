@@ -114,9 +114,10 @@ proved; read the skill before acting on any of it.
 - Each route takes its inputs from its path, then from its query string for a `GET` or `DELETE`,
   or from its JSON body for a `POST` or `PATCH`. The body is 1 MB at most, or 16 MB for
   `send_email` and `reply`, whose files come in it.
-- A route answers what its tool would, or `{ "error": "…" }` with 400, 401, 403, 404, 409, 413 or
-  429, with `Retry-After` when it is known. A failure of Mail's own is a 500 over REST and a tool
-  error over MCP, in the same words.
+- A route answers what its tool would, or `{ "error": "…" }` with 400, 401, 403, 404, 409, 413,
+  429 or 503, with `Retry-After` when it is known. A 503 is what `send_email`, `send_template` and
+  `reply` answer while Mail has not finished checking the recipients: retry shortly. A failure of
+  Mail's own is a 500 over REST and a tool error over MCP, in the same words.
 - Any site may call the API (CORS without credentials), as only a key counts and a browser sends
   none of its own.
 - `read_thread` is an HTTP route with no MCP tool of its own: `GET
