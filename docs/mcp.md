@@ -106,10 +106,12 @@ the API base URL.
 
 <!-- mcp-tools:end -->
 
-What a tool gives from a message is marked as the sender's words. read_email, wait_for_email and
-get_verification_code give the domain that was proved beside it, and search_email gives it for each
-thread's latest message; get_attachment gives the file and the same notice, without the domain. Read
-the skill before acting on any of it.
+search_email, read_email, wait_for_email and get_attachment mark what they give as the sender's words,
+with an `untrusted` notice in the result. read_email and wait_for_email give the domain that was
+proved beside the message, and search_email gives it for each thread's latest message;
+get_attachment gives the file and the notice, without the domain. get_verification_code gives only
+the code it found, and the proved domain, without the notice, but the code still comes from the
+sender's text, so treat it as theirs. Read the skill before acting on any of it.
 
 ## HTTP notes
 
