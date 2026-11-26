@@ -88,7 +88,8 @@ file unless you want them, and close what it opened.
 
 ## Deploy from the command line
 
-Requirements: Node.js 24 (22+ works) and pnpm 12.
+Requirements: Node.js 24 (22+ works) and pnpm 12. The [quickstart](quickstart.md) takes these
+steps one at a time, up to a first address.
 
 ```sh
 git clone https://github.com/gateweavehq/mail.git

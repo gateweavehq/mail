@@ -189,7 +189,9 @@ a provider such as Gateweave ID, uncomment and fill in its keys in `.dev.vars`.
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/gateweavehq/mail)
 
 The button copies Mail to your GitHub or GitLab account, creates the database, and deploys it to
-your Cloudflare account; every push to your copy deploys again. From the command line:
+your Cloudflare account; every push to your copy deploys again. The
+[quickstart](docs/quickstart.md) goes from a fresh clone to a first address, step by step. From
+the command line:
 
 ```sh
 pnpm wrangler login
