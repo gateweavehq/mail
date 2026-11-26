@@ -9,6 +9,10 @@
 - [ ] `pnpm verify` passes
 - [ ] Tests cover the change (every bug fix has a test that fails without it)
 
+## Agents
+
+<!-- Which coding agent helped with this change, if any? This is for disclosure only. -->
+
 ## Deploy notes
 
 <!-- Delete what does not apply. -->
