@@ -13,19 +13,24 @@ export const NEEDS: Record<string, string> = {
 	get_attachment: "Mailboxes: a grant to read the mailbox",
 	wait_for_email: "Mailboxes: a grant to read the mailbox",
 	get_verification_code: "Mailboxes: a grant to read the mailbox",
-	send_email: "Sending: a grant to send from the mailbox, within its daily limit and approval",
+	send_email:
+		"Sending: a grant to send from the mailbox, within its daily limit and approval, to recipients that satisfy its target policy when that applies",
 	list_templates: "Nothing beyond a working key",
-	send_template: "Sending: a grant to send from the mailbox, within its daily limit and approval",
-	reply: "Sending: a grant to send from the mailbox, within its daily limit and approval",
-	list_addresses: "Addresses: only the ones it made",
+	send_template:
+		"Sending: a grant to send from the mailbox, within its daily limit and approval, to recipients that satisfy its target policy when that applies",
+	reply:
+		"Sending: a grant to send from the mailbox, within its daily limit and approval, to recipients that satisfy its target policy when that applies",
+	list_addresses: "Addresses: a grant to read the mailbox, and only the ones it made",
 	create_address:
 		"Addresses: a grant to send from the mailbox, and an address policy naming the domain",
-	end_address: "Addresses: only one it made",
+	end_address: "Addresses: a grant to read the mailbox, and only an address it made",
 	list_webhooks: "Webhooks: only the ones it made",
-	create_webhook: "Webhooks: an allowed host, and a grant to read each mailbox it hears of",
-	update_webhook: "Webhooks: one it made, and an allowed host for a new URL",
+	create_webhook:
+		"Webhooks: a grant to read each mailbox it hears of, and an allowed host when its target policy applies",
+	update_webhook:
+		"Webhooks: one it made, a grant to read each newly selected mailbox, and an allowed host for a new URL or a resume when its target policy applies",
 	delete_webhook: "Webhooks: only one it made",
-	test_webhook: "Webhooks: one it made, and an allowed host",
+	test_webhook: "Webhooks: one it made, and an allowed host when its target policy applies",
 };
 
 export const TOOLS_START = "<!-- mcp-tools:start -->";
