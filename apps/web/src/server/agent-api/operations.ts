@@ -626,7 +626,7 @@ const reply = operation({
 	name: "reply",
 	title: "Reply",
 	description:
-		"Answers a message in its thread, from the address it came to. A reply to proved mail follows Reply-To. For unproved mail it goes to From and keeps only permitted Cc addresses. You can send text or HTML, with files if you like. Goes on its own or waits for approval as send_email does.",
+		"Answers a message in its thread, from the address the message came to or from, or when that address has expired, from the mailbox's first available address. A reply to proved mail follows Reply-To. For unproved mail it goes to From and keeps only permitted Cc addresses. You can send text or HTML, with files if you like. Goes on its own or waits for approval as send_email does.",
 	input: z.object({
 		mailbox: mailboxInput,
 		messageId: idInput,
