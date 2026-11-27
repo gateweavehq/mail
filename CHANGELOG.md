@@ -36,6 +36,7 @@ migration in this release.
   - **Before:** "Answers a message in its thread, from the address it came to."
   - **Now:** "Answers a message in its thread, from the address the message came to or from, or
     when that address has expired, from the mailbox's first available address."
+
   ([#79](https://github.com/gateweavehq/mail/pull/79))
 - **Six dependencies are updated.**
   - **`lucide-react`:** 1.71.0 to 1.74.0.
