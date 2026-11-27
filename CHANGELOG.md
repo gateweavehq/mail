@@ -8,6 +8,54 @@ read its entry before updating a self-hosted copy.
 Each version's [GitHub release](https://github.com/gateweavehq/mail/releases) carries the same
 notes. Publishing a release deploys it.
 
+## [0.4.1] - 2026-11-27
+
+Documentation, a new description for the `reply` tool, and six dependency updates. There is no
+migration in this release.
+
+### Added
+
+- **A quickstart.** `docs/quickstart.md` takes a fresh clone to Gateweave Mail on your own
+  Cloudflare account, at a workers.dev address, with a first address on a domain you have proved
+  with one TXT record. `README.md` and `docs/self-hosting.md` link to it.
+  ([#80](https://github.com/gateweavehq/mail/pull/80))
+- **An MCP and HTTP reference page.** `docs/mcp.md` gives an agent's operations two ways, as
+  tools on an MCP server and as routes of a REST API, and has a table of every tool with its
+  input, output, route and what it needs.
+  - **The table** is made from the list of operations in
+    `apps/web/src/server/agent-api/operations.ts`. A test fails when the page differs from it.
+  - **The table's code** is not part of the Worker. It is imported by a
+    test, not by the app.
+  - **The README** links to the page. ([#79](https://github.com/gateweavehq/mail/pull/79))
+
+### Changed
+
+- **The `reply` tool's description.** An MCP client reads it in the tool list, and an HTTP client
+  in the OpenAPI document (`packages/mail/openapi.json`) and in the generated types
+  (`packages/mail/src/api.gen.ts`).
+  - **Before:** "Answers a message in its thread, from the address it came to."
+  - **Now:** "Answers a message in its thread, from the address the message came to or from, or
+    when that address has expired, from the mailbox's first available address."
+
+  ([#79](https://github.com/gateweavehq/mail/pull/79))
+- **Six dependencies are updated.**
+  - **`lucide-react`:** 1.71.0 to 1.74.0.
+  - **`@cloudflare/vite-plugin`:** 1.68.0 to 1.70.0.
+  - **`@playwright/test`:** 1.65.0 to 1.65.1.
+  - **`@seriousme/openapi-schema-validator`:** 2.11.0 to 2.12.0.
+  - **`@biomejs/biome`:** 2.6.6 to 2.6.8.
+  - **`wrangler`:** 4.160.0 to 4.164.0.
+
+  ([#77](https://github.com/gateweavehq/mail/pull/77))
+- **The contributing guide links the community rules.** `CONTRIBUTING.md` has an agents section,
+  now "Contributing with agents", that links the
+  [community rules](https://docs.gateweave.com/community-rules/). The pull request template
+  gains an "Agents" heading for disclosure. ([#78](https://github.com/gateweavehq/mail/pull/78))
+
+### If you run your own
+
+No migration, variable or secret. Deploy as usual.
+
 ## [0.4.0] - 2026-11-20
 
 An agent whose mail goes out without approval now sends only to addresses it may reach, and
