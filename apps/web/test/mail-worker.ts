@@ -213,7 +213,7 @@ import { Audience as BuiltAudience } from "./index.js";
 let failed = false;
 export class Audience extends BuiltAudience {
 	async destroy() {
-		if (!failed) {
+		if (this.ctx.id.name.startsWith("blocked-audience-") || !failed) {
 			failed = true;
 			throw new Error("destroy failed for the test");
 		}

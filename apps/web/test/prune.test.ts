@@ -162,6 +162,35 @@ describe("the daily cron", () => {
 		expect(await held()).toBe(0);
 	});
 
+	it("lets a later audience removal through when older ones keep failing", async () => {
+		await mail.db.batch([
+			mail.db.prepare(
+				`WITH RECURSIVE row(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM row WHERE n < 100)
+				INSERT INTO audience_removal (organization_id, removed_at)
+				SELECT 'blocked-audience-' || n, 1000 + n FROM row`,
+			),
+			mail.db.prepare(
+				"INSERT INTO audience_removal (organization_id, removed_at) VALUES ('later-audience', 2000)",
+			),
+		]);
+		const later = async () => {
+			const row = await mail.db
+				.prepare(
+					"SELECT count(*) AS n FROM audience_removal WHERE organization_id = 'later-audience'",
+				)
+				.first<{ n: number }>();
+			return row?.n ?? 0;
+		};
+
+		await mail.runScheduled();
+		expect(await later()).toBe(1);
+		await mail.runScheduled();
+		expect(await later()).toBe(0);
+		await mail.db
+			.prepare("DELETE FROM audience_removal WHERE organization_id LIKE 'blocked-audience-%'")
+			.run();
+	});
+
 	it("gets through more than one batch", async () => {
 		// One statement, not one for each row: preparing 2,500 through the test's connection takes long
 		// enough when other suites are busy that the connection is lost before they can be sent.

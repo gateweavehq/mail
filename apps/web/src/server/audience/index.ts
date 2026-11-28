@@ -37,7 +37,7 @@ export async function finishAudienceRemovals(db: Database): Promise<number> {
 	const due = await db
 		.select()
 		.from(schema.audienceRemoval)
-		.orderBy(asc(schema.audienceRemoval.removedAt))
+		.orderBy(asc(schema.audienceRemoval.attempts), asc(schema.audienceRemoval.removedAt))
 		.limit(AUDIENCE_REMOVALS_PER_RUN)
 		.all();
 	let finished = 0;
@@ -50,6 +50,11 @@ export async function finishAudienceRemovals(db: Database): Promise<number> {
 				.run();
 			finished++;
 		} catch (error) {
+			await db
+				.update(schema.audienceRemoval)
+				.set({ attempts: removal.attempts + 1 })
+				.where(eq(schema.audienceRemoval.organizationId, removal.organizationId))
+				.run();
 			console.error("audience: finishing a removal failed; the next run will", {
 				name: error instanceof Error ? error.name : "unknown",
 			});

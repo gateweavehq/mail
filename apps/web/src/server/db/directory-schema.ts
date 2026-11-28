@@ -144,8 +144,13 @@ export const audienceRemoval = sqliteTable(
 		removedAt: integer("removed_at", { mode: "timestamp_ms" })
 			.default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
 			.notNull(),
+		/** How many daily runs have tried it. Rows tried least go first, so failures don't block later ones. */
+		attempts: integer("attempts").default(0).notNull(),
 	},
-	(table) => [index("audience_removal_removed_at_idx").on(table.removedAt)],
+	(table) => [
+		index("audience_removal_removed_at_idx").on(table.removedAt),
+		index("audience_removal_attempts_idx").on(table.attempts, table.removedAt),
+	],
 );
 
 /** One address on one domain, for one mailbox. Migration 0003 keeps all three in one workspace. */
