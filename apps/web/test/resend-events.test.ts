@@ -120,6 +120,9 @@ interface Directory {
 		id: string;
 		sendsWith: string;
 		eventsAt: number | null;
+		sendAttemptState: string | null;
+		sendAttemptAt: number | null;
+		sendAttemptError: string | null;
 		proof: { value: string } | null;
 	}[];
 	mailboxes: { id: string; name: string }[];
@@ -572,6 +575,35 @@ describe("sending through Resend with a key that can only send", () => {
 		expect(listed.domains[0]?.sendsWith).toBe("resend");
 		expect(listed.resendReceiving).toBeNull();
 		await send(box, ["ada@example.org"]);
+	});
+});
+
+describe("switching how a domain sends", () => {
+	it("forgets Email Service's last send outcome when the domain moves to Resend", async () => {
+		const box = await workspace();
+		const response = await mail.fetch(`${origin}/api/mail/${box.slug}/${box.mailboxId}/outbox`, {
+			method: "POST",
+			headers: { ...owner.headers, origin, "content-type": "application/json" },
+			body: JSON.stringify({
+				action: "send",
+				draft: crypto.randomUUID(),
+				to: ["ada@example.org"],
+				subject: "Before Resend",
+				text: "Hi.",
+			}),
+		});
+		expect(response.status).toBe(200);
+		await expect
+			.poll(async () => (await directory(box.slug)).body.domains[0]?.sendAttemptState)
+			.toBe("succeeded");
+
+		await sendingWithResend(box);
+		const domain = (await directory(box.slug)).body.domains[0];
+		expect(domain).toMatchObject({
+			sendAttemptState: null,
+			sendAttemptAt: null,
+			sendAttemptError: null,
+		});
 	});
 });
 

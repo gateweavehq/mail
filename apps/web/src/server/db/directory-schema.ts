@@ -51,6 +51,17 @@ export const mailDomain = sqliteTable(
 		 * sends.
 		 */
 		eventsAt: integer("events_at", { mode: "timestamp_ms" }),
+		/**
+		 * How the last send through Email Service from this domain went, when one was asked: whether
+		 * the provider took it, refused the request as invalid, hit a transient failure, or refused
+		 * it for another reason.
+		 */
+		sendAttemptState: text("send_attempt_state", {
+			enum: ["succeeded", "validation-error", "transient-error", "failed"],
+		}),
+		sendAttemptAt: integer("send_attempt_at", { mode: "timestamp_ms" }),
+		/** Email Service's code for the failure, never its message, which may name people or mail. */
+		sendAttemptError: text("send_attempt_error"),
 	},
 	(table) => [
 		uniqueIndex("mail_domain_verified_name_unique")

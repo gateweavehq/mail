@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import { and, eq, isNull, lt, or } from "drizzle-orm";
 import PostalMime, { type Attachment } from "postal-mime";
 import type { DeliveryState } from "../../lib/delivery";
 import {
@@ -13,7 +14,7 @@ import { KEY_CHANGED, RESEND_CODE, type SendsWith } from "../../lib/providers";
 import type { SentEventType } from "../../lib/webhooks";
 import { heldWriters } from "../auth/agents";
 import { type BackupRow, readForBackup } from "../backup-read";
-import { createDb } from "../db";
+import { createDb, schema } from "../db";
 import { DEFAULT_DNS_RESOLVER, dnsLookup } from "../directory/dns";
 import { ownObjects } from "../jurisdiction";
 import { openProviderKey } from "../providers/keys";
@@ -34,10 +35,12 @@ import {
 } from "./deliveries";
 import {
 	copyOutcome,
+	errorCode,
 	type Outcome,
 	outcomeOf,
 	resendOutcome,
 	STALE_SENDING_MS,
+	sendAttemptStateOf,
 	WAITS_MS,
 } from "./delivery";
 import {
@@ -1313,6 +1316,47 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 		return { ok: true, providerId: null, recipients: [...recorded, ...failed] };
 	}
 
+	/**
+	 * Notes on the sender's domain how a try that asked Email Service went. This is only a signal
+	 * for the domain's settings: mail sending never depends on it, and a directory failure must not
+	 * change what became of the message. The provider's code is kept, never its message, which may
+	 * name people or mail.
+	 */
+	async #noteEmailServiceAttempt(
+		request: EmailMessageBuilder,
+		workspaceId: string | null,
+		state: "succeeded" | "validation-error" | "transient-error" | "failed",
+		error: unknown = null,
+	): Promise<void> {
+		if (!workspaceId) return;
+		const from = typeof request.from === "string" ? request.from : request.from?.email;
+		const domain = from?.slice(from.lastIndexOf("@") + 1).toLowerCase();
+		if (!domain) return;
+		const at = new Date();
+		try {
+			const { mailDomain } = schema;
+			await createDb(this.env.DB)
+				.update(mailDomain)
+				.set({
+					sendAttemptState: state,
+					sendAttemptAt: at,
+					sendAttemptError: state === "succeeded" ? null : errorCode(error),
+				})
+				.where(
+					and(
+						eq(mailDomain.organizationId, workspaceId),
+						eq(mailDomain.name, domain),
+						eq(mailDomain.sendsWith, "cloudflare"),
+						or(isNull(mailDomain.sendAttemptAt), lt(mailDomain.sendAttemptAt, at)),
+					),
+				);
+		} catch (writeError) {
+			console.error("mailbox: noting a domain's send attempt failed", {
+				name: writeError instanceof Error ? writeError.name : "unknown",
+			});
+		}
+	}
+
 	/** Hands a message to Email Service or Resend once, and says how that went. Never throws. */
 	async #deliver(id: string, row: Trying): Promise<Delivered> {
 		const direct = await this.#direct(id, row);
@@ -1347,8 +1391,12 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 							}
 						: written,
 				);
+				this.ctx.waitUntil(this.#noteEmailServiceAttempt(written, row.workspaceId, "succeeded"));
 				return { ok: true, providerId: result.messageId };
 			} catch (error) {
+				this.ctx.waitUntil(
+					this.#noteEmailServiceAttempt(written, row.workspaceId, sendAttemptStateOf(error), error),
+				);
 				const outcome = outcomeOf(error, row.attempts, Date.now());
 				return { ok: false, outcome, detail: null, answered: false, maybeSent: false };
 			}

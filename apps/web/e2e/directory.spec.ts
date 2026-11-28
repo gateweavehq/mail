@@ -47,6 +47,7 @@ test("an owner proves a domain, makes a mailbox and gives it an address that can
 	await row.getByRole("button", { name: "Check DNS" }).click();
 	await expect(row.getByRole("status")).toContainText("Its MX records point to Cloudflare");
 	await expect(row.getByText("Proved", { exact: true })).toBeVisible();
+	await expect(row.getByText("No send through Email Service yet.")).toBeVisible();
 	// Folded away once proved, and still there to keep: mail from this server's mailboxes goes
 	// straight to the domain only while DNS shows it.
 	await expect(row.locator("dd").first()).toBeHidden();
