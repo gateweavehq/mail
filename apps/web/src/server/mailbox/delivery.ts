@@ -49,6 +49,26 @@ export function errorCode(error: unknown): string | null {
 	return null;
 }
 
+/**
+ * What a failed try says of the sender's domain. Validation errors include the sender-domain
+ * answers that say it is not set up; other permanent refusals say nothing of whether the domain
+ * itself can send, and neither do the transient ones, but they are kept apart for the settings page.
+ */
+export function sendAttemptStateOf(
+	error: unknown,
+): "validation-error" | "transient-error" | "failed" {
+	const code = errorCode(error);
+	if (
+		code === "E_VALIDATION_ERROR" ||
+		code === "E_SENDER_DOMAIN_NOT_AVAILABLE" ||
+		code === "E_SENDER_NOT_VERIFIED"
+	) {
+		return "validation-error";
+	}
+	if (code === null || UNKNOWN.has(code) || LATER.has(code)) return "transient-error";
+	return "failed";
+}
+
 /** What a failed try means, given the error and how many tries there have been, this one too. */
 export function outcomeOf(error: unknown, attempts: number, now: number): Outcome {
 	const code = errorCode(error);

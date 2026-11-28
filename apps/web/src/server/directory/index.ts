@@ -200,6 +200,9 @@ export async function listDirectory(
 			sendsWith: domain.sendsWith,
 			receivesWith: domain.receivesWith,
 			eventsAt: admin ? (domain.eventsAt?.getTime() ?? null) : null,
+			sendAttemptState: admin ? (domain.sendAttemptState ?? null) : null,
+			sendAttemptAt: admin ? (domain.sendAttemptAt?.getTime() ?? null) : null,
+			sendAttemptError: admin ? (domain.sendAttemptError ?? null) : null,
 		})),
 		mailboxes: readable.map((box) => ({
 			id: box.id,
@@ -402,6 +405,9 @@ export async function setDomainSending(
 		.set({
 			sendsWith,
 			eventsAt: sql`CASE WHEN ${mailDomain.sendsWith} = ${sendsWith} THEN ${mailDomain.eventsAt} END`,
+			sendAttemptState: sql`CASE WHEN ${mailDomain.sendsWith} = ${sendsWith} THEN ${mailDomain.sendAttemptState} END`,
+			sendAttemptAt: sql`CASE WHEN ${mailDomain.sendsWith} = ${sendsWith} THEN ${mailDomain.sendAttemptAt} END`,
+			sendAttemptError: sql`CASE WHEN ${mailDomain.sendsWith} = ${sendsWith} THEN ${mailDomain.sendAttemptError} END`,
 		})
 		.where(and(eq(mailDomain.id, id), eq(mailDomain.organizationId, workspaceId)))
 		.run();

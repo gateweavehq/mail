@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ResendFailure } from "../providers/resend";
-import { errorCode, outcomeOf, resendOutcome, WAITS_MS } from "./delivery";
+import { errorCode, outcomeOf, resendOutcome, sendAttemptStateOf, WAITS_MS } from "./delivery";
 
 const coded = (code: string) => Object.assign(new Error("Refused"), { code });
 
@@ -14,6 +14,16 @@ describe("errorCode", () => {
 		expect(errorCode(new Error("Network connection lost"))).toBeNull();
 		expect(errorCode(coded("ECONNRESET"))).toBeNull();
 		expect(errorCode("E_RATE_LIMIT_EXCEEDED")).toBeNull();
+	});
+});
+
+describe("sendAttemptStateOf", () => {
+	it("separates validation, transient and other permanent failures", () => {
+		expect(sendAttemptStateOf(coded("E_VALIDATION_ERROR"))).toBe("validation-error");
+		expect(sendAttemptStateOf(coded("E_SENDER_NOT_VERIFIED"))).toBe("validation-error");
+		expect(sendAttemptStateOf(new Error("Network connection lost"))).toBe("transient-error");
+		expect(sendAttemptStateOf(coded("E_RATE_LIMIT_EXCEEDED"))).toBe("transient-error");
+		expect(sendAttemptStateOf(coded("E_RECIPIENT_SUPPRESSED"))).toBe("failed");
 	});
 });
 

@@ -1,8 +1,8 @@
 {
-  "id": "d0683c78-a930-4edf-b630-c9c8d2eca600",
-  "prevId": "dc7622bc-9510-43eb-8258-1dd1647cc6d9",
   "version": "6",
   "dialect": "sqlite",
+  "id": "7642e401-d938-40ac-b798-a6fb25a4623d",
+  "prevId": "17d4c623-8f05-44ac-b177-39bb75d1911d",
   "tables": {
     "account": {
       "name": "account",
@@ -113,15 +113,15 @@
         "account_user_id_user_id_fk": {
           "name": "account_user_id_user_id_fk",
           "tableFrom": "account",
+          "tableTo": "user",
           "columnsFrom": [
             "user_id"
           ],
-          "tableTo": "user",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -208,28 +208,28 @@
         "agent_key_user_id_user_id_fk": {
           "name": "agent_key_user_id_user_id_fk",
           "tableFrom": "agent_key",
+          "tableTo": "user",
           "columnsFrom": [
             "user_id"
           ],
-          "tableTo": "user",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "agent_key_organization_id_organization_id_fk": {
           "name": "agent_key_organization_id_organization_id_fk",
           "tableFrom": "agent_key",
+          "tableTo": "organization",
           "columnsFrom": [
             "organization_id"
           ],
-          "tableTo": "organization",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -318,28 +318,28 @@
         "invitation_organization_id_organization_id_fk": {
           "name": "invitation_organization_id_organization_id_fk",
           "tableFrom": "invitation",
+          "tableTo": "organization",
           "columnsFrom": [
             "organization_id"
           ],
-          "tableTo": "organization",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "invitation_inviter_id_user_id_fk": {
           "name": "invitation_inviter_id_user_id_fk",
           "tableFrom": "invitation",
+          "tableTo": "user",
           "columnsFrom": [
             "inviter_id"
           ],
-          "tableTo": "user",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -406,28 +406,28 @@
         "member_organization_id_organization_id_fk": {
           "name": "member_organization_id_organization_id_fk",
           "tableFrom": "member",
+          "tableTo": "organization",
           "columnsFrom": [
             "organization_id"
           ],
-          "tableTo": "organization",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "member_user_id_user_id_fk": {
           "name": "member_user_id_user_id_fk",
           "tableFrom": "member",
+          "tableTo": "user",
           "columnsFrom": [
             "user_id"
           ],
-          "tableTo": "user",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -596,15 +596,15 @@
         "session_user_id_user_id_fk": {
           "name": "session_user_id_user_id_fk",
           "tableFrom": "session",
+          "tableTo": "user",
           "columnsFrom": [
             "user_id"
           ],
-          "tableTo": "user",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -794,28 +794,28 @@
         "agent_address_policy_member_id_member_id_fk": {
           "name": "agent_address_policy_member_id_member_id_fk",
           "tableFrom": "agent_address_policy",
+          "tableTo": "member",
           "columnsFrom": [
             "member_id"
           ],
-          "tableTo": "member",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "agent_address_policy_updated_by_user_id_fk": {
           "name": "agent_address_policy_updated_by_user_id_fk",
           "tableFrom": "agent_address_policy",
+          "tableTo": "user",
           "columnsFrom": [
             "updated_by"
           ],
-          "tableTo": "user",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "set null"
+          "onDelete": "set null",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -939,28 +939,28 @@
         "agent_log_organization_id_organization_id_fk": {
           "name": "agent_log_organization_id_organization_id_fk",
           "tableFrom": "agent_log",
+          "tableTo": "organization",
           "columnsFrom": [
             "organization_id"
           ],
-          "tableTo": "organization",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "agent_log_actor_user_id_user_id_fk": {
           "name": "agent_log_actor_user_id_user_id_fk",
           "tableFrom": "agent_log",
+          "tableTo": "user",
           "columnsFrom": [
             "actor_user_id"
           ],
-          "tableTo": "user",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "set null"
+          "onDelete": "set null",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -990,28 +990,28 @@
         "agent_mailbox_member_id_member_id_fk": {
           "name": "agent_mailbox_member_id_member_id_fk",
           "tableFrom": "agent_mailbox",
+          "tableTo": "member",
           "columnsFrom": [
             "member_id"
           ],
-          "tableTo": "member",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "agent_mailbox_mailbox_id_mailbox_id_fk": {
           "name": "agent_mailbox_mailbox_id_mailbox_id_fk",
           "tableFrom": "agent_mailbox",
+          "tableTo": "mailbox",
           "columnsFrom": [
             "mailbox_id"
           ],
-          "tableTo": "mailbox",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {
@@ -1056,28 +1056,28 @@
         "agent_pause_member_id_member_id_fk": {
           "name": "agent_pause_member_id_member_id_fk",
           "tableFrom": "agent_pause",
+          "tableTo": "member",
           "columnsFrom": [
             "member_id"
           ],
-          "tableTo": "member",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "agent_pause_paused_by_user_id_fk": {
           "name": "agent_pause_paused_by_user_id_fk",
           "tableFrom": "agent_pause",
+          "tableTo": "user",
           "columnsFrom": [
             "paused_by"
           ],
-          "tableTo": "user",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "set null"
+          "onDelete": "set null",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -1159,28 +1159,28 @@
         "agent_policy_member_id_member_id_fk": {
           "name": "agent_policy_member_id_member_id_fk",
           "tableFrom": "agent_policy",
+          "tableTo": "member",
           "columnsFrom": [
             "member_id"
           ],
-          "tableTo": "member",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "agent_policy_updated_by_user_id_fk": {
           "name": "agent_policy_updated_by_user_id_fk",
           "tableFrom": "agent_policy",
+          "tableTo": "user",
           "columnsFrom": [
             "updated_by"
           ],
-          "tableTo": "user",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "set null"
+          "onDelete": "set null",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -1204,12 +1204,28 @@
           "notNull": true,
           "autoincrement": false,
           "default": "(cast(unixepoch('subsecond') * 1000 as integer))"
+        },
+        "attempts": {
+          "name": "attempts",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
         }
       },
       "indexes": {
         "audience_removal_removed_at_idx": {
           "name": "audience_removal_removed_at_idx",
           "columns": [
+            "removed_at"
+          ],
+          "isUnique": false
+        },
+        "audience_removal_attempts_idx": {
+          "name": "audience_removal_attempts_idx",
+          "columns": [
+            "attempts",
             "removed_at"
           ],
           "isUnique": false
@@ -1251,15 +1267,15 @@
         "image_sender_member_id_member_id_fk": {
           "name": "image_sender_member_id_member_id_fk",
           "tableFrom": "image_sender",
+          "tableTo": "member",
           "columnsFrom": [
             "member_id"
           ],
-          "tableTo": "member",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {
@@ -1370,41 +1386,41 @@
         "mail_address_domain_id_mail_domain_id_fk": {
           "name": "mail_address_domain_id_mail_domain_id_fk",
           "tableFrom": "mail_address",
+          "tableTo": "mail_domain",
           "columnsFrom": [
             "domain_id"
           ],
-          "tableTo": "mail_domain",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "mail_address_mailbox_id_mailbox_id_fk": {
           "name": "mail_address_mailbox_id_mailbox_id_fk",
           "tableFrom": "mail_address",
+          "tableTo": "mailbox",
           "columnsFrom": [
             "mailbox_id"
           ],
-          "tableTo": "mailbox",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "mail_address_created_by_user_id_fk": {
           "name": "mail_address_created_by_user_id_fk",
           "tableFrom": "mail_address",
+          "tableTo": "user",
           "columnsFrom": [
             "created_by"
           ],
-          "tableTo": "user",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "set null"
+          "onDelete": "set null",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -1479,6 +1495,27 @@
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false
+        },
+        "send_attempt_state": {
+          "name": "send_attempt_state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "send_attempt_at": {
+          "name": "send_attempt_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "send_attempt_error": {
+          "name": "send_attempt_error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
         }
       },
       "indexes": {
@@ -1487,8 +1524,8 @@
           "columns": [
             "name"
           ],
-          "where": "verified_at IS NOT NULL",
-          "isUnique": true
+          "isUnique": true,
+          "where": "verified_at IS NOT NULL"
         },
         "mail_domain_organization_name_unique": {
           "name": "mail_domain_organization_name_unique",
@@ -1503,15 +1540,15 @@
         "mail_domain_organization_id_organization_id_fk": {
           "name": "mail_domain_organization_id_organization_id_fk",
           "tableFrom": "mail_domain",
+          "tableTo": "organization",
           "columnsFrom": [
             "organization_id"
           ],
-          "tableTo": "organization",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -1628,15 +1665,15 @@
         "mail_suppression_organization_id_organization_id_fk": {
           "name": "mail_suppression_organization_id_organization_id_fk",
           "tableFrom": "mail_suppression",
+          "tableTo": "organization",
           "columnsFrom": [
             "organization_id"
           ],
-          "tableTo": "organization",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -1704,15 +1741,15 @@
         "mailbox_organization_id_organization_id_fk": {
           "name": "mailbox_organization_id_organization_id_fk",
           "tableFrom": "mailbox",
+          "tableTo": "organization",
           "columnsFrom": [
             "organization_id"
           ],
-          "tableTo": "organization",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -1773,41 +1810,41 @@
         "mailbox_access_mailbox_id_mailbox_id_fk": {
           "name": "mailbox_access_mailbox_id_mailbox_id_fk",
           "tableFrom": "mailbox_access",
+          "tableTo": "mailbox",
           "columnsFrom": [
             "mailbox_id"
           ],
-          "tableTo": "mailbox",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "mailbox_access_member_id_member_id_fk": {
           "name": "mailbox_access_member_id_member_id_fk",
           "tableFrom": "mailbox_access",
+          "tableTo": "member",
           "columnsFrom": [
             "member_id"
           ],
-          "tableTo": "member",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "mailbox_access_granted_by_user_id_fk": {
           "name": "mailbox_access_granted_by_user_id_fk",
           "tableFrom": "mailbox_access",
+          "tableTo": "user",
           "columnsFrom": [
             "granted_by"
           ],
-          "tableTo": "user",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "set null"
+          "onDelete": "set null",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {
@@ -1920,28 +1957,28 @@
         "provider_key_organization_id_organization_id_fk": {
           "name": "provider_key_organization_id_organization_id_fk",
           "tableFrom": "provider_key",
+          "tableTo": "organization",
           "columnsFrom": [
             "organization_id"
           ],
-          "tableTo": "organization",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "provider_key_added_by_user_id_fk": {
           "name": "provider_key_added_by_user_id_fk",
           "tableFrom": "provider_key",
+          "tableTo": "user",
           "columnsFrom": [
             "added_by"
           ],
-          "tableTo": "user",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "set null"
+          "onDelete": "set null",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {
@@ -2084,15 +2121,15 @@
         "resend_inbound_organization_id_organization_id_fk": {
           "name": "resend_inbound_organization_id_organization_id_fk",
           "tableFrom": "resend_inbound",
+          "tableTo": "organization",
           "columnsFrom": [
             "organization_id"
           ],
-          "tableTo": "organization",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -2122,15 +2159,15 @@
         "webhooks_sealed_organization_id_organization_id_fk": {
           "name": "webhooks_sealed_organization_id_organization_id_fk",
           "tableFrom": "webhooks_sealed",
+          "tableTo": "organization",
           "columnsFrom": [
             "organization_id"
           ],
-          "tableTo": "organization",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -2141,9 +2178,9 @@
   "views": {},
   "enums": {},
   "_meta": {
-    "columns": {},
     "schemas": {},
-    "tables": {}
+    "tables": {},
+    "columns": {}
   },
   "internal": {
     "indexes": {}

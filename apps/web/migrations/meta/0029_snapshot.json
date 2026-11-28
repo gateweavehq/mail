@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "dc7622bc-9510-43eb-8258-1dd1647cc6d9",
+  "id": "17d4c623-8f05-44ac-b177-39bb75d1911d",
   "prevId": "f7293f79-716f-44be-82a7-673fd8fbc057",
   "tables": {
     "account": {
@@ -1187,39 +1187,6 @@
       "uniqueConstraints": {},
       "checkConstraints": {}
     },
-    "audience_removal": {
-      "name": "audience_removal",
-      "columns": {
-        "organization_id": {
-          "name": "organization_id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "removed_at": {
-          "name": "removed_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": "(cast(unixepoch('subsecond') * 1000 as integer))"
-        }
-      },
-      "indexes": {
-        "audience_removal_removed_at_idx": {
-          "name": "audience_removal_removed_at_idx",
-          "columns": [
-            "removed_at"
-          ],
-          "isUnique": false
-        }
-      },
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {}
-    },
     "image_sender": {
       "name": "image_sender",
       "columns": {
@@ -1476,6 +1443,27 @@
         "events_at": {
           "name": "events_at",
           "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "send_attempt_state": {
+          "name": "send_attempt_state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "send_attempt_at": {
+          "name": "send_attempt_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "send_attempt_error": {
+          "name": "send_attempt_error",
+          "type": "text",
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false
