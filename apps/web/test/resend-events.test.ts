@@ -593,7 +593,9 @@ describe("switching how a domain sends", () => {
 			}),
 		});
 		expect(response.status).toBe(200);
-		expect((await directory(box.slug)).body.domains[0]?.sendAttemptState).toBe("succeeded");
+		await expect
+			.poll(async () => (await directory(box.slug)).body.domains[0]?.sendAttemptState)
+			.toBe("succeeded");
 
 		await sendingWithResend(box);
 		const domain = (await directory(box.slug)).body.domains[0];

@@ -1391,14 +1391,11 @@ export class Mailbox extends DurableObject<Cloudflare.Env> {
 							}
 						: written,
 				);
-				await this.#noteEmailServiceAttempt(written, row.workspaceId, "succeeded");
+				this.ctx.waitUntil(this.#noteEmailServiceAttempt(written, row.workspaceId, "succeeded"));
 				return { ok: true, providerId: result.messageId };
 			} catch (error) {
-				await this.#noteEmailServiceAttempt(
-					written,
-					row.workspaceId,
-					sendAttemptStateOf(error),
-					error,
+				this.ctx.waitUntil(
+					this.#noteEmailServiceAttempt(written, row.workspaceId, sendAttemptStateOf(error), error),
 				);
 				const outcome = outcomeOf(error, row.attempts, Date.now());
 				return { ok: false, outcome, detail: null, answered: false, maybeSent: false };
