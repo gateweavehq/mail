@@ -204,6 +204,20 @@
       "when": 1795124861552,
       "tag": "0028_agent_webhook_hosts",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "6",
+      "when": 1795857364529,
+      "tag": "0029_audience_removal",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "6",
+      "when": 1795857368073,
+      "tag": "0030_audience_removal_trigger",
+      "breakpoints": true
     }
   ]
 }

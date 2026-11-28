@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { unstable_readConfig } from "wrangler";
+import { createWorkspace, signUp } from "./accounts";
 import { startMail } from "./mail-worker";
 
 const origin = "https://mail.test";
@@ -9,7 +10,7 @@ const HOUR = 3_600_000;
 let mail: Awaited<ReturnType<typeof startMail>>;
 
 beforeAll(async () => {
-	mail = await startMail(origin);
+	mail = await startMail(origin, { audienceDestroyFails: true, inspectMailboxes: true });
 	await mail.db.batch([
 		mail.db
 			.prepare(
@@ -111,6 +112,54 @@ describe("the daily cron", () => {
 			.all<{ local_part: string }>();
 		// The ended address's own delete keeps nothing back: its name was kept long enough already.
 		expect(names.results.map((row: { local_part: string }) => row.local_part)).toEqual(["lately"]);
+	});
+
+	it("finishes a deleted workspace's audience after emptying it failed once", async () => {
+		const owner = await signUp(mail, origin, "audience-owner");
+		const workspaceId = await createWorkspace(mail, origin, owner.headers, "audience-gone");
+		const saved = await mail.fetch(`${origin}/api/templates/audience-gone`, {
+			method: "POST",
+			headers: { ...owner.headers, "content-type": "application/json" },
+			body: JSON.stringify({
+				action: "save",
+				id: null,
+				input: {
+					name: "Welcome",
+					subject: "Welcome {{first_name}}",
+					body: "Hi {{first_name}}",
+					variables: ["first_name"],
+				},
+			}),
+		});
+		expect(saved.status).toBe(200);
+		const held = async () => {
+			const sql = await mail.audienceStorage(workspaceId);
+			const rows = await sql.exec<{ versions: number }>(
+				"SELECT count(*) AS versions FROM template_version",
+			);
+			return rows[0]?.versions;
+		};
+		const rows = async () => {
+			const row = await mail.db
+				.prepare("SELECT count(*) AS n FROM audience_removal WHERE organization_id = ?")
+				.bind(workspaceId)
+				.first<{ n: number }>();
+			return row?.n ?? 0;
+		};
+		expect(await held()).toBe(1);
+
+		const deleted = await mail.fetch(`${origin}/api/auth/organization/delete`, {
+			method: "POST",
+			headers: owner.headers,
+			body: JSON.stringify({ organizationId: workspaceId }),
+		});
+		expect(deleted.status).toBe(200);
+		await expect.poll(rows).toBe(1);
+		expect(await held()).toBe(1);
+
+		await mail.runScheduled();
+		expect(await rows()).toBe(0);
+		expect(await held()).toBe(0);
 	});
 
 	it("gets through more than one batch", async () => {

@@ -203,6 +203,25 @@ export class Mailbox extends BuiltMailbox {
 }
 `;
 
+// Stands in for the app's Audience objects with the first destroy failing, as an object or the
+// network under it can. The second uses the real one.
+const FAILING_AUDIENCE = `
+export * from "./index.js";
+export { default } from "./index.js";
+import { Audience as BuiltAudience } from "./index.js";
+
+let failed = false;
+export class Audience extends BuiltAudience {
+	async destroy() {
+		if (!failed) {
+			failed = true;
+			throw new Error("destroy failed for the test");
+		}
+		await super.destroy();
+	}
+}
+`;
+
 /** Every module of the built Worker. Its migrations are imported as text. */
 function builtModules(): V4ModuleDefinition[] {
 	const modules: V4ModuleDefinition[] = [];
@@ -245,6 +264,7 @@ export async function startMail(
 		keptIn,
 		inspectMailboxes = false,
 		senderCheckTests = false,
+		audienceDestroyFails = false,
 	}: {
 		isolates?: number;
 		hosts?: Record<string, (request: Request) => Response | Promise<Response>>;
@@ -259,6 +279,8 @@ export async function startMail(
 		keptIn?: string;
 		inspectMailboxes?: boolean;
 		senderCheckTests?: boolean;
+		/** Makes the first Audience destroy throw; later ones use the real object. */
+		audienceDestroyFails?: boolean;
 	} = {},
 ) {
 	const config = JSON.parse(readFileSync(join(serverDir, "wrangler.json"), "utf8")) as BuiltConfig;
@@ -270,6 +292,12 @@ export async function startMail(
 			type: "ESModule",
 			path: join(serverDir, "sender-check-test.js"),
 			contents: SENDER_CHECK_MAILBOX,
+		});
+	if (audienceDestroyFails)
+		modules.unshift({
+			type: "ESModule",
+			path: join(serverDir, "audience-destroy-test.js"),
+			contents: FAILING_AUDIENCE,
 		});
 	const secret = randomBytes(32).toString("base64url");
 	// Raw mail is sealed, as a deployment with this setting seals it. `settings` may name another.
@@ -457,6 +485,8 @@ export async function startMail(
 			await namespace.get(namespace.idFromName(name)).fetch("https://mailbox.test/alarm");
 		},
 		mailboxStorage: (name: string) => mf.unsafeGetDurableObjectStorage("mail", "Mailbox", { name }),
+		audienceStorage: (name: string) =>
+			mf.unsafeGetDurableObjectStorage("mail", "Audience", { name }),
 		/** The Worker's `BETTER_AUTH_SECRET`, to check what it signs. */
 		secret,
 		/** Runs the Worker's Cron Trigger once, as Cloudflare would, in one copy of the Worker. */
