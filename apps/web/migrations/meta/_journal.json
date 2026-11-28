@@ -204,6 +204,13 @@
       "when": 1795124861552,
       "tag": "0028_agent_webhook_hosts",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "6",
+      "when": 1795883750108,
+      "tag": "0029_handy_electro",
+      "breakpoints": true
     }
   ]
 }

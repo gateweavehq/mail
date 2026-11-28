@@ -73,7 +73,13 @@ async function directory(slug: string, headers: Record<string, string>, action?:
 	return (await response.json()) as {
 		ok?: boolean;
 		proved?: boolean;
-		domains: { id: string; proof: { value: string } | null }[];
+		domains: {
+			id: string;
+			proof: { value: string } | null;
+			sendAttemptState: "succeeded" | "validation-error" | "transient-error" | "failed" | null;
+			sendAttemptAt: number | null;
+			sendAttemptError: string | null;
+		}[];
 		mailboxes: { id: string; name: string; access?: { senderIds: string[] } | null }[];
 	};
 }
@@ -454,6 +460,52 @@ describe("a reply", () => {
 	});
 });
 
+describe("the domain's last send through Email Service", () => {
+	async function attempt(box: Box) {
+		const listed = await directory(box.slug, owner.headers);
+		return listed.domains.find((domain) => domain.id === box.domainId);
+	}
+
+	it("is recorded as succeeded when Email Service takes the message", async () => {
+		const box = await mailboxWithAddress();
+		const sent = await send(box, { to: [`works.${box.slug}@example.org`] });
+		expect(sent.state).toBe("sent");
+		expect(await attempt(box)).toMatchObject({
+			sendAttemptState: "succeeded",
+			sendAttemptError: null,
+		});
+		expect((await attempt(box))?.sendAttemptAt).toEqual(expect.any(Number));
+		// Members who can't change the domain don't see its provider's answer.
+		const member = await join(box.workspaceId);
+		const listed = await directory(box.slug, member.headers);
+		expect(listed.domains.find((domain) => domain.id === box.domainId)).toMatchObject({
+			sendAttemptState: null,
+			sendAttemptAt: null,
+			sendAttemptError: null,
+		});
+	});
+
+	it("records Email Service's validation error with its code", async () => {
+		const box = await mailboxWithAddress();
+		const refused = await send(box, { to: ["refuse-E_VALIDATION_ERROR@example.org"] });
+		expect(refused).toMatchObject({ state: "refused", code: "E_VALIDATION_ERROR" });
+		expect(await attempt(box)).toMatchObject({
+			sendAttemptState: "validation-error",
+			sendAttemptError: "E_VALIDATION_ERROR",
+		});
+	});
+
+	it("records a failure without a provider answer as transient, keeping no error text", async () => {
+		const box = await mailboxWithAddress();
+		const lost = await send(box, { to: ["lost-1@transient.example.org"] });
+		expect(lost).toMatchObject({ state: "uncertain", code: null });
+		expect(await attempt(box)).toMatchObject({
+			sendAttemptState: "transient-error",
+			sendAttemptError: null,
+		});
+	});
+});
+
 describe("a message that isn't sent", () => {
 	it("says why, and can be sent again or discarded", async () => {
 		const box = await mailboxWithAddress();
@@ -466,6 +518,10 @@ describe("a message that isn't sent", () => {
 			code: "E_RECIPIENT_SUPPRESSED",
 			nextAt: null,
 			detail: null,
+		});
+		expect((await directory(box.slug, owner.headers)).domains[0]).toMatchObject({
+			sendAttemptState: "failed",
+			sendAttemptError: "E_RECIPIENT_SUPPRESSED",
 		});
 
 		const again = await outbox(box, owner, { action: "send-again", message: refused.id });

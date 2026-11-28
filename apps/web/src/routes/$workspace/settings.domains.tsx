@@ -341,6 +341,24 @@ const SENDS_WITH_WORDS: Record<SendsWith, string> = {
 	resend: "Resend",
 };
 
+/** What the last send through Email Service says of this domain, in one sentence. */
+function sendAttemptText(domain: DirectoryDomain): string {
+	const when = domain.sendAttemptAt === null ? "" : ` ${formatRelative(domain.sendAttemptAt)}`;
+	const code = domain.sendAttemptError ? ` (${domain.sendAttemptError})` : "";
+	switch (domain.sendAttemptState) {
+		case "succeeded":
+			return `Email Service accepted this domain's last send${when}.`;
+		case "validation-error":
+			return `Email Service refused this domain's last send as invalid${when}${code}. Check that the domain is onboarded for Email Sending in the Cloudflare account that runs this server.`;
+		case "transient-error":
+			return `Email Service's last send from this domain hit a transient error${when}${code}. It does not show whether the domain can send.`;
+		case "failed":
+			return `Email Service refused this domain's last send${when}${code}. It does not show whether the domain can send.`;
+		default:
+			return "No send through Email Service yet.";
+	}
+}
+
 function DomainRow({
 	domain,
 	admin,
@@ -499,11 +517,22 @@ function DomainRow({
 				</p>
 			)}
 			{admin && domain.verifiedAt !== null && domain.sendsWith === "cloudflare" && (
-				<p className="text-sm text-muted-foreground">
-					{domain.eventsAt === null
-						? "No delivery events from Email Service yet. They come once whoever runs this deployment subscribes its queue to this domain, as the self-hosting guide shows, and something is sent."
-						: `Email Service's delivery events last came ${formatRelative(domain.eventsAt)}.`}
-				</p>
+				<div className="space-y-1 text-sm">
+					<p
+						className={
+							domain.sendAttemptState === "validation-error"
+								? "text-destructive"
+								: "text-muted-foreground"
+						}
+					>
+						{sendAttemptText(domain)}
+					</p>
+					<p className="text-muted-foreground">
+						{domain.eventsAt === null
+							? "No delivery events from Email Service yet. They come once whoever runs this deployment subscribes its queue to this domain, as the self-hosting guide shows, and something is sent."
+							: `Email Service's delivery events last came ${formatRelative(domain.eventsAt)}.`}
+					</p>
+				</div>
 			)}
 			{admin &&
 				domain.verifiedAt !== null &&

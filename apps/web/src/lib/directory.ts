@@ -24,6 +24,14 @@ export interface DirectoryDomain {
 	 * first, and for everyone else.
 	 */
 	eventsAt: number | null;
+	/**
+	 * How the last send through Email Service from this domain went, for owners and admins. Null
+	 * until one is asked, and for everyone else.
+	 */
+	sendAttemptState: "succeeded" | "validation-error" | "transient-error" | "failed" | null;
+	sendAttemptAt: number | null;
+	/** Email Service's code for the failure, never its message. */
+	sendAttemptError: string | null;
 }
 
 /** How receiving through Resend goes for the workspace, for owners and admins. */
