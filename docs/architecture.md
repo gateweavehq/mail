@@ -398,7 +398,8 @@ One Worker (`apps/web`), the same shape as Gateweave Track and Gateweave Agents:
     16 MB for `send_email` and `reply`, whose files come in it), and
     answers
     what the tool would, checked against the same schema, or `{ "error" }` with 400, 401, 403,
-    404, 409, 413 or 429 (with `Retry-After` when known). A failure of Mail's own is a 500 over
+    404, 409, 413, 429 (with `Retry-After` when known) or 503. A 503 means a recipient check
+    cannot yet decide and the caller may retry. A failure of Mail's own is a 500 over
     REST and a tool error over MCP, in the same words, and is logged by its kind alone, as what a
     database or a message said may hold mail. Any site may call the API (CORS without
     credentials), as only a key counts and a browser sends none of its own.
