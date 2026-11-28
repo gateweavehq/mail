@@ -144,6 +144,26 @@ export const mailboxRemoval = sqliteTable(
 	(table) => [index("mailbox_removal_removed_at_idx").on(table.removedAt)],
 );
 
+/**
+ * A workspace that has gone, until its audience object has been emptied too. A trigger writes the
+ * row as the workspace's row is deleted (migration 0031). No reference: the workspace is gone.
+ */
+export const audienceRemoval = sqliteTable(
+	"audience_removal",
+	{
+		organizationId: text("organization_id").primaryKey(),
+		removedAt: integer("removed_at", { mode: "timestamp_ms" })
+			.default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
+			.notNull(),
+		/** How many daily runs have tried it. Rows tried least go first, so failures don't block later ones. */
+		attempts: integer("attempts").default(0).notNull(),
+	},
+	(table) => [
+		index("audience_removal_removed_at_idx").on(table.removedAt),
+		index("audience_removal_attempts_idx").on(table.attempts, table.removedAt),
+	],
+);
+
 /** One address on one domain, for one mailbox. Migration 0003 keeps all three in one workspace. */
 export const mailAddress = sqliteTable(
 	"mail_address",

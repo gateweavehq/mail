@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
 import handler from "@tanstack/react-start/server-entry";
+import { finishAudienceRemovals } from "./server/audience";
 import { db } from "./server/auth";
 import { pruneExpired } from "./server/db/prune";
 import { directoryIn, receiveDeliveryEvents } from "./server/delivery-events";
@@ -66,6 +67,7 @@ export default {
 	async scheduled() {
 		await pruneExpired(db);
 		await finishRemovals(db);
+		await finishAudienceRemovals(db);
 		await dropUnusedWebhooks(db);
 		const secrets = await resealSecrets(db, env);
 		// Counts only. While any of the three `left`s isn't 0, SECRETS_KEY_PREVIOUS is still needed.
